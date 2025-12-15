@@ -1,4 +1,4 @@
-#  New Development Infrastructure
+# New Development Infrastructure
 
   systars/
   ├── bin/
@@ -18,7 +18,7 @@
   │       └── models/              # Reference models (placeholder)
   └── gen/                         # Generated RTL output directory
 
-##  Key Commands
+## Key Commands
 
 ```bash
   # cd into your hw development environment
@@ -37,6 +37,7 @@
 ```
 
 ## Daily usage
+
 ```bash
   just                    # Show all available tasks
   just lint               # Run all linters

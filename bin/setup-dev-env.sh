@@ -112,8 +112,10 @@ fi
 # ============================================================================
 # OSS CAD Suite (Verilator, GHDL, Yosys)
 # ============================================================================
-if [[ -d /opt/oss-cad-suite ]]; then
-    success "OSS CAD Suite already installed at /opt/oss-cad-suite"
+OSS_CAD_SUITE_PATH="/opt/oss-cad-suite"
+
+if [[ -d "$OSS_CAD_SUITE_PATH" ]]; then
+    success "OSS CAD Suite already installed at $OSS_CAD_SUITE_PATH"
 else
     info "Installing OSS CAD Suite (Verilator, GHDL, Yosys)..."
 
@@ -130,29 +132,9 @@ else
     success "OSS CAD Suite installed"
 fi
 
-# Add to PATH if not already there
-if [[ ":$PATH:" != *":/opt/oss-cad-suite/bin:"* ]]; then
-    info "Adding OSS CAD Suite to PATH..."
-
-    SHELL_RC=""
-    if [[ -n "${BASH_VERSION:-}" ]]; then
-        SHELL_RC="$HOME/.bashrc"
-    elif [[ -n "${ZSH_VERSION:-}" ]]; then
-        SHELL_RC="$HOME/.zshrc"
-    fi
-
-    if [[ -n "$SHELL_RC" && -f "$SHELL_RC" ]]; then
-        if ! grep -q "oss-cad-suite" "$SHELL_RC"; then
-            echo '' >> "$SHELL_RC"
-            echo '# OSS CAD Suite (Verilator, GHDL, Yosys)' >> "$SHELL_RC"
-            echo 'export PATH="/opt/oss-cad-suite/bin:$PATH"' >> "$SHELL_RC"
-            success "Added to $SHELL_RC"
-        fi
-    fi
-
-    # Add for current session
-    export PATH="/opt/oss-cad-suite/bin:$PATH"
-fi
+# Add OSS CAD Suite bin to PATH for tools (yosys, verilator, etc.)
+export PATH="$OSS_CAD_SUITE_PATH/bin:$PATH"
+success "OSS CAD Suite tools added to PATH"
 
 # ============================================================================
 # Python Virtual Environment and Dependencies

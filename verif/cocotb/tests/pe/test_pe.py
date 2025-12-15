@@ -6,7 +6,7 @@ These tests verify the PE module behavior using cycle-accurate RTL simulation.
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import RisingEdge
 
 
 @cocotb.test()
@@ -96,7 +96,7 @@ async def test_pe_passthrough(dut):
     assert dut.out_a.value == 42, f"out_a should be 42, got {dut.out_a.value}"
     assert dut.out_id.value == 123, f"out_id should be 123, got {dut.out_id.value}"
     assert dut.out_last.value == 1, f"out_last should be 1, got {dut.out_last.value}"
-    assert dut.out_control_shift.value == 7, f"out_control_shift should be 7"
+    assert dut.out_control_shift.value == 7, "out_control_shift should be 7"
 
     dut._log.info("Pass-through test passed")
 

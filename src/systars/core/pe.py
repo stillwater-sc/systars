@@ -15,10 +15,10 @@ Data flows:
 - C (result): output after accumulation
 """
 
-from amaranth import *
+from amaranth import Module, Mux, Signal, signed
 from amaranth.lib.wiring import Component, In, Out
 
-from ..config import SystolicConfig, Dataflow
+from ..config import SystolicConfig
 
 
 class PE(Component):
@@ -60,31 +60,32 @@ class PE(Component):
         output_width = config.output_bits
 
         # Define signature using lib.wiring
-        super().__init__({
-            # Inputs
-            "in_a": In(signed(input_width)),
-            "in_b": In(signed(weight_width)),
-            "in_d": In(signed(acc_width)),
-            "in_control_dataflow": In(1),      # 0=OS, 1=WS
-            "in_control_propagate": In(1),     # Which register to output
-            "in_control_shift": In(5),         # Rounding shift amount
-            "in_valid": In(1),
-            "in_id": In(8),
-            "in_last": In(1),
+        super().__init__(
+            {
+                # Inputs
+                "in_a": In(signed(input_width)),
+                "in_b": In(signed(weight_width)),
+                "in_d": In(signed(acc_width)),
+                "in_control_dataflow": In(1),  # 0=OS, 1=WS
+                "in_control_propagate": In(1),  # Which register to output
+                "in_control_shift": In(5),  # Rounding shift amount
+                "in_valid": In(1),
+                "in_id": In(8),
+                "in_last": In(1),
+                # Outputs
+                "out_a": Out(signed(input_width)),
+                "out_b": Out(signed(output_width)),
+                "out_c": Out(signed(acc_width)),
+                "out_control_dataflow": Out(1),
+                "out_control_propagate": Out(1),
+                "out_control_shift": Out(5),
+                "out_valid": Out(1),
+                "out_id": Out(8),
+                "out_last": Out(1),
+            }
+        )
 
-            # Outputs
-            "out_a": Out(signed(input_width)),
-            "out_b": Out(signed(output_width)),
-            "out_c": Out(signed(acc_width)),
-            "out_control_dataflow": Out(1),
-            "out_control_propagate": Out(1),
-            "out_control_shift": Out(5),
-            "out_valid": Out(1),
-            "out_id": Out(8),
-            "out_last": Out(1),
-        })
-
-    def elaborate(self, platform):
+    def elaborate(self, _platform):
         m = Module()
         cfg = self.config
 
@@ -149,10 +150,10 @@ class PE(Component):
         # For now, simplified to pass through product (actual impl may differ)
         with m.If(self.in_control_dataflow):  # WS
             # Pass accumulated value down
-            m.d.comb += self.out_b.eq(accumulated[:cfg.output_bits])
+            m.d.comb += self.out_b.eq(accumulated[: cfg.output_bits])
         with m.Else():  # OS
             # Pass weight down
-            m.d.comb += self.out_b.eq(self.in_b[:cfg.output_bits])
+            m.d.comb += self.out_b.eq(self.in_b[: cfg.output_bits])
 
         # =================================================================
         # Pass-through Signals (registered for pipelining)
@@ -190,30 +191,31 @@ class PEWithShift(Component):
         acc_width = config.acc_bits
         output_width = config.output_bits
 
-        super().__init__({
-            "in_a": In(signed(input_width)),
-            "in_b": In(signed(weight_width)),
-            "in_d": In(signed(acc_width)),
-            "in_control_dataflow": In(1),
-            "in_control_propagate": In(1),
-            "in_control_shift": In(5),
-            "in_valid": In(1),
-            "in_id": In(8),
-            "in_last": In(1),
+        super().__init__(
+            {
+                "in_a": In(signed(input_width)),
+                "in_b": In(signed(weight_width)),
+                "in_d": In(signed(acc_width)),
+                "in_control_dataflow": In(1),
+                "in_control_propagate": In(1),
+                "in_control_shift": In(5),
+                "in_valid": In(1),
+                "in_id": In(8),
+                "in_last": In(1),
+                "out_a": Out(signed(input_width)),
+                "out_b": Out(signed(output_width)),
+                "out_c": Out(signed(acc_width)),
+                "out_c_shifted": Out(signed(output_width)),  # Shifted output
+                "out_control_dataflow": Out(1),
+                "out_control_propagate": Out(1),
+                "out_control_shift": Out(5),
+                "out_valid": Out(1),
+                "out_id": Out(8),
+                "out_last": Out(1),
+            }
+        )
 
-            "out_a": Out(signed(input_width)),
-            "out_b": Out(signed(output_width)),
-            "out_c": Out(signed(acc_width)),
-            "out_c_shifted": Out(signed(output_width)),  # Shifted output
-            "out_control_dataflow": Out(1),
-            "out_control_propagate": Out(1),
-            "out_control_shift": Out(5),
-            "out_valid": Out(1),
-            "out_id": Out(8),
-            "out_last": Out(1),
-        })
-
-    def elaborate(self, platform):
+    def elaborate(self, _platform):
         m = Module()
         cfg = self.config
 
@@ -253,7 +255,8 @@ class PEWithShift(Component):
         shifted = Signal(signed(cfg.acc_bits), name="shifted")
 
         # Calculate rounding bias (1 << (shift-1)), handling shift=0
-        m.d.comb += round_bit.eq(Mux(shift_amt == 0, 0, 1 << (shift_amt - 1)))
+        # Use (1 << shift_amt) >> 1 to avoid signed shift amount issue
+        m.d.comb += round_bit.eq(Mux(shift_amt == 0, 0, (1 << shift_amt) >> 1))
 
         # Add rounding bias and shift
         rounded_value = Signal(signed(cfg.acc_bits), name="rounded_value")
@@ -269,6 +272,6 @@ class PEWithShift(Component):
         with m.Elif(shifted < min_val):
             m.d.comb += self.out_c_shifted.eq(min_val)
         with m.Else():
-            m.d.comb += self.out_c_shifted.eq(shifted[:cfg.output_bits])
+            m.d.comb += self.out_c_shifted.eq(shifted[: cfg.output_bits])
 
         return m

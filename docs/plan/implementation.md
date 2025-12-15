@@ -1,6 +1,6 @@
 # SYSTARS Python RTL Rewrite Plan
 
-This document provides a comprehensive plan for rewriting the SYSTARS systolic array layout generator from C to a modern Python-based RTL framework. 
+This document provides a comprehensive plan for rewriting the SYSTARS systolic array layout generator from C to a modern Python-based RTL framework.
 
 ---
 
@@ -9,10 +9,11 @@ This document provides a comprehensive plan for rewriting the SYSTARS systolic a
 **Goal:** Create a Python-based systolic array generator that replicates SYSTARS's functionality using modern Python RTL tools.
 
 **Recommended Framework:** **Amaranth HDL** (formerly nMigen)
+
 - Pros: Active development, good documentation, Python 3.8+, native simulation, formal verification support
 - Alternative: PyRTL (simpler but less feature-rich)
 
-**Target Compatibility:** Generate Verilog that is functionally equivalent to SYSTARS's output, adding a system integration workflow. 
+**Target Compatibility:** Generate Verilog that is functionally equivalent to SYSTARS's output, adding a system integration workflow.
 
 ---
 
@@ -1137,6 +1138,7 @@ def compare_matmul_output():
 ## Notes for Separate Repository
 
 This plan assumes a **clean-slate repository** with:
+
 - Modern dependencies (Python, Just, Yosys, Verilator/GHDL, RTL linting, synthesis checks, etc.)
 - Python 3.10+ with Amaranth HDL
 - pytest for Python script testing

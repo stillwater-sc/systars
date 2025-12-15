@@ -8,15 +8,14 @@ Systars generates synthesizable Verilog for configurable systolic array accelera
 
 @INPROCEEDINGS{18078,
   author={Omtzigt, E.T.L.},
-  booktitle={[1988] Proceedings. International Conference on Systolic Arrays}, 
-  title={SYSTARS: A CAD tool for the synthesis and analysis of VLSI systolic/wavefront arrays}, 
+  booktitle={[1988] Proceedings. International Conference on Systolic Arrays},
+  title={SYSTARS: A CAD tool for the synthesis and analysis of VLSI systolic/wavefront arrays},
   year={1988},
   volume={},
   number={},
   pages={383-391},
   keywords={Very large scale integration;Algorithm design and analysis;Systolic arrays;Clustering algorithms;Partitioning algorithms;Design automation;Iterative algorithms;Animation;Computer graphics;Adaptive arrays},
   doi={10.1109/ARRAYS.1988.18078}}
-
 
 ## Features
 
@@ -28,19 +27,41 @@ Systars generates synthesizable Verilog for configurable systolic array accelera
 
 ## Installation
 
+### Full Development Environment (Recommended)
+
 ```bash
 # Clone the repository
-git clone https://github.com/stillwater/systars.git
+git clone https://github.com/stillwater-sc/systars.git
 cd systars
 
-# Install in development mode
-pip install -e ".[dev]"
+# Run the setup script (downloads OSS-CAD-SUITE, creates venv, installs deps)
+./bin/setup-dev-env.sh
+
+# Activate in a new shell:
+source .venv/bin/activate
+```
+
+### Manual Setup
+
+```bash
+# Set OSS-CAD-SUITE location (if not in /opt/oss-cad-suite)
+export OSS_CAD_SUITE=/path/to/oss-cad-suite
+
+# Use just to create venv and install dependencies
+just setup
+
+# Activate:
+source .venv/bin/activate
 ```
 
 ### Requirements
 
 - Python 3.10+
-- Amaranth HDL 0.5+
+- [OSS-CAD-SUITE](https://github.com/YosysHQ/oss-cad-suite-build) for EDA tools:
+  - Verilator (RTL simulation)
+  - Yosys (synthesis)
+  - GHDL (VHDL simulation)
+- [just](https://github.com/casey/just) task runner (optional but recommended)
 
 ## Quick Start
 
@@ -162,26 +183,31 @@ systars/
 See [implementation plan](./doc/plan/implementation.md) for the detailed implementation plan.
 
 ### Phase 1: Foundation (Current)
+
 - [x] Configuration system
 - [x] Processing Element (PE)
 - [ ] Tile
 - [ ] Mesh
 
 ### Phase 2: Memory System
+
 - [ ] Local address encoding
 - [ ] Scratchpad banks
 - [ ] Accumulator with scale/activation
 
 ### Phase 3: Controllers
+
 - [ ] Reservation station
 - [ ] Execute controller
 - [ ] Load/Store controllers
 
 ### Phase 4: Loop Unrollers
+
 - [ ] Matrix multiply loop
 - [ ] Convolution loop
 
 ### Phase 5: Validation
+
 - [ ] Header file generation
 - [ ] Reference comparison
 

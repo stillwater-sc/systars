@@ -16,6 +16,9 @@ docs_dir := project_root / "docs"
 # Simulator selection (verilator or icarus)
 sim := env_var_or_default("SIM", "verilator")
 
+# OSS CAD Suite path (override with OSS_CAD_SUITE env var)
+oss_cad_suite := env_var_or_default("OSS_CAD_SUITE", "/opt/oss-cad-suite")
+
 # =============================================================================
 # Environment Setup
 # =============================================================================
@@ -33,10 +36,43 @@ install-dev:
 install-sim:
     python3 -m pip install -e ".[sim]"
 
-# Create a virtual environment
+# Create virtual environment
 venv:
     python3 -m venv .venv
-    @echo "Run 'source .venv/bin/activate' to activate"
+    @echo "Virtual environment created. To activate:"
+    @echo "  source .venv/bin/activate"
+
+# Full setup: create venv, install deps
+setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Check for OSS-CAD-SUITE tools
+    if [[ -d "{{oss_cad_suite}}/bin" ]]; then
+        echo "Found OSS-CAD-SUITE at {{oss_cad_suite}}"
+    else
+        echo "WARNING: OSS-CAD-SUITE not found at {{oss_cad_suite}}"
+        echo "Tools like yosys/verilator may not be available."
+        echo "Set OSS_CAD_SUITE env var or install OSS-CAD-SUITE."
+    fi
+
+    # Create venv with system Python
+    if [[ ! -d .venv ]]; then
+        echo "Creating virtual environment..."
+        python3 -m venv .venv
+    fi
+
+    # Activate and install
+    source .venv/bin/activate
+    echo "Using Python: $(python3 --version) from $(which python3)"
+    echo ""
+    echo "Installing dependencies..."
+    pip install --upgrade pip
+    pip install -e ".[dev,sim]"
+    pre-commit install
+    echo ""
+    echo "Setup complete! To activate in a new shell:"
+    echo "  source .venv/bin/activate"
 
 # =============================================================================
 # Linting & Formatting
@@ -85,19 +121,7 @@ gen: gen-pe gen-mesh
 
 # Generate PE Verilog
 gen-pe:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    mkdir -p {{gen_dir}}
-    python3 -c "
-from systars.config import SystolicConfig
-from systars.core.pe import PE
-from amaranth.back import verilog
-config = SystolicConfig()
-pe = PE(config)
-with open('{{gen_dir}}/pe.v', 'w') as f:
-    f.write(verilog.convert(pe, name='PE'))
-print('Generated {{gen_dir}}/pe.v')
-"
+    python3 {{project_root}}/scripts/gen_pe.py
 
 # Generate Mesh Verilog (when implemented)
 gen-mesh:

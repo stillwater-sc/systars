@@ -10,10 +10,9 @@ These tests verify:
 """
 
 import pytest
-from amaranth import *
 from amaranth.sim import Simulator, Tick
 
-from systars.config import SystolicConfig, Dataflow
+from systars.config import Dataflow, SystolicConfig
 from systars.core.pe import PE, PEWithShift
 
 
@@ -150,24 +149,23 @@ class TestPE:
 
             # Wait for registered output
             yield Tick()
-            results['out_a'] = yield pe.out_a
-            results['out_id'] = yield pe.out_id
-            results['out_last'] = yield pe.out_last
-            results['out_shift'] = yield pe.out_control_shift
+            results["out_a"] = yield pe.out_a
+            results["out_id"] = yield pe.out_id
+            results["out_last"] = yield pe.out_last
+            results["out_shift"] = yield pe.out_control_shift
 
         sim = Simulator(pe)
         sim.add_clock(1e-6)
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results['out_a'] == 42
-        assert results['out_id'] == 123
-        assert results['out_last'] == 1
-        assert results['out_shift'] == 7
+        assert results["out_a"] == 42
+        assert results["out_id"] == 123
+        assert results["out_last"] == 1
+        assert results["out_shift"] == 7
 
     def test_signed_multiplication(self, pe):
         """Test multiplication with signed values."""
-        results = []
 
         def testbench():
             yield pe.in_control_dataflow.eq(1)  # WS mode
@@ -269,7 +267,13 @@ class TestPEVerilogGeneration:
 
     def test_generate_verilog(self, tmp_path):
         """Test that PE can generate valid Verilog."""
+        from amaranth._toolchain.yosys import find_yosys
         from amaranth.back import verilog
+
+        try:
+            find_yosys(lambda ver: ver >= (0, 40))
+        except Exception:
+            pytest.skip("Yosys not found")
 
         config = SystolicConfig()
         pe = PE(config)
@@ -286,7 +290,13 @@ class TestPEVerilogGeneration:
 
     def test_generate_pe_with_shift_verilog(self, tmp_path):
         """Test that PEWithShift can generate valid Verilog."""
+        from amaranth._toolchain.yosys import find_yosys
         from amaranth.back import verilog
+
+        try:
+            find_yosys(lambda ver: ver >= (0, 40))
+        except Exception:
+            pytest.skip("Yosys not found")
 
         config = SystolicConfig()
         pe = PEWithShift(config)
