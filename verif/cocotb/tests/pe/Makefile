@@ -20,9 +20,14 @@ TOPLEVEL = PE
 MODULE = test_pe
 
 # Verilator specific options
+ifeq ($(SIM),verilator)
 EXTRA_ARGS += --timing
 EXTRA_ARGS += -Wno-WIDTHEXPAND
 EXTRA_ARGS += -Wno-WIDTHTRUNC
+EXTRA_ARGS += -Wno-UNUSEDSIGNAL
+EXTRA_ARGS += -Wno-DECLFILENAME
+EXTRA_ARGS += -Wno-PROCASSINIT
+endif
 
 # Include cocotb makefile
 include $(shell cocotb-config --makefiles)/Makefile.sim

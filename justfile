@@ -8,6 +8,7 @@ default:
 # Project paths
 project_root := justfile_directory()
 src_dir := project_root / "src"
+rtl_dir := project_root / "rtl"
 gen_dir := project_root / "gen"
 verif_dir := project_root / "verif"
 tests_dir := project_root / "tests"
@@ -85,22 +86,48 @@ lint: lint-python lint-rtl
 lint-python:
     python3 -m ruff check {{src_dir}} {{verif_dir}} {{tests_dir}}
 
-# Lint generated RTL files with Verilator
-lint-rtl:
+# Lint all RTL files with Verilator
+lint-rtl: lint-rtl-gen lint-rtl-hand
+
+# Lint generated RTL (Amaranth output - relaxed checks for generator artifacts)
+lint-rtl-gen:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "Linting RTL with Verilator..."
+    echo "Linting generated RTL (gen/)..."
     verilog_files=$(find {{gen_dir}} -name "*.v" -o -name "*.sv" 2>/dev/null || true)
     if [ -n "$verilog_files" ]; then
+        # Amaranth/Yosys generates code with these known artifacts:
+        # - WIDTHEXPAND/WIDTHTRUNC: Yosys optimizes sign extension
+        # - UNUSEDSIGNAL: Yosys leaves dead wire declarations
+        # - DECLFILENAME: Module name doesn't match filename
+        # - PROCASSINIT: Amaranth uses both initial values and procedural assigns
         verilator --lint-only -Wall --timing \
             -Wno-MULTITOP \
+            -Wno-WIDTHEXPAND \
+            -Wno-WIDTHTRUNC \
             -Wno-UNUSEDSIGNAL \
-            -Wno-UNUSEDPARAM \
-            -Wno-UNDRIVEN \
+            -Wno-DECLFILENAME \
+            -Wno-PROCASSINIT \
             $verilog_files
-        echo "RTL lint passed"
+        echo "Generated RTL lint passed"
     else
-        echo "No Verilog files found in gen/"
+        echo "No generated Verilog files found in gen/"
+    fi
+
+# Lint hand-written RTL (strict - all WIDTH checks enabled)
+lint-rtl-hand:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Linting hand-written RTL (rtl/)..."
+    verilog_files=$(find {{rtl_dir}} -name "*.v" -o -name "*.sv" 2>/dev/null || true)
+    if [ -n "$verilog_files" ]; then
+        # Strict checking for hand-written code
+        verilator --lint-only -Wall --timing \
+            -Wno-MULTITOP \
+            $verilog_files
+        echo "Hand-written RTL lint passed"
+    else
+        echo "No hand-written Verilog files found in rtl/ (this is OK)"
     fi
 
 # Format Python code
@@ -146,15 +173,15 @@ test-unit:
 test-cocotb:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -d "{{verif_dir}}/cocotb/tests" ]; then
-        cd {{verif_dir}}/cocotb && SIM={{sim}} python3 -m pytest tests/ -v
+    if [ -d "{{verif_dir}}/cocotb/tests/pe" ]; then
+        cd {{verif_dir}}/cocotb/tests/pe && SIM={{sim}} make test-all
     else
         echo "No cocotb tests found yet"
     fi
 
 # Run tests with Verilator
 test-verilator:
-    cd {{verif_dir}}/cocotb && SIM=verilator python3 -m pytest tests/ -v
+    cd {{verif_dir}}/cocotb/tests/pe && SIM=verilator make test-all
 
 # Run tests with coverage
 test-cov:
@@ -242,14 +269,11 @@ clean-all: clean clean-gen
 # CI Helpers
 # =============================================================================
 
-# Run CI lint checks
-ci-lint: lint-python format-check typecheck
+# Quick check (no RTL tools needed)
+check: format-check lint-python typecheck test-unit
 
-# Run CI tests
-ci-test: test-unit test-cov
-
-# Run full CI pipeline
-ci: ci-lint ci-test
+# Run full CI pipeline (matches GitHub Actions)
+ci: format-check lint-python typecheck gen lint-rtl test-unit test-cocotb synth-check
 
 # =============================================================================
 # Utility
