@@ -1,0 +1,19 @@
+site_name: Systars
+site_description: Python-based systolic array RTL generator using Amaranth HDL
+site_url: https://stillwater-sc.github.io/systars
+
+repo_name: stillwater-sc/systars
+repo_url: https://github.com/stillwater-sc/systars
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+
+nav:
+  - Home: index.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
