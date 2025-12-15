@@ -1,0 +1,109 @@
+# Systars Synthesis Workflow
+#
+# Runs synthesis checks to verify generated RTL is synthesizable.
+
+name: Synthesis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  yosys-synthesis:
+    name: Yosys Synthesis Check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [ice40, ecp5, generic]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install OSS CAD Suite
+        uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          version: "2024-02-14"
+
+      - name: Install project
+        run: pip install -e .
+
+      - name: Generate RTL
+        run: |
+          mkdir -p gen
+          python -c "
+          from systars.config import SystolicConfig
+          from systars.core.pe import PE
+          from amaranth.back import verilog
+          config = SystolicConfig()
+          pe = PE(config)
+          open('gen/pe.v', 'w').write(verilog.convert(pe, name='PE'))
+          print('Generated gen/pe.v')
+          "
+
+      - name: Synthesize for ${{ matrix.target }}
+        run: |
+          case "${{ matrix.target }}" in
+            ice40)
+              yosys -p "read_verilog gen/pe.v; synth_ice40 -top PE; stat"
+              ;;
+            ecp5)
+              yosys -p "read_verilog gen/pe.v; synth_ecp5 -top PE; stat"
+              ;;
+            generic)
+              yosys -p "read_verilog gen/pe.v; synth -top PE; stat"
+              ;;
+          esac
+
+  resource-report:
+    name: Resource Utilization Report
+    runs-on: ubuntu-latest
+    needs: yosys-synthesis
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install OSS CAD Suite
+        uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          version: "2024-02-14"
+
+      - name: Install project
+        run: pip install -e .
+
+      - name: Generate RTL
+        run: |
+          mkdir -p gen
+          python -c "
+          from systars.config import SystolicConfig
+          from systars.core.pe import PE
+          from amaranth.back import verilog
+          config = SystolicConfig()
+          pe = PE(config)
+          open('gen/pe.v', 'w').write(verilog.convert(pe, name='PE'))
+          print('Generated gen/pe.v')
+          "
+
+      - name: Generate resource report
+        run: |
+          echo "# Resource Utilization Report" > resource_report.md
+          echo "" >> resource_report.md
+          echo "## PE Module" >> resource_report.md
+          echo '```' >> resource_report.md
+          yosys -p "read_verilog gen/pe.v; synth -top PE; stat" 2>&1 | tee -a resource_report.md
+          echo '```' >> resource_report.md
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: resource-report
+          path: resource_report.md
