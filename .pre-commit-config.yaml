@@ -1,0 +1,78 @@
+# Pre-commit configuration for Systars
+# See https://pre-commit.com for more information
+# Run `pre-commit install` to set up git hooks
+
+repos:
+  # General hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--unsafe]
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # Python - Ruff (fast linter and formatter)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        types_or: [python, pyi]
+      - id: ruff-format
+        types_or: [python, pyi]
+
+  # Python - Type checking with mypy
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        args: [--ignore-missing-imports]
+        files: ^src/.*\.py$
+        exclude: ^(tests/|verif/)
+
+  # Shell script linting
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.9.0.6
+    hooks:
+      - id: shellcheck
+        args: [--severity=warning]
+
+  # Markdown linting
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.38.0
+    hooks:
+      - id: markdownlint
+        args: [--fix, --disable, MD013, MD033, MD040, MD041, --]
+        exclude: ^CHANGELOG
+
+  # Local hooks for RTL linting
+  - repo: local
+    hooks:
+      # Verilator lint for generated Verilog
+      - id: verilator-lint
+        name: Verilator RTL Lint
+        entry: bash -c 'if command -v verilator &> /dev/null && [ -n "$(find gen -name "*.v" 2>/dev/null)" ]; then verilator --lint-only -Wall --timing gen/*.v 2>&1 || true; else echo "No Verilog files or verilator not found"; fi'
+        language: system
+        files: \.(v|sv)$
+        pass_filenames: false
+
+# CI configuration
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes from pre-commit hooks
+  autofix_prs: true
+  autoupdate_branch: ''
+  autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
+  autoupdate_schedule: weekly
+  skip: [verilator-lint]  # Skip local hooks in CI
+  submodules: false

@@ -1,12 +1,14 @@
-# Byte-compiled / optimized / DLL files
+# =============================================================================
+# Systars - Systolic Array RTL Generator .gitignore
+# =============================================================================
+
+# =============================================================================
+# Python
+# =============================================================================
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -24,6 +26,12 @@ wheels/
 .installed.cfg
 *.egg
 
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
 # PyInstaller
 *.manifest
 *.spec
@@ -32,59 +40,228 @@ wheels/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-
-# Translations
-*.mo
-*.pot
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# mypy
+# Type checking
 .mypy_cache/
 .dmypy.json
 dmypy.json
 
+# Pytest
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
 # Ruff
 .ruff_cache/
 
-# Generated files
-*.v
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# =============================================================================
+# Simulation
+# =============================================================================
+# Cocotb
+sim_build/
+results.xml
 *.vcd
-*.gtkw
-*.json
-!pyproject.toml
+*.fst
+*.ghw
+*.lxt
+*.lxt2
+dump.*
 
-# Build artifacts
+# Verilator
+obj_dir/
+*.verilated
+*.vlt
+verilator.log
+
+# GHDL
+work-obj*.cf
 *.o
-*.a
-*.out
+e~*.o
+*.cf
 
-# Jupyter
-.ipynb_checkpoints/
+# Icarus Verilog
+*.vvp
+
+# ModelSim/QuestaSim
+work/
+transcript
+vsim.wlf
+*.wlf
+modelsim.ini
+
+# =============================================================================
+# Synthesis - FPGA
+# =============================================================================
+# Xilinx Vivado
+*.jou
+*.log
+*.str
+*.pb
+*.xpr
+*.runs/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.gen/
+.Xil/
+*.bit
+*.bin
+*.ltx
+*.mmi
+*.dcp
+vivado*.zip
+hd_visual/
+NA/
+*.rpt
+
+# Intel Quartus
+*.qpf
+*.qsf
+*.qws
+db/
+incremental_db/
+output_files/
+simulation/
+*.sof
+*.pof
+*.rbf
+*.svf
+greybox_tmp/
+
+# Lattice
+*.ldf
+*.lpf
+impl/
+*.ngo
+
+# =============================================================================
+# Synthesis - ASIC
+# =============================================================================
+# OpenLane
+runs/
+designs/*/runs/
+*.def
+*.lef
+*.gds
+*.mag
+*.spef
+*.sdf
+*.lib
+
+# Yosys
+*.blif
+*.edif
+*.aig
+
+# SymbiYosys formal verification output
+*_bmc/
+*_cover/
+*_prove/
+*.smt2
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# =============================================================================
+# Generated RTL (keep gen/ directory but ignore contents)
+# =============================================================================
+gen/*.v
+gen/*.sv
+gen/*.json
+!gen/.gitkeep
+
+# =============================================================================
+# Documentation
+# =============================================================================
+site/
+docs/api/
+*.pdf
+
+# =============================================================================
+# IDE & Editors
+# =============================================================================
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains (PyCharm, etc.)
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+\#*\#
+.#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# =============================================================================
+# Operating System
+# =============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.nfs*
+
+# =============================================================================
+# Misc
+# =============================================================================
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.old
+
+# Archives
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.rar
+*.7z
+
+# Large files
+*.dat
+
+# Coverage reports
+verif/coverage/*
+!verif/coverage/.gitkeep
+coverage.xml
+
+# Local configuration overrides
+local.mk
+local.just
+*.local.yaml

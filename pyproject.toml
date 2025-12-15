@@ -10,9 +10,9 @@ readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.10"
 authors = [
-    { name = "Stillwater" }
+    { name = "Stillwater Supercomputing, Inc.", email = "info@stillwater-sc.com" }
 ]
-keywords = ["hdl", "rtl", "systolic-array", "dnn", "accelerator", "amaranth", "fpga"]
+keywords = ["hdl", "rtl", "systolic-array", "dnn", "accelerator", "amaranth", "fpga", "asic"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -24,45 +24,152 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
 ]
+
 dependencies = [
     "amaranth>=0.5.0",
-    "amaranth-boards>=0.1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "ruff>=0.1.0",
-    "mypy>=1.0",
+    "ruff>=0.1.6",
+    "mypy>=1.8",
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "pre-commit>=3.6",
 ]
 sim = [
+    "cocotb>=2.0",
+    "cocotb-bus>=0.2.1",
     "pyvcd>=0.4.0",
 ]
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.24",
+]
+all = ["systars[dev,sim,docs]"]
 
 [project.urls]
-Homepage = "https://github.com/stillwater/systars"
-Repository = "https://github.com/stillwater/systars"
+Homepage = "https://github.com/stillwater-sc/systars"
+Documentation = "https://stillwater-sc.github.io/systars"
+Repository = "https://github.com/stillwater-sc/systars.git"
+Issues = "https://github.com/stillwater-sc/systars/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/systars"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = "test_*.py"
-python_functions = "test_*"
-addopts = "-v --tb=short"
-
+# =============================================================================
+# Ruff Configuration
+# =============================================================================
 [tool.ruff]
-line-length = 100
 target-version = "py310"
+line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "C4"]
-ignore = ["E501"]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function calls in argument defaults
+    "C901",   # too complex
+]
 
+[tool.ruff.lint.isort]
+known-first-party = ["systars"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# =============================================================================
+# Pytest Configuration
+# =============================================================================
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests", "verif/cocotb/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "-ra",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "verilator: marks tests that require Verilator",
+    "ghdl: marks tests that require GHDL",
+    "icarus: marks tests that require Icarus Verilog",
+    "formal: marks formal verification tests",
+    "synthesis: marks tests requiring synthesis tools",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+# =============================================================================
+# Coverage Configuration
+# =============================================================================
+[tool.coverage.run]
+source = ["src/systars", "verif/cocotb"]
+branch = true
+parallel = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+show_missing = true
+precision = 2
+
+[tool.coverage.html]
+directory = "verif/coverage/html"
+
+# =============================================================================
+# MyPy Configuration
+# =============================================================================
 [tool.mypy]
 python_version = "3.10"
-warn_return_any = true
+warn_return_any = false
 warn_unused_configs = true
 ignore_missing_imports = true
+explicit_package_bases = true
+exclude = [
+    "build/",
+    "dist/",
+    ".venv/",
+]
+
+[[tool.mypy.overrides]]
+module = "cocotb.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "amaranth.*"
+ignore_missing_imports = true
+
+# cocotb testbench code uses dynamic types that mypy cannot verify
+[[tool.mypy.overrides]]
+module = [
+    "verif.cocotb.tb.*",
+    "verif.cocotb.tests.*",
+]
+ignore_errors = true
