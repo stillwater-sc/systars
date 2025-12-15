@@ -108,6 +108,10 @@ format:
     python3 -m ruff format {{src_dir}} {{verif_dir}} {{tests_dir}}
     python3 -m ruff check --fix {{src_dir}} {{verif_dir}} {{tests_dir}}
 
+# Check code formatting (for CI)
+format-check:
+    python3 -m ruff format --check {{src_dir}} {{verif_dir}} {{tests_dir}}
+
 # Run type checking with mypy
 typecheck:
     python3 -m mypy {{src_dir}}/systars
@@ -239,7 +243,7 @@ clean-all: clean clean-gen
 # =============================================================================
 
 # Run CI lint checks
-ci-lint: lint-python typecheck
+ci-lint: lint-python format-check typecheck
 
 # Run CI tests
 ci-test: test-unit test-cov
