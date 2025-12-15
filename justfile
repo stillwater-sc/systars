@@ -135,6 +135,9 @@ format:
     python3 -m ruff format {{src_dir}} {{verif_dir}} {{tests_dir}}
     python3 -m ruff check --fix {{src_dir}} {{verif_dir}} {{tests_dir}}
 
+# Alias for format (easy to remember)
+ruff: format
+
 # Check code formatting (for CI)
 format-check:
     python3 -m ruff format --check {{src_dir}} {{verif_dir}} {{tests_dir}}

@@ -73,7 +73,18 @@ jobs:
 
       - name: Lint with Verilator
         run: |
-          verilator --lint-only -Wall gen/pe.v
+          # Waivers for Amaranth/Yosys generated code artifacts:
+          # - WIDTHEXPAND/WIDTHTRUNC: Yosys optimizes sign extension
+          # - UNUSEDSIGNAL: Yosys leaves dead wire declarations
+          # - DECLFILENAME: Module name doesn't match filename
+          # - PROCASSINIT: Amaranth uses both initial values and procedural assigns
+          verilator --lint-only -Wall --timing \
+            -Wno-WIDTHEXPAND \
+            -Wno-WIDTHTRUNC \
+            -Wno-UNUSEDSIGNAL \
+            -Wno-DECLFILENAME \
+            -Wno-PROCASSINIT \
+            gen/pe.v
 
   pre-commit:
     name: Pre-commit Hooks
