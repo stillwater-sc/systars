@@ -2,7 +2,21 @@
 
 A Python-based systolic array RTL generator using [Amaranth HDL](https://amaranth-lang.org/).
 
-Systars generates synthesizable Verilog for configurable systolic array accelerators, targeting deep neural network (DNN) workloads. It is a modern Python reimplementation inspired by [Gemmini](https://github.com/ucb-bar/gemmini).
+Systars generates synthesizable Verilog for configurable systolic array accelerators, targeting linear algebra workloads in signal processing, sensor fusion, and real-time control. It is a modern Python reimplementation inspired by the original SYSTARS work at Delft University Of Technology.
+
+[SYSTARS: A CAD tool for the synthesis and analysis of VLSI systolic/wavefront arrays](https://ieeexplore.ieee.org/document/18078)
+
+@INPROCEEDINGS{18078,
+  author={Omtzigt, E.T.L.},
+  booktitle={[1988] Proceedings. International Conference on Systolic Arrays}, 
+  title={SYSTARS: A CAD tool for the synthesis and analysis of VLSI systolic/wavefront arrays}, 
+  year={1988},
+  volume={},
+  number={},
+  pages={383-391},
+  keywords={Very large scale integration;Algorithm design and analysis;Systolic arrays;Clustering algorithms;Partitioning algorithms;Design automation;Iterative algorithms;Animation;Computer graphics;Adaptive arrays},
+  doi={10.1109/ARRAYS.1988.18078}}
+
 
 ## Features
 
@@ -55,16 +69,16 @@ print(v)
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              Systolic Array                 │
+┌────────────────────────────────────────────┐
+│             Systolic Array                 │
 │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐           │
 │  │ PE  │→│ PE  │→│ PE  │→│ PE  │ ...       │
 │  └──┬──┘ └──┬──┘ └──┬──┘ └──┬──┘           │
-│     ↓       ↓       ↓       ↓               │
+│     ↓       ↓       ↓       ↓              │
 │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐           │
 │  │ PE  │→│ PE  │→│ PE  │→│ PE  │ ...       │
 │  └─────┘ └─────┘ └─────┘ └─────┘           │
-└─────────────────────────────────────────────┘
+└────────────────────────────────────────────┘
 ```
 
 ### Components
@@ -145,7 +159,7 @@ systars/
 
 ## Roadmap
 
-See [REWRITE_PLAN.md](../gemmini/REWRITE_PLAN.md) for the detailed implementation plan.
+See [implementation plan](./doc/plan/implementation.md) for the detailed implementation plan.
 
 ### Phase 1: Foundation (Current)
 - [x] Configuration system
@@ -177,5 +191,5 @@ BSD-3-Clause
 
 ## Acknowledgments
 
-- [Gemmini](https://github.com/ucb-bar/gemmini) - The original Chisel implementation
+- [SYSTARS](https://ieeexplore.ieee.org/document/18078) - The original C implementation of the systolic array layout generator
 - [Amaranth HDL](https://amaranth-lang.org/) - Python HDL framework

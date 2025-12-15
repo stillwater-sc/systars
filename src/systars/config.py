@@ -274,9 +274,9 @@ class SystolicConfig:
         assert self.acc_capacity_kb > 0, "acc_capacity_kb must be positive"
 
 
-# Pre-defined configurations matching Gemmini defaults
+# Pre-defined configurations 
 DEFAULT_CONFIG = SystolicConfig()
-"""Default configuration matching Gemmini's defaultConfig."""
+"""Default configuration."""
 
 LEAN_CONFIG = SystolicConfig(
     dataflow=Dataflow.WS,
