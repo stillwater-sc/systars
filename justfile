@@ -176,19 +176,35 @@ test: test-unit test-cocotb
 test-unit:
     python3 -m pytest {{tests_dir}} -v
 
-# Run cocotb simulation tests
+# Run cocotb simulation tests for all components
 test-cocotb:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -d "{{verif_dir}}/cocotb/tests/pe" ]; then
-        cd {{verif_dir}}/cocotb/tests/pe && SIM={{sim}} make test-all
-    else
-        echo "No cocotb tests found yet"
+    failed=0
+    for component in pe tile mesh scratchpad accumulator; do
+        testdir="{{verif_dir}}/cocotb/tests/$component"
+        if [ -d "$testdir" ]; then
+            echo "========================================"
+            echo "Running cocotb tests for: $component"
+            echo "========================================"
+            cd "$testdir" && SIM={{sim}} make test-all || failed=1
+        fi
+    done
+    if [ $failed -ne 0 ]; then
+        echo "Some cocotb tests failed!"
+        exit 1
     fi
+    echo "========================================"
+    echo "All cocotb tests passed!"
+    echo "========================================"
 
-# Run tests with Verilator
+# Run cocotb tests for a specific component
+test-cocotb-component component:
+    cd {{verif_dir}}/cocotb/tests/{{component}} && SIM={{sim}} make test-all
+
+# Run tests with Verilator (all components)
 test-verilator:
-    cd {{verif_dir}}/cocotb/tests/pe && SIM=verilator make test-all
+    just test-cocotb
 
 # Run tests with coverage
 test-cov:

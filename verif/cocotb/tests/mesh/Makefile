@@ -17,7 +17,10 @@ VERILOG_SOURCES = $(GEN_DIR)/mesh.v
 TOPLEVEL = Mesh
 
 # Python test module
-MODULE = test_mesh
+COCOTB_TEST_MODULES = test_mesh
+
+# Disable cocotb's pytest assertion rewriting (avoids conftest.py conflicts)
+export COCOTB_REWRITE_ASSERTION_FILES :=
 
 # Verilator specific options
 ifeq ($(SIM),verilator)

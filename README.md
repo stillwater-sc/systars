@@ -1,4 +1,4 @@
-# Systars
+# SYSTARS: A modern EDA tool for the generation, analysis, and synthesis of Systolic/Wavefront arrays
 
 A Python-based systolic array RTL generator using [Amaranth HDL](https://amaranth-lang.org/).
 
@@ -22,7 +22,7 @@ Systars generates synthesizable Verilog for configurable systolic array accelera
 ## Features
 
 - **Configurable Systolic Array**: Parameterized mesh dimensions, data types, and dataflows
-- **Dual Dataflow Support**: Output-stationary (OS) and weight-stationary (WS) modes
+- **Universal Dataflow Support**: Output-stationary (OS), input-stationary (IS), and weight-stationary (WS) modes
 - **Modern Python**: Clean, type-hinted Python 3.10+ codebase
 - **Amaranth HDL**: Leverage Python's expressiveness for hardware design
 - **Comprehensive Testing**: Unit tests with Amaranth's built-in simulator
