@@ -95,8 +95,8 @@ This document provides a comprehensive plan for rewriting the SYSTARS systolic a
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `mesh_rows` | 16 | Systolic array height |
-| `mesh_cols` | 16 | Systolic array width |
+| `grid_rows` | 16 | Systolic array height |
+| `grid_cols` | 16 | Systolic array width |
 | `tile_rows` | 1 | PEs per tile (height) |
 | `tile_cols` | 1 | PEs per tile (width) |
 | `input_bits` | 8 | Input/weight element width |
@@ -202,8 +202,8 @@ class Dataflow(Flag):
 @dataclass
 class SYSTARSConfig:
     # Systolic array dimensions
-    mesh_rows: int = 16
-    mesh_cols: int = 16
+    grid_rows: int = 16
+    grid_cols: int = 16
     tile_rows: int = 1
     tile_cols: int = 1
 
@@ -251,18 +251,18 @@ class SYSTARSConfig:
 
     # Pipeline tuning
     tile_latency: int = 0
-    mesh_output_delay: int = 1
+    array_output_delay: int = 1
 
     # Computed properties
     @property
     def dim(self) -> int:
         """Systolic array dimension (assumes square)"""
-        return self.mesh_rows * self.tile_rows
+        return self.grid_rows * self.tile_rows
 
     @property
     def sp_width(self) -> int:
         """Scratchpad row width in bits"""
-        return self.mesh_cols * self.tile_cols * self.input_bits
+        return self.grid_cols * self.tile_cols * self.input_bits
 
     @property
     def sp_bank_entries(self) -> int:
@@ -272,7 +272,7 @@ class SYSTARSConfig:
     @property
     def acc_bank_entries(self) -> int:
         """Rows per accumulator bank"""
-        acc_row_bits = self.mesh_cols * self.tile_cols * self.acc_bits
+        acc_row_bits = self.grid_cols * self.tile_cols * self.acc_bits
         return (self.acc_capacity_kb * 1024 * 8) // (self.acc_banks * acc_row_bits)
 ```
 
@@ -463,7 +463,7 @@ class SystolicArray(Elaboratable):
 
     def __init__(self, config: SystolicConfig):
         self.config = config
-        dim = config.mesh_rows  # Assume square for simplicity
+        dim = config.grid_rows  # Assume square for simplicity
 
         # Vector inputs
         self.in_a = [Signal(signed(config.input_bits), name=f"mesh_in_a_{i}")
@@ -482,7 +482,7 @@ class SystolicArray(Elaboratable):
     def elaborate(self, platform):
         m = Module()
         cfg = self.config
-        rows, cols = cfg.mesh_rows, cfg.mesh_cols
+        rows, cols = cfg.grid_rows, cfg.grid_cols
 
         # Create PEArray grid
         pe_arrays = [[PEArray(cfg) for _ in range(cols)] for _ in range(rows)]

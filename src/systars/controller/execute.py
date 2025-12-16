@@ -76,8 +76,8 @@ class ExecuteController(Component):
         self.config = config
 
         # Calculate dimensions
-        total_rows = config.mesh_rows * config.tile_rows
-        total_cols = config.mesh_cols * config.tile_cols
+        total_rows = config.grid_rows * config.tile_rows
+        total_cols = config.grid_cols * config.tile_cols
 
         ports = {
             # Command interface (simplified)
@@ -150,12 +150,12 @@ class ExecuteController(Component):
         m = Module()
         cfg = self.config
 
-        total_rows = cfg.mesh_rows * cfg.tile_rows
-        total_cols = cfg.mesh_cols * cfg.tile_cols
+        total_rows = cfg.grid_rows * cfg.tile_rows
+        total_cols = cfg.grid_cols * cfg.tile_cols
 
         # Pipeline latency through the array
-        # For a mesh, data takes mesh_rows + mesh_cols - 1 cycles to traverse
-        array_latency = cfg.mesh_rows + cfg.mesh_cols - 1
+        # For a grid, data takes grid_rows + grid_cols - 1 cycles to traverse
+        array_latency = cfg.grid_rows + cfg.grid_cols - 1
 
         # =================================================================
         # Internal Registers

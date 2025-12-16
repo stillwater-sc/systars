@@ -27,8 +27,8 @@ class TestAccumulatorBank:
             acc_banks=2,
             acc_capacity_kb=8,  # Smaller for faster tests
             acc_latency=2,  # Short latency
-            mesh_rows=4,
-            mesh_cols=4,
+            grid_rows=4,
+            grid_cols=4,
             tile_rows=1,
             tile_cols=1,
         )
@@ -236,8 +236,8 @@ class TestAccumulator:
             acc_banks=2,
             acc_capacity_kb=8,
             acc_latency=2,
-            mesh_rows=4,
-            mesh_cols=4,
+            grid_rows=4,
+            grid_cols=4,
             tile_rows=1,
             tile_cols=1,
         )

@@ -1,8 +1,8 @@
 """
-Cocotb tests for the Mesh module.
+Cocotb tests for the SystolicArray module.
 
-These tests verify the Mesh module behavior using cycle-accurate RTL simulation.
-The Mesh adds pipeline registers between tiles, so data takes multiple cycles
+These tests verify the SystolicArray module behavior using cycle-accurate RTL simulation.
+The SystolicArray adds pipeline registers between PEArrays, so data takes multiple cycles
 to propagate through.
 """
 
@@ -12,8 +12,8 @@ from cocotb.triggers import RisingEdge
 
 
 @cocotb.test()
-async def test_mesh_reset(dut):
-    """Test Mesh initial state after reset."""
+async def test_array_reset(dut):
+    """Test SystolicArray initial state after reset."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -24,12 +24,12 @@ async def test_mesh_reset(dut):
     dut.rst.value = 0
     await RisingEdge(dut.clk)
 
-    dut._log.info("Mesh reset complete")
+    dut._log.info("SystolicArray reset complete")
 
 
 @cocotb.test()
-async def test_mesh_simple_operation(dut):
-    """Test simple operation through 2x2 Mesh."""
+async def test_array_simple_operation(dut):
+    """Test simple operation through 2x2 SystolicArray."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -68,8 +68,8 @@ async def test_mesh_simple_operation(dut):
 
 
 @cocotb.test()
-async def test_mesh_control_passthrough(dut):
-    """Test that control signals pass through the Mesh correctly."""
+async def test_array_control_passthrough(dut):
+    """Test that control signals pass through the SystolicArray correctly."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -94,7 +94,7 @@ async def test_mesh_control_passthrough(dut):
     dut.in_control_dataflow.value = 1
     dut.in_control_propagate.value = 1
 
-    # Wait for control to propagate through mesh pipeline
+    # Wait for control to propagate through array pipeline
     for _ in range(6):
         await RisingEdge(dut.clk)
 
@@ -105,12 +105,12 @@ async def test_mesh_control_passthrough(dut):
     assert dut.out_control_dataflow.value == 1, "out_control_dataflow should be 1"
     assert dut.out_control_propagate.value == 1, "out_control_propagate should be 1"
 
-    dut._log.info("Mesh control pass-through test passed")
+    dut._log.info("SystolicArray control pass-through test passed")
 
 
 @cocotb.test()
-async def test_mesh_a_flow(dut):
-    """Test that A data flows through the mesh horizontally."""
+async def test_array_a_flow(dut):
+    """Test that A data flows through the array horizontally."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -143,12 +143,12 @@ async def test_mesh_a_flow(dut):
     assert dut.out_a_0.value == 77, f"out_a_0 should be 77, got {dut.out_a_0.value}"
     assert dut.out_a_1.value == 88, f"out_a_1 should be 88, got {dut.out_a_1.value}"
 
-    dut._log.info("Mesh A-flow test passed")
+    dut._log.info("SystolicArray A-flow test passed")
 
 
 @cocotb.test()
-async def test_mesh_pipeline_latency(dut):
-    """Test that mesh has expected pipeline latency between tiles."""
+async def test_array_pipeline_latency(dut):
+    """Test that array has expected pipeline latency between PEArrays."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -190,5 +190,5 @@ async def test_mesh_pipeline_latency(dut):
             pulse_arrived = True
             break
 
-    assert pulse_arrived, "Pulse should propagate through mesh"
-    dut._log.info(f"Pulse took {cycles} cycles to propagate through mesh")
+    assert pulse_arrived, "Pulse should propagate through array"
+    dut._log.info(f"Pulse took {cycles} cycles to propagate through array")

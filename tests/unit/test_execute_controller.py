@@ -26,8 +26,8 @@ class TestExecuteControllerInstantiation:
     def config(self):
         """Small configuration for faster tests."""
         return SystolicConfig(
-            mesh_rows=2,
-            mesh_cols=2,
+            grid_rows=2,
+            grid_cols=2,
             tile_rows=1,
             tile_cols=1,
             input_bits=8,
@@ -89,8 +89,8 @@ class TestExecuteControllerInstantiation:
 
     def test_array_vector_ports(self, config, controller):
         """Test that controller has correct number of array vector ports."""
-        total_rows = config.mesh_rows * config.tile_rows
-        total_cols = config.mesh_cols * config.tile_cols
+        total_rows = config.grid_rows * config.tile_rows
+        total_cols = config.grid_cols * config.tile_cols
 
         # Input vector ports
         for i in range(total_rows):
@@ -130,8 +130,8 @@ class TestExecuteControllerIdleState:
     def config(self):
         """Small configuration for faster tests."""
         return SystolicConfig(
-            mesh_rows=2,
-            mesh_cols=2,
+            grid_rows=2,
+            grid_cols=2,
             tile_rows=1,
             tile_cols=1,
             spad_read_delay=1,
@@ -170,8 +170,8 @@ class TestExecuteControllerConfig:
     def config(self):
         """Small configuration for faster tests."""
         return SystolicConfig(
-            mesh_rows=2,
-            mesh_cols=2,
+            grid_rows=2,
+            grid_cols=2,
             tile_rows=1,
             tile_cols=1,
             spad_read_delay=1,
@@ -229,8 +229,8 @@ class TestExecuteControllerPreload:
     def config(self):
         """Small configuration for faster tests."""
         return SystolicConfig(
-            mesh_rows=2,
-            mesh_cols=2,
+            grid_rows=2,
+            grid_cols=2,
             tile_rows=1,
             tile_cols=1,
             spad_read_delay=1,
@@ -327,8 +327,8 @@ class TestExecuteControllerCompute:
     def config(self):
         """Small configuration for faster tests."""
         return SystolicConfig(
-            mesh_rows=2,
-            mesh_cols=2,
+            grid_rows=2,
+            grid_cols=2,
             tile_rows=1,
             tile_cols=1,
             spad_read_delay=1,
@@ -463,8 +463,8 @@ class TestExecuteControllerElaboration:
     def config(self):
         """Small configuration for faster tests."""
         return SystolicConfig(
-            mesh_rows=2,
-            mesh_cols=2,
+            grid_rows=2,
+            grid_cols=2,
             tile_rows=1,
             tile_cols=1,
         )
@@ -510,11 +510,11 @@ class TestExecuteControllerElaboration:
 class TestExecuteControllerLargerConfig:
     """Test ExecuteController with larger configurations."""
 
-    def test_4x4_mesh(self):
-        """Test with 4x4 mesh configuration."""
+    def test_4x4_array(self):
+        """Test with 4x4 SystolicArray configuration."""
         config = SystolicConfig(
-            mesh_rows=4,
-            mesh_cols=4,
+            grid_rows=4,
+            grid_cols=4,
             tile_rows=1,
             tile_cols=1,
         )
@@ -528,11 +528,11 @@ class TestExecuteControllerLargerConfig:
         assert hasattr(ctrl, "array_out_c_0")
         assert hasattr(ctrl, "array_out_c_3")
 
-    def test_tiled_mesh(self):
-        """Test with tiled mesh configuration (2x2 mesh of 2x2 tiles)."""
+    def test_2x2_array_with_2x2_pe_arrays(self):
+        """Test with 2x2 SystolicArray of 2x2 PEArrays configuration."""
         config = SystolicConfig(
-            mesh_rows=2,
-            mesh_cols=2,
+            grid_rows=2,
+            grid_cols=2,
             tile_rows=2,
             tile_cols=2,
         )

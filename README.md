@@ -74,11 +74,11 @@ from amaranth.back import verilog
 
 # Create a configuration
 config = SystolicConfig(
-    mesh_rows=16,
-    mesh_cols=16,
+    grid_rows=16,
+    grid_cols=16,
     input_bits=8,
     acc_bits=32,
-    dataflow=Dataflow.BOTH,
+    dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY,
 )
 
 # Generate a Processing Element
@@ -109,11 +109,12 @@ print(v)
 | Component | Status | Description |
 |-----------|--------|-------------|
 | PE | ✅ Done | Processing Element with MAC |
-| Tile | 🔲 TODO | Combinational PE grid |
-| Mesh | 🔲 TODO | Pipelined tile array |
-| Scratchpad | 🔲 TODO | Multi-bank local memory |
-| Accumulator | 🔲 TODO | Result memory with scale/activation |
-| Controllers | 🔲 TODO | Load/Execute/Store command handling |
+| PEArray | ✅ Done | Combinational PE grid (tile_rows × tile_cols) |
+| SystolicArray | ✅ Done | Pipelined PEArray grid (grid_rows × grid_cols) |
+| Scratchpad | ✅ Done | Multi-bank local memory |
+| Accumulator | ✅ Done | Result memory with scale/activation |
+| ExecuteController | ✅ Done | Execute command handling |
+| Controllers | 🔲 TODO | Load/Store command handling |
 | DMA | 🔲 TODO | Memory transfer engines |
 
 ## Configuration
@@ -122,11 +123,13 @@ Key parameters in `SystolicConfig`:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `mesh_rows` | 16 | Systolic array height |
-| `mesh_cols` | 16 | Systolic array width |
+| `grid_rows` | 16 | SystolicArray height (number of PEArrays) |
+| `grid_cols` | 16 | SystolicArray width (number of PEArrays) |
+| `tile_rows` | 1 | PEArray height (PEs per tile) |
+| `tile_cols` | 1 | PEArray width (PEs per tile) |
 | `input_bits` | 8 | Input element width |
 | `acc_bits` | 32 | Accumulator width |
-| `dataflow` | BOTH | WS, OS, or runtime selectable |
+| `dataflow` | OUTPUT_STATIONARY \| B_STATIONARY | Supported dataflow modes |
 | `sp_capacity_kb` | 256 | Scratchpad size |
 | `acc_capacity_kb` | 64 | Accumulator size |
 

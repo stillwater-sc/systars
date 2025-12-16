@@ -1,7 +1,7 @@
 """
 SystolicArray - A pipelined grid of PEArrays forming the systolic matmul array.
 
-The SystolicArray instantiates a mesh_rows x mesh_cols grid of PEArrays and adds
+The SystolicArray instantiates a grid_rows x grid_cols grid of PEArrays and adds
 pipeline registers between boundaries to enable proper systolic data flow for
 the operation D = A × B + C.
 
@@ -39,7 +39,7 @@ class SystolicArray(Component):
     """
     SystolicArray - A pipelined grid of PEArrays for systolic matmul.
 
-    The SystolicArray instantiates a mesh_rows x mesh_cols grid of PEArrays
+    The SystolicArray instantiates a grid_rows x grid_cols grid of PEArrays
     and wires them together with pipeline registers at boundaries.
 
     Ports:
@@ -64,17 +64,17 @@ class SystolicArray(Component):
     def __init__(self, config: SystolicConfig):
         self.config = config
 
-        # Mesh dimensions (in tiles)
-        mesh_rows = config.mesh_rows
-        mesh_cols = config.mesh_cols
+        # Grid dimensions (in PEArrays)
+        grid_rows = config.grid_rows
+        grid_cols = config.grid_cols
 
         # PEArray dimensions (PEs per array)
         tile_rows = config.tile_rows
         tile_cols = config.tile_cols
 
         # Total dimensions (in PEs)
-        total_rows = mesh_rows * tile_rows
-        total_cols = mesh_cols * tile_cols
+        total_rows = grid_rows * tile_rows
+        total_cols = grid_cols * tile_cols
 
         # Build port signature dynamically based on mesh dimensions
         ports = {}
@@ -119,23 +119,23 @@ class SystolicArray(Component):
         m = Module()
         cfg = self.config
 
-        mesh_rows = cfg.mesh_rows
-        mesh_cols = cfg.mesh_cols
+        grid_rows = cfg.grid_rows
+        grid_cols = cfg.grid_cols
         tile_rows = cfg.tile_rows
         tile_cols = cfg.tile_cols
 
         # Create PEArray grid
-        pe_arrays = [[PEArray(cfg) for _ in range(mesh_cols)] for _ in range(mesh_rows)]
+        pe_arrays = [[PEArray(cfg) for _ in range(grid_cols)] for _ in range(grid_rows)]
 
         # Register all PEArrays as submodules
-        for mr in range(mesh_rows):
-            for mc in range(mesh_cols):
+        for mr in range(grid_rows):
+            for mc in range(grid_cols):
                 m.submodules[f"pe_array_{mr}_{mc}"] = pe_arrays[mr][mc]
 
         # =================================================================
         # Horizontal (A) Wiring - flows left to right
         # =================================================================
-        for mr in range(mesh_rows):
+        for mr in range(grid_rows):
             # First tile column gets external inputs
             for tr in range(tile_rows):
                 global_row = mr * tile_rows + tr
@@ -144,24 +144,24 @@ class SystolicArray(Component):
                 )
 
             # Chain through tile columns with pipeline registers
-            for mc in range(1, mesh_cols):
+            for mc in range(1, grid_cols):
                 for tr in range(tile_rows):
                     # Pipeline register between tiles
                     pipe_a = Signal(signed(cfg.input_bits), name=f"pipe_a_{mr}_{mc}_{tr}")
                     m.d.sync += pipe_a.eq(getattr(pe_arrays[mr][mc - 1], f"out_a_{tr}"))
                     m.d.comb += getattr(pe_arrays[mr][mc], f"in_a_{tr}").eq(pipe_a)
 
-            # Last tile column outputs to mesh edge
+            # Last tile column outputs to grid edge
             for tr in range(tile_rows):
                 global_row = mr * tile_rows + tr
                 m.d.comb += getattr(self, f"out_a_{global_row}").eq(
-                    getattr(pe_arrays[mr][mesh_cols - 1], f"out_a_{tr}")
+                    getattr(pe_arrays[mr][grid_cols - 1], f"out_a_{tr}")
                 )
 
         # =================================================================
         # Vertical (B, D) Wiring - flows top to bottom
         # =================================================================
-        for mc in range(mesh_cols):
+        for mc in range(grid_cols):
             # First tile row gets external inputs
             for tc in range(tile_cols):
                 global_col = mc * tile_cols + tc
@@ -173,7 +173,7 @@ class SystolicArray(Component):
                 )
 
             # Chain through tile rows with pipeline registers
-            for mr in range(1, mesh_rows):
+            for mr in range(1, grid_rows):
                 for tc in range(tile_cols):
                     # Pipeline registers between tiles
                     pipe_b = Signal(signed(cfg.output_bits), name=f"pipe_b_{mr}_{mc}_{tc}")
@@ -185,14 +185,14 @@ class SystolicArray(Component):
                     m.d.comb += getattr(pe_arrays[mr][mc], f"in_b_{tc}").eq(pipe_b)
                     m.d.comb += getattr(pe_arrays[mr][mc], f"in_d_{tc}").eq(pipe_d)
 
-            # Last tile row outputs to mesh edge
+            # Last tile row outputs to grid edge
             for tc in range(tile_cols):
                 global_col = mc * tile_cols + tc
                 m.d.comb += getattr(self, f"out_b_{global_col}").eq(
-                    getattr(pe_arrays[mesh_rows - 1][mc], f"out_b_{tc}")
+                    getattr(pe_arrays[grid_rows - 1][mc], f"out_b_{tc}")
                 )
                 m.d.comb += getattr(self, f"out_c_{global_col}").eq(
-                    getattr(pe_arrays[mesh_rows - 1][mc], f"out_c_{tc}")
+                    getattr(pe_arrays[grid_rows - 1][mc], f"out_c_{tc}")
                 )
 
         # =================================================================
@@ -201,7 +201,7 @@ class SystolicArray(Component):
         # Row r > 0: use previous row's output (already registered in tile)
         # This synchronizes control with data as it flows down
         # =================================================================
-        for mc in range(mesh_cols):
+        for mc in range(grid_cols):
             # First row gets direct external control
             m.d.comb += [
                 pe_arrays[0][mc].in_control_dataflow.eq(self.in_control_dataflow),
@@ -213,7 +213,7 @@ class SystolicArray(Component):
             ]
 
             # Subsequent rows chain from previous row's output
-            for mr in range(1, mesh_rows):
+            for mr in range(1, grid_rows):
                 m.d.comb += [
                     pe_arrays[mr][mc].in_control_dataflow.eq(
                         pe_arrays[mr - 1][mc].out_control_dataflow
@@ -230,7 +230,7 @@ class SystolicArray(Component):
         # =================================================================
         # Control Output - from bottom-right tile (longest path)
         # =================================================================
-        bottom_right = pe_arrays[mesh_rows - 1][mesh_cols - 1]
+        bottom_right = pe_arrays[grid_rows - 1][grid_cols - 1]
         m.d.comb += [
             self.out_control_dataflow.eq(bottom_right.out_control_dataflow),
             self.out_control_propagate.eq(bottom_right.out_control_propagate),

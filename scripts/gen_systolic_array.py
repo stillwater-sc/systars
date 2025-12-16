@@ -19,7 +19,7 @@ def main():
     gen_dir.mkdir(exist_ok=True)
 
     # Generate 2x2 systolic array with 1x1 PEArrays (minimal with pipeline registers)
-    config_2x2 = SystolicConfig(mesh_rows=2, mesh_cols=2, tile_rows=1, tile_cols=1)
+    config_2x2 = SystolicConfig(grid_rows=2, grid_cols=2, tile_rows=1, tile_cols=1)
     systolic_array_2x2 = SystolicArray(config_2x2)
 
     output_path = gen_dir / "systolic_array.v"
@@ -29,7 +29,7 @@ def main():
     print(f"Generated {output_path}")
 
     # Also generate a 4x4 systolic array for larger-scale testing
-    config_4x4 = SystolicConfig(mesh_rows=4, mesh_cols=4, tile_rows=1, tile_cols=1)
+    config_4x4 = SystolicConfig(grid_rows=4, grid_cols=4, tile_rows=1, tile_cols=1)
     systolic_array_4x4 = SystolicArray(config_4x4)
 
     output_path_4x4 = gen_dir / "systolic_array_4x4.v"

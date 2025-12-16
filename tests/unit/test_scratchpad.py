@@ -27,8 +27,8 @@ class TestScratchpadBank:
             sp_banks=4,
             sp_capacity_kb=16,  # Smaller for faster tests
             spad_read_delay=2,  # Shorter latency
-            mesh_rows=4,
-            mesh_cols=4,
+            grid_rows=4,
+            grid_cols=4,
             tile_rows=1,
             tile_cols=1,
         )
@@ -151,8 +151,8 @@ class TestScratchpad:
             sp_banks=4,
             sp_capacity_kb=16,
             spad_read_delay=2,
-            mesh_rows=4,
-            mesh_cols=4,
+            grid_rows=4,
+            grid_cols=4,
             tile_rows=1,
             tile_cols=1,
         )

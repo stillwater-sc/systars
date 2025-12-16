@@ -55,7 +55,7 @@ class SystolicConfig:
     systolic array accelerator. Parameters are organized by subsystem.
 
     Example:
-        >>> config = SystolicConfig(mesh_rows=16, mesh_cols=16)
+        >>> config = SystolicConfig(grid_rows=16, grid_cols=16)
         >>> print(config.dim)  # 16
         >>> print(config.sp_width)  # 128 (16 * 8 bits)
     """
@@ -63,11 +63,11 @@ class SystolicConfig:
     # =========================================================================
     # Systolic Array Dimensions
     # =========================================================================
-    mesh_rows: int = 16
-    """Number of tile rows in the mesh (typically 16)."""
+    grid_rows: int = 16
+    """Number of PEArray rows in the SystolicArray grid (typically 16)."""
 
-    mesh_cols: int = 16
-    """Number of tile columns in the mesh (typically 16)."""
+    grid_cols: int = 16
+    """Number of PEArray columns in the SystolicArray grid (typically 16)."""
 
     tile_rows: int = 1
     """Number of PE rows within each tile (typically 1)."""
@@ -200,26 +200,26 @@ class SystolicConfig:
     tile_latency: int = 0
     """Pipeline latency within a tile (0 = combinational)."""
 
-    mesh_output_delay: int = 1
-    """Output delay from mesh in cycles."""
+    array_output_delay: int = 1
+    """Output delay from SystolicArray in cycles."""
 
     # =========================================================================
     # Computed Properties
     # =========================================================================
     @property
     def dim(self) -> int:
-        """Systolic array dimension (assumes square: mesh_rows * tile_rows)."""
-        return self.mesh_rows * self.tile_rows
+        """Systolic array dimension (assumes square: grid_rows * tile_rows)."""
+        return self.grid_rows * self.tile_rows
 
     @property
     def total_pes(self) -> int:
         """Total number of processing elements."""
-        return self.mesh_rows * self.mesh_cols * self.tile_rows * self.tile_cols
+        return self.grid_rows * self.grid_cols * self.tile_rows * self.tile_cols
 
     @property
     def sp_width(self) -> int:
         """Scratchpad row width in bits."""
-        return self.mesh_cols * self.tile_cols * self.input_bits
+        return self.grid_cols * self.tile_cols * self.input_bits
 
     @property
     def sp_width_bytes(self) -> int:
@@ -240,7 +240,7 @@ class SystolicConfig:
     @property
     def acc_width(self) -> int:
         """Accumulator row width in bits."""
-        return self.mesh_cols * self.tile_cols * self.acc_bits
+        return self.grid_cols * self.tile_cols * self.acc_bits
 
     @property
     def acc_width_bytes(self) -> int:
@@ -285,8 +285,8 @@ class SystolicConfig:
 
     def __post_init__(self):
         """Validate configuration parameters."""
-        assert self.mesh_rows > 0, "mesh_rows must be positive"
-        assert self.mesh_cols > 0, "mesh_cols must be positive"
+        assert self.grid_rows > 0, "grid_rows must be positive"
+        assert self.grid_cols > 0, "grid_cols must be positive"
         assert self.tile_rows > 0, "tile_rows must be positive"
         assert self.tile_cols > 0, "tile_cols must be positive"
         assert self.input_bits > 0, "input_bits must be positive"
@@ -317,13 +317,13 @@ CHIP_CONFIG = SystolicConfig(
     dataflow=Dataflow.B_STATIONARY,
     acc_singleported=True,
     acc_sub_banks=2,
-    mesh_output_delay=2,
+    array_output_delay=2,
 )
 """Configuration optimized for tapeout."""
 
 LARGE_CONFIG = SystolicConfig(
-    mesh_rows=32,
-    mesh_cols=32,
+    grid_rows=32,
+    grid_cols=32,
     sp_capacity_kb=512,
     acc_capacity_kb=128,
 )
