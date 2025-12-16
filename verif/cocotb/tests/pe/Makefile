@@ -17,7 +17,10 @@ VERILOG_SOURCES = $(GEN_DIR)/pe.v
 TOPLEVEL = PE
 
 # Python test module
-MODULE = test_pe
+COCOTB_TEST_MODULES = test_pe
+
+# Disable cocotb's pytest assertion rewriting (avoids conftest.py conflicts)
+export COCOTB_REWRITE_ASSERTION_FILES :=
 
 # Verilator specific options
 ifeq ($(SIM),verilator)

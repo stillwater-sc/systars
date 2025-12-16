@@ -117,6 +117,9 @@ markers = [
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
+    # Amaranth warns when elaboratables are created but not used - this happens
+    # legitimately in pytest fixtures where not every test uses every fixture
+    "ignore::amaranth.hdl._ir.UnusedElaboratable",
 ]
 
 # =============================================================================

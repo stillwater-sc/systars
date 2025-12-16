@@ -13,7 +13,7 @@ from cocotb.triggers import RisingEdge
 async def test_pe_reset(dut):
     """Test PE initial state after reset."""
     # Create clock
-    clock = Clock(dut.clk, 10, units="ns")
+    clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
     # Reset
@@ -31,7 +31,7 @@ async def test_pe_reset(dut):
 async def test_pe_simple_mac(dut):
     """Test a simple multiply-accumulate operation."""
     # Create clock
-    clock = Clock(dut.clk, 10, units="ns")
+    clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
     # Reset
@@ -68,7 +68,7 @@ async def test_pe_simple_mac(dut):
 async def test_pe_passthrough(dut):
     """Test that control signals pass through correctly."""
     # Create clock
-    clock = Clock(dut.clk, 10, units="ns")
+    clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
     # Reset
@@ -105,7 +105,7 @@ async def test_pe_passthrough(dut):
 async def test_pe_accumulation(dut):
     """Test accumulation over multiple cycles."""
     # Create clock
-    clock = Clock(dut.clk, 10, units="ns")
+    clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
     # Reset
@@ -144,7 +144,7 @@ async def test_pe_accumulation(dut):
 async def test_pe_signed_values(dut):
     """Test PE with signed values."""
     # Create clock
-    clock = Clock(dut.clk, 10, units="ns")
+    clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
     # Reset
@@ -170,4 +170,4 @@ async def test_pe_signed_values(dut):
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
 
-    dut._log.info(f"Signed result: out_c = {dut.out_c.value.signed_integer}")
+    dut._log.info(f"Signed result: out_c = {dut.out_c.value.to_signed()}")

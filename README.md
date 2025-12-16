@@ -193,9 +193,9 @@ See [implementation plan](./doc/plan/implementation.md) for the detailed impleme
 
 ### Phase 2: Memory System
 
-- [ ] Local address encoding
-- [ ] Scratchpad banks
-- [ ] Accumulator with scale/activation
+- [x] Local address encoding
+- [x] Scratchpad banks
+- [x] Accumulator with scale/activation
 
 ### Phase 3: Controllers
 
