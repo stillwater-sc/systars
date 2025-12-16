@@ -24,7 +24,9 @@ examples/
 │   └── tensor_utils.py         # Matrix packing/tiling utilities
 │
 ├── gemm/                        # Matrix multiply demonstrations
-│   └── 01_simple_matmul.py     # Basic C = A × B
+│   ├── 01_simple_matmul.py     # Basic C = A × B
+│   ├── 02_animated_wavefront.py # Terminal wavefront animation
+│   └── 03_wavefront_gif.py     # Generate shareable GIF
 │
 ├── nn/                          # Neural network operators (planned)
 │   ├── 01_fc_layer.py          # Fully connected layer
@@ -81,6 +83,61 @@ tiles = tile_matrix(large_matrix, tile_rows=4, tile_cols=4)
 # Pack for bus transfer
 beats = pack_matrix_int8(matrix, buswidth=128)
 ```
+
+## Wavefront Visualization
+
+The systolic array processes data in a wavefront pattern. Run the animated demo to see this:
+
+```bash
+# Animated visualization (press Enter to start, Ctrl+C to skip)
+python examples/gemm/02_animated_wavefront.py
+
+# Step-by-step mode (press Enter for each cycle)
+python examples/gemm/02_animated_wavefront.py --step
+
+# Larger array, faster animation
+python examples/gemm/02_animated_wavefront.py --size 6 --delay 200
+```
+
+The visualization shows:
+
+- **Skewed inputs**: Row i of A is delayed by i cycles, Column j of B by j cycles
+- **Wavefront propagation**: Diagonal bands of activity moving through the array
+- **PE states**: Current a, b values and ongoing `a×b` computations
+- **Accumulator buildup**: C values accumulating as partial products arrive
+
+```
+Wavefront Pattern (cycle when each PE activates):
+       Col0   Col1   Col2   Col3
+Row0 [   0     1     2     3  ]
+Row1 [   1     2     3     4  ]
+Row2 [   2     3     4     5  ]
+Row3 [   3     4     5     6  ]
+```
+
+### Generating Shareable GIFs
+
+For sharing on Slack, docs, or presentations:
+
+```bash
+# Install dependencies (if not already installed)
+pip install matplotlib pillow
+
+# Generate a GIF
+python examples/gemm/03_wavefront_gif.py --output wavefront.gif
+
+# Customize size, speed, and resolution
+python examples/gemm/03_wavefront_gif.py --size 4 --fps 2 --dpi 150 --output systolic.gif
+
+# Preview in a window instead of saving
+python examples/gemm/03_wavefront_gif.py --show
+```
+
+The GIF shows three panels:
+
+1. **Input matrices** with highlighted elements being fed
+2. **PE array** with color-coded states (green=computing, blue=has data)
+3. **Accumulator** with values building up
 
 ## Dataflow Modes
 
