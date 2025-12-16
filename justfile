@@ -161,9 +161,9 @@ gen-pe:
 gen-tile:
     python3 {{project_root}}/scripts/gen_tile.py
 
-# Generate Mesh Verilog (when implemented)
+# Generate Mesh Verilog
 gen-mesh:
-    @echo "Mesh generation not yet implemented"
+    python3 {{project_root}}/scripts/gen_mesh.py
 
 # =============================================================================
 # Testing

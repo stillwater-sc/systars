@@ -188,8 +188,8 @@ See [implementation plan](./doc/plan/implementation.md) for the detailed impleme
 
 - [x] Configuration system
 - [x] Processing Element (PE)
-- [ ] Tile
-- [ ] Mesh
+- [x] Tile
+- [x] Mesh
 
 ### Phase 2: Memory System
 
