@@ -6,6 +6,7 @@ Systars generates synthesizable Verilog for configurable systolic array accelera
 
 [SYSTARS: A CAD tool for the synthesis and analysis of VLSI systolic/wavefront arrays](https://ieeexplore.ieee.org/document/18078)
 
+```bibtex
 @INPROCEEDINGS{18078,
   author={Omtzigt, E.T.L.},
   booktitle={[1988] Proceedings. International Conference on Systolic Arrays},
@@ -16,6 +17,7 @@ Systars generates synthesizable Verilog for configurable systolic array accelera
   pages={383-391},
   keywords={Very large scale integration;Algorithm design and analysis;Systolic arrays;Clustering algorithms;Partitioning algorithms;Design automation;Iterative algorithms;Animation;Computer graphics;Adaptive arrays},
   doi={10.1109/ARRAYS.1988.18078}}
+```
 
 ## Features
 

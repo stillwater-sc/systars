@@ -8,5 +8,6 @@ This module contains the fundamental building blocks:
 """
 
 from .pe import PE, PEWithShift
+from .tile import Tile
 
-__all__ = ["PE", "PEWithShift"]
+__all__ = ["PE", "PEWithShift", "Tile"]

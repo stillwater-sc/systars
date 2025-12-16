@@ -151,11 +151,15 @@ typecheck:
 # =============================================================================
 
 # Generate all RTL
-gen: gen-pe gen-mesh
+gen: gen-pe gen-tile gen-mesh
 
 # Generate PE Verilog
 gen-pe:
     python3 {{project_root}}/scripts/gen_pe.py
+
+# Generate Tile Verilog
+gen-tile:
+    python3 {{project_root}}/scripts/gen_tile.py
 
 # Generate Mesh Verilog (when implemented)
 gen-mesh:
