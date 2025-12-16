@@ -1,119 +1,501 @@
 """
-Command definitions for the systars accelerator.
+Command and descriptor definitions for the systars accelerator.
 
-This module defines the command opcodes and helper functions for encoding/decoding
-commands sent to the systolic array controllers.
+This module defines:
+1. DMA opcodes for descriptor-based memory operations
+2. Execute controller opcodes for compute operations
+3. Descriptor format for chained DMA operations
+4. Helper functions for creating descriptors
 
-Command Format (simplified 64-bit):
-    [63:56] opcode    - 8-bit operation code
-    [55:48] id/tag    - 8-bit operation ID for tracking
-    [47:32] flags     - 16-bit flags/configuration
-    [31:0]  data      - 32-bit address or immediate data
+Descriptor Format (64 bytes, 8-byte aligned):
+    Offset  Size  Field
+    0x00    1     opcode      - Operation code (MEMCPY, FILL, etc.)
+    0x01    1     flags       - Operation flags
+    0x02    2     reserved
+    0x04    4     length      - Transfer length in bytes
+    0x08    8     src_addr    - Source address (or fill pattern)
+    0x10    8     dst_addr    - Destination address
+    0x18    8     next_desc   - Pointer to next descriptor (0 = end of chain)
+    0x20    8     completion  - Completion status writeback address
+    0x28    8     user_data   - User-defined data (passed to completion)
+    0x30    8     reserved2
+    0x38    8     reserved3
 
-For dual-address commands, a second 64-bit word provides the destination address.
+Memory Map (physical addresses):
+    0x0000_0000_0000 - 0x0000_FFFF_FFFF : External DRAM (via DMA)
+    0x0001_0000_0000 - 0x0001_0000_FFFF : Scratchpad (local)
+    0x0002_0000_0000 - 0x0002_0000_FFFF : Accumulator (local)
 """
 
-from enum import IntEnum
+from dataclasses import dataclass
+from enum import IntEnum, IntFlag
+
+# =============================================================================
+# DMA Opcodes (descriptor-based operations)
+# =============================================================================
 
 
-class OpCode(IntEnum):
+class DmaOpcode(IntEnum):
     """
-    Command opcodes for systars accelerator controllers.
+    DMA operation codes for descriptor-based memory transfers.
 
-    Organized by functional unit:
-    - 0x00-0x0F: Configuration commands
-    - 0x10-0x1F: Execute commands
-    - 0x20-0x2F: Load commands
-    - 0x30-0x3F: Store commands
-    - 0xF0-0xFF: System commands
+    These are operation-oriented (what to do) rather than direction-oriented.
+    The source and destination addresses determine the actual data path.
     """
 
-    # Configuration commands
-    CONFIG_EX = 0x00  # Configure execute controller
-    CONFIG_LD = 0x01  # Configure load controller
-    CONFIG_ST = 0x02  # Configure store controller
+    # Data movement operations
+    MEMCPY = 0x00  # Copy src -> dst
+    FILL = 0x01  # Fill dst with pattern from src field
+    GATHER = 0x02  # Gather scattered elements to contiguous dst
+    SCATTER = 0x03  # Scatter contiguous src to scattered locations
 
-    # Execute commands
-    PRELOAD = 0x10  # Preload bias/initial values from accumulator to array
-    COMPUTE = 0x11  # Execute matmul: read from scratchpad, write to accumulator
+    # Data integrity operations
+    CRC32 = 0x10  # Compute CRC32 over src region
+    CHECKSUM = 0x11  # Compute simple checksum
 
-    # Load commands (external memory -> scratchpad)
-    MVIN = 0x20  # Move in: DRAM -> scratchpad
-    MVIN2 = 0x21  # Move in with config set 1
-    MVIN3 = 0x22  # Move in with config set 2
+    # Synchronization operations
+    FENCE = 0x20  # Memory barrier - wait for all prior ops
+    NOP = 0x21  # No operation (useful for padding/alignment)
 
-    # Store commands (accumulator -> external memory)
-    MVOUT = 0x30  # Move out: accumulator -> DRAM
+    # Completion operations
+    SIGNAL = 0x30  # Write completion value to address
+    INTERRUPT = 0x31  # Generate interrupt on completion
 
-    # System commands
-    FENCE = 0xF0  # Wait for all operations to complete
-    FLUSH = 0xF1  # Flush all queues and reset state
-    NOP = 0xFF  # No operation
+
+class DmaFlags(IntFlag):
+    """Flags for DMA descriptor operations."""
+
+    NONE = 0x00
+    CHAIN = 0x01  # Continue to next descriptor
+    INTERRUPT_ON_COMPLETE = 0x02  # Generate interrupt when done
+    WRITEBACK_STATUS = 0x04  # Write status to completion address
+    SRC_IS_PATTERN = 0x08  # src_addr is fill pattern, not address
+    DST_IS_LOCAL = 0x10  # Destination is local memory (skip DMA)
+    SRC_IS_LOCAL = 0x20  # Source is local memory (skip DMA)
+
+
+# =============================================================================
+# Execute Controller Opcodes (compute operations)
+# =============================================================================
+
+
+class ExecOpcode(IntEnum):
+    """
+    Execute controller opcodes for systolic array operations.
+
+    These control the compute fabric, not memory movement.
+    """
+
+    # Configuration
+    CONFIG = 0x00  # Configure dataflow mode, shift amount
+    CONFIG_EX = 0x00  # Legacy alias for CONFIG
+
+    # Compute operations
+    PRELOAD = 0x10  # Preload bias/initial values from accumulator
+    COMPUTE = 0x11  # Execute matmul: A @ B + C
+    COMPUTE_PRELOAD = 0x12  # Fused preload + compute
+    COMPUTE_ACCUMULATE = 0x13  # Compute and accumulate to existing result
 
 
 class ConfigFlags(IntEnum):
-    """
-    Configuration flags for CONFIG commands.
-
-    Used in the flags field [47:32] of CONFIG commands.
-    """
+    """Configuration flags for execute controller."""
 
     # Dataflow mode (2 bits)
     DATAFLOW_OS = 0x0000  # Output-stationary
-    DATAFLOW_WS = 0x0001  # B-stationary (weight-stationary legacy name)
-    DATAFLOW_IS = 0x0002  # A-stationary (input-stationary)
+    DATAFLOW_WS = 0x0001  # Weight-stationary
+    DATAFLOW_IS = 0x0002  # Input-stationary
 
     # Accumulate mode
     ACCUMULATE = 0x0010  # Accumulate results (vs overwrite)
 
-    # Activation function (3 bits)
+    # Activation function (4 bits)
     ACT_NONE = 0x0000
     ACT_RELU = 0x0100
     ACT_RELU6 = 0x0200
+    ACT_SIGMOID = 0x0300
 
 
-def encode_command(
-    opcode: OpCode,
-    data: int = 0,
-    id_tag: int = 0,
-    flags: int = 0,
-) -> int:
+# =============================================================================
+# Memory Map Constants
+# =============================================================================
+
+
+class MemoryRegion(IntEnum):
+    """Base addresses for memory regions in the unified address space."""
+
+    DRAM_BASE = 0x0000_0000_0000
+    DRAM_SIZE = 0x0001_0000_0000  # 4GB DRAM region
+
+    SCRATCHPAD_BASE = 0x0001_0000_0000
+    SCRATCHPAD_SIZE = 0x0000_0001_0000  # 64KB scratchpad
+
+    ACCUMULATOR_BASE = 0x0002_0000_0000
+    ACCUMULATOR_SIZE = 0x0000_0001_0000  # 64KB accumulator
+
+    # Future expansion
+    RESERVED_BASE = 0x0003_0000_0000
+
+
+def get_memory_region(addr: int) -> str:
+    """Determine which memory region an address belongs to."""
+    if addr < MemoryRegion.SCRATCHPAD_BASE:
+        return "DRAM"
+    elif addr < MemoryRegion.ACCUMULATOR_BASE:
+        return "SCRATCHPAD"
+    elif addr < MemoryRegion.RESERVED_BASE:
+        return "ACCUMULATOR"
+    else:
+        return "RESERVED"
+
+
+def is_local_memory(addr: int) -> bool:
+    """Check if address is in local memory (scratchpad or accumulator)."""
+    return addr >= MemoryRegion.SCRATCHPAD_BASE
+
+
+# =============================================================================
+# Descriptor Data Structure
+# =============================================================================
+
+
+@dataclass
+class DmaDescriptor:
     """
-    Encode a 64-bit command word.
+    DMA descriptor for chained memory operations.
+
+    This is a software representation of the hardware descriptor format.
+    Use to_bytes() to convert to the 64-byte hardware format.
+    """
+
+    opcode: DmaOpcode
+    flags: DmaFlags = DmaFlags.NONE
+    length: int = 0
+    src_addr: int = 0
+    dst_addr: int = 0
+    next_desc: int = 0  # 0 = end of chain
+    completion: int = 0  # Status writeback address
+    user_data: int = 0  # Passed to completion handler
+
+    def to_bytes(self) -> bytes:
+        """Convert descriptor to 64-byte hardware format (little-endian)."""
+        import struct
+
+        return struct.pack(
+            "<BBHIQQQQQQQ",  # 64 bytes total
+            self.opcode,
+            self.flags,
+            0,  # reserved
+            self.length,
+            self.src_addr,
+            self.dst_addr,
+            self.next_desc,
+            self.completion,
+            self.user_data,
+            0,  # reserved2
+            0,  # reserved3
+        )
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "DmaDescriptor":
+        """Parse descriptor from 64-byte hardware format."""
+        import struct
+
+        (
+            opcode,
+            flags,
+            _reserved,
+            length,
+            src_addr,
+            dst_addr,
+            next_desc,
+            completion,
+            user_data,
+            _reserved2,
+            _reserved3,
+        ) = struct.unpack("<BBHIQQQQQQQ", data[:64])
+
+        return cls(
+            opcode=DmaOpcode(opcode),
+            flags=DmaFlags(flags),
+            length=length,
+            src_addr=src_addr,
+            dst_addr=dst_addr,
+            next_desc=next_desc,
+            completion=completion,
+            user_data=user_data,
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"DmaDescriptor({self.opcode.name}, "
+            f"src=0x{self.src_addr:012x}, dst=0x{self.dst_addr:012x}, "
+            f"len={self.length}, next=0x{self.next_desc:x})"
+        )
+
+
+# =============================================================================
+# Descriptor Builder Functions
+# =============================================================================
+
+
+def make_memcpy(
+    src_addr: int,
+    dst_addr: int,
+    length: int,
+    next_desc: int = 0,
+    completion: int = 0,
+    interrupt: bool = False,
+) -> DmaDescriptor:
+    """
+    Create a MEMCPY descriptor.
 
     Args:
-        opcode: Operation code from OpCode enum
-        data: 32-bit data field (address or immediate)
-        id_tag: 8-bit operation ID for tracking (0-255)
-        flags: 16-bit flags field
+        src_addr: Source address (DRAM, scratchpad, or accumulator)
+        dst_addr: Destination address
+        length: Transfer length in bytes
+        next_desc: Pointer to next descriptor (0 = end of chain)
+        completion: Address for status writeback
+        interrupt: Generate interrupt on completion
 
     Returns:
-        64-bit encoded command
+        DmaDescriptor configured for MEMCPY operation
     """
-    assert 0 <= opcode <= 0xFF, f"Invalid opcode: {opcode}"
-    assert 0 <= id_tag <= 0xFF, f"Invalid id_tag: {id_tag}"
-    assert 0 <= flags <= 0xFFFF, f"Invalid flags: {flags}"
-    assert 0 <= data <= 0xFFFFFFFF, f"Invalid data: {data}"
+    flags = DmaFlags.NONE
+    if next_desc != 0:
+        flags |= DmaFlags.CHAIN
+    if interrupt:
+        flags |= DmaFlags.INTERRUPT_ON_COMPLETE
+    if completion != 0:
+        flags |= DmaFlags.WRITEBACK_STATUS
+    if is_local_memory(src_addr):
+        flags |= DmaFlags.SRC_IS_LOCAL
+    if is_local_memory(dst_addr):
+        flags |= DmaFlags.DST_IS_LOCAL
 
-    return (opcode << 56) | (id_tag << 48) | (flags << 32) | data
+    return DmaDescriptor(
+        opcode=DmaOpcode.MEMCPY,
+        flags=flags,
+        length=length,
+        src_addr=src_addr,
+        dst_addr=dst_addr,
+        next_desc=next_desc,
+        completion=completion,
+    )
 
 
-def decode_command(cmd: int) -> dict:
+def make_fill(
+    dst_addr: int,
+    length: int,
+    pattern: int = 0,
+    next_desc: int = 0,
+    completion: int = 0,
+    interrupt: bool = False,
+) -> DmaDescriptor:
     """
-    Decode a 64-bit command word.
+    Create a FILL descriptor to fill memory with a pattern.
 
     Args:
-        cmd: 64-bit encoded command
+        dst_addr: Destination address
+        length: Region length in bytes
+        pattern: 64-bit fill pattern
+        next_desc: Pointer to next descriptor
+        completion: Address for status writeback
+        interrupt: Generate interrupt on completion
 
     Returns:
-        Dictionary with opcode, id_tag, flags, data fields
+        DmaDescriptor configured for FILL operation
     """
-    return {
-        "opcode": OpCode((cmd >> 56) & 0xFF),
-        "id_tag": (cmd >> 48) & 0xFF,
-        "flags": (cmd >> 32) & 0xFFFF,
-        "data": cmd & 0xFFFFFFFF,
-    }
+    flags = DmaFlags.SRC_IS_PATTERN
+    if next_desc != 0:
+        flags |= DmaFlags.CHAIN
+    if interrupt:
+        flags |= DmaFlags.INTERRUPT_ON_COMPLETE
+    if completion != 0:
+        flags |= DmaFlags.WRITEBACK_STATUS
+    if is_local_memory(dst_addr):
+        flags |= DmaFlags.DST_IS_LOCAL
+
+    return DmaDescriptor(
+        opcode=DmaOpcode.FILL,
+        flags=flags,
+        length=length,
+        src_addr=pattern,  # Pattern stored in src_addr field
+        dst_addr=dst_addr,
+        next_desc=next_desc,
+        completion=completion,
+    )
+
+
+def make_fence(
+    next_desc: int = 0,
+    completion: int = 0,
+    interrupt: bool = False,
+) -> DmaDescriptor:
+    """
+    Create a FENCE descriptor (memory barrier).
+
+    Ensures all prior DMA operations complete before continuing.
+
+    Args:
+        next_desc: Pointer to next descriptor
+        completion: Address for status writeback
+        interrupt: Generate interrupt on completion
+
+    Returns:
+        DmaDescriptor configured for FENCE operation
+    """
+    flags = DmaFlags.NONE
+    if next_desc != 0:
+        flags |= DmaFlags.CHAIN
+    if interrupt:
+        flags |= DmaFlags.INTERRUPT_ON_COMPLETE
+    if completion != 0:
+        flags |= DmaFlags.WRITEBACK_STATUS
+
+    return DmaDescriptor(
+        opcode=DmaOpcode.FENCE,
+        flags=flags,
+        next_desc=next_desc,
+        completion=completion,
+    )
+
+
+def make_crc32(
+    src_addr: int,
+    length: int,
+    result_addr: int,
+    next_desc: int = 0,
+    interrupt: bool = False,
+) -> DmaDescriptor:
+    """
+    Create a CRC32 descriptor.
+
+    Computes CRC32 over source region and writes result to destination.
+
+    Args:
+        src_addr: Source address to compute CRC over
+        length: Region length in bytes
+        result_addr: Address to write 32-bit CRC result
+        next_desc: Pointer to next descriptor
+        interrupt: Generate interrupt on completion
+
+    Returns:
+        DmaDescriptor configured for CRC32 operation
+    """
+    flags = DmaFlags.NONE
+    if next_desc != 0:
+        flags |= DmaFlags.CHAIN
+    if interrupt:
+        flags |= DmaFlags.INTERRUPT_ON_COMPLETE
+    if is_local_memory(src_addr):
+        flags |= DmaFlags.SRC_IS_LOCAL
+
+    return DmaDescriptor(
+        opcode=DmaOpcode.CRC32,
+        flags=flags,
+        length=length,
+        src_addr=src_addr,
+        dst_addr=result_addr,
+        next_desc=next_desc,
+        completion=result_addr,  # CRC written to completion address
+    )
+
+
+# =============================================================================
+# Descriptor Chain Builder
+# =============================================================================
+
+
+class DescriptorChain:
+    """
+    Builder for creating chains of DMA descriptors.
+
+    Example:
+        chain = DescriptorChain(base_addr=0x1000)
+        chain.memcpy(src=0x0, dst=SCRATCHPAD_BASE, length=4096)
+        chain.memcpy(src=0x1000, dst=SCRATCHPAD_BASE + 4096, length=4096)
+        chain.fence()
+        descriptors = chain.build()
+    """
+
+    def __init__(self, base_addr: int = 0):
+        """
+        Initialize descriptor chain builder.
+
+        Args:
+            base_addr: Base address where descriptors will be stored in memory
+        """
+        self.base_addr = base_addr
+        self.descriptors: list[DmaDescriptor] = []
+
+    def memcpy(self, src: int, dst: int, length: int, interrupt: bool = False) -> "DescriptorChain":
+        """Add MEMCPY operation to chain."""
+        desc = make_memcpy(src, dst, length, interrupt=interrupt)
+        self.descriptors.append(desc)
+        return self
+
+    def fill(
+        self, dst: int, length: int, pattern: int = 0, interrupt: bool = False
+    ) -> "DescriptorChain":
+        """Add FILL operation to chain."""
+        desc = make_fill(dst, length, pattern, interrupt=interrupt)
+        self.descriptors.append(desc)
+        return self
+
+    def fence(self, interrupt: bool = False) -> "DescriptorChain":
+        """Add FENCE operation to chain."""
+        desc = make_fence(interrupt=interrupt)
+        self.descriptors.append(desc)
+        return self
+
+    def crc32(
+        self, src: int, length: int, result: int, interrupt: bool = False
+    ) -> "DescriptorChain":
+        """Add CRC32 operation to chain."""
+        desc = make_crc32(src, length, result, interrupt=interrupt)
+        self.descriptors.append(desc)
+        return self
+
+    def build(self, completion_addr: int = 0) -> list[DmaDescriptor]:
+        """
+        Finalize the chain by linking descriptors.
+
+        Args:
+            completion_addr: Address for final completion writeback
+
+        Returns:
+            List of linked DmaDescriptor objects
+        """
+        if not self.descriptors:
+            return []
+
+        # Link descriptors: each points to the next
+        desc_size = 64  # bytes per descriptor
+        for i, desc in enumerate(self.descriptors[:-1]):
+            desc.next_desc = self.base_addr + (i + 1) * desc_size
+            desc.flags |= DmaFlags.CHAIN
+
+        # Last descriptor ends the chain
+        last = self.descriptors[-1]
+        last.next_desc = 0
+        last.flags &= ~DmaFlags.CHAIN
+        if completion_addr:
+            last.completion = completion_addr
+            last.flags |= DmaFlags.WRITEBACK_STATUS
+
+        return self.descriptors
+
+    def to_bytes(self) -> bytes:
+        """Convert entire chain to bytes for writing to memory."""
+        return b"".join(desc.to_bytes() for desc in self.descriptors)
+
+
+# =============================================================================
+# Legacy Command Support (for ExecuteController)
+# =============================================================================
+
+# Keep OpCode as alias for backward compatibility during transition
+OpCode = ExecOpcode
 
 
 def make_config_ex(
@@ -121,20 +503,10 @@ def make_config_ex(
     shift: int = 0,
     id_tag: int = 0,
 ) -> int:
-    """
-    Create CONFIG_EX command to configure execute controller.
-
-    Args:
-        dataflow: Dataflow mode (0=OS, 1=WS)
-        shift: Rounding shift amount (0-31)
-        id_tag: Operation ID
-
-    Returns:
-        64-bit encoded command
-    """
-    flags = dataflow & 0x0003  # Lower 2 bits for dataflow
-    data = shift & 0x1F  # Lower 5 bits for shift
-    return encode_command(OpCode.CONFIG_EX, data=data, id_tag=id_tag, flags=flags)
+    """Create CONFIG command for execute controller."""
+    flags = dataflow & 0x0003
+    data = shift & 0x1F
+    return (ExecOpcode.CONFIG << 56) | (id_tag << 48) | (flags << 32) | data
 
 
 def make_preload(
@@ -142,19 +514,9 @@ def make_preload(
     rows: int = 1,
     id_tag: int = 0,
 ) -> int:
-    """
-    Create PRELOAD command to load bias from accumulator.
-
-    Args:
-        acc_addr: Accumulator address (local address format)
-        rows: Number of rows to preload
-        id_tag: Operation ID
-
-    Returns:
-        64-bit encoded command
-    """
+    """Create PRELOAD command for execute controller."""
     flags = rows & 0xFFFF
-    return encode_command(OpCode.PRELOAD, data=acc_addr, id_tag=id_tag, flags=flags)
+    return (ExecOpcode.PRELOAD << 56) | (id_tag << 48) | (flags << 32) | acc_addr
 
 
 def make_compute(
@@ -164,74 +526,49 @@ def make_compute(
     k_dim: int = 1,
     id_tag: int = 0,
 ) -> tuple[int, int]:
-    """
-    Create COMPUTE command pair for matrix multiply.
-
-    For simplicity, this returns two 64-bit words:
-    - Word 0: opcode + A address
-    - Word 1: B address (upper 32) + C address (lower 32)
-
-    Args:
-        a_addr: Scratchpad address for A matrix
-        b_addr: Scratchpad address for B matrix
-        c_addr: Accumulator address for C result
-        k_dim: Inner dimension for the matmul
-        id_tag: Operation ID
-
-    Returns:
-        Tuple of two 64-bit encoded commands
-    """
+    """Create COMPUTE command pair for execute controller."""
     flags = k_dim & 0xFFFF
-    cmd0 = encode_command(OpCode.COMPUTE, data=a_addr, id_tag=id_tag, flags=flags)
+    cmd0 = (ExecOpcode.COMPUTE << 56) | (id_tag << 48) | (flags << 32) | a_addr
     cmd1 = (b_addr << 32) | (c_addr & 0xFFFFFFFF)
     return (cmd0, cmd1)
 
 
-def make_mvin(
-    dram_addr: int,
-    sp_addr: int,
-    len_bytes: int,
+# =============================================================================
+# Legacy Functions (deprecated, use descriptor-based API instead)
+# =============================================================================
+
+
+def encode_command(
+    opcode: int,
+    data: int = 0,
     id_tag: int = 0,
-) -> tuple[int, int]:
+    flags: int = 0,
+) -> int:
     """
-    Create MVIN command to load from DRAM to scratchpad.
+    Encode a 64-bit command word.
 
-    Args:
-        dram_addr: Source address in external memory
-        sp_addr: Destination address in scratchpad (local format)
-        len_bytes: Transfer length in bytes
-        id_tag: Operation ID
-
-    Returns:
-        Tuple of two 64-bit words (dram_addr, sp_addr | len)
+    DEPRECATED: Use descriptor-based API (DmaDescriptor, make_memcpy, etc.)
+    for DMA operations. This function is retained for ExecuteController commands.
     """
-    flags = len_bytes & 0xFFFF
-    cmd0 = encode_command(OpCode.MVIN, data=dram_addr & 0xFFFFFFFF, id_tag=id_tag, flags=flags)
-    cmd1 = sp_addr & 0xFFFFFFFF
-    return (cmd0, cmd1)
+    return (opcode << 56) | (id_tag << 48) | (flags << 32) | (data & 0xFFFFFFFF)
 
 
-def make_mvout(
-    acc_addr: int,
-    dram_addr: int,
-    len_bytes: int,
-    activation: int = 0,
-    id_tag: int = 0,
-) -> tuple[int, int]:
+def decode_command(cmd: int) -> dict:
     """
-    Create MVOUT command to store from accumulator to DRAM.
+    Decode a 64-bit command word.
 
-    Args:
-        acc_addr: Source address in accumulator (local format)
-        dram_addr: Destination address in external memory
-        len_bytes: Transfer length in bytes
-        activation: Activation function to apply (0=none, 1=relu)
-        id_tag: Operation ID
-
-    Returns:
-        Tuple of two 64-bit words
+    DEPRECATED: Use DmaDescriptor.from_bytes() for descriptor decoding.
     """
-    flags = (len_bytes & 0xFFF) | ((activation & 0xF) << 12)
-    cmd0 = encode_command(OpCode.MVOUT, data=acc_addr, id_tag=id_tag, flags=flags)
-    cmd1 = dram_addr & 0xFFFFFFFF
-    return (cmd0, cmd1)
+    opcode_val = (cmd >> 56) & 0xFF
+    opcode: ExecOpcode | int
+    try:
+        opcode = ExecOpcode(opcode_val)
+    except ValueError:
+        opcode = opcode_val
+
+    return {
+        "opcode": opcode,
+        "id_tag": (cmd >> 48) & 0xFF,
+        "flags": (cmd >> 32) & 0xFFFF,
+        "data": cmd & 0xFFFFFFFF,
+    }

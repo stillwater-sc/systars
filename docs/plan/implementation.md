@@ -779,24 +779,24 @@ class ExecuteController(Elaboratable):
 ### 3.3 Load/Store Controllers
 
 ```python
-# pygemmini/controller/load.py
-class LoadController(Elaboratable):
+# systars/controller/load.py
+class LoadController(Component):
     """
     DMA load orchestration.
-    Handles MVIN, MVIN2, MVIN3 commands with different configurations.
+    Handles MEMCPY commands for DRAM -> Scratchpad transfers.
     """
 
-    def __init__(self, config: SYSTARSConfig):
-        # 3 load states for overlapping configurations
-        self.load_states = [LoadState() for _ in range(3)]
+    def __init__(self, config: SystolicConfig):
+        # See src/systars/controller/load.py for implementation
         # ...
 
-# pygemmini/controller/store.py
-class StoreController(Elaboratable):
+# systars/controller/store.py
+class StoreController(Component):
     """
-    DMA store with optional max-pooling.
+    DMA store orchestration.
+    Handles MEMCPY commands for Accumulator -> DRAM transfers.
     """
-    pass
+    # See src/systars/controller/store.py for implementation
 ```
 
 ### 3.4 DMA Engine
@@ -895,15 +895,15 @@ class LoopMatmul(Elaboratable):
                 pass
 
             with m.State("LOAD_A"):
-                # Generate MVIN for A tile
+                # Generate MEMCPY for A tile (DRAM -> Scratchpad)
                 pass
 
             with m.State("LOAD_B"):
-                # Generate MVIN for B tile
+                # Generate MEMCPY for B tile (DRAM -> Scratchpad)
                 pass
 
             with m.State("LOAD_D"):
-                # Generate MVIN for D tile (bias)
+                # Generate MEMCPY for D tile/bias (DRAM -> Scratchpad)
                 pass
 
             with m.State("COMPUTE"):
@@ -911,7 +911,7 @@ class LoopMatmul(Elaboratable):
                 pass
 
             with m.State("STORE_C"):
-                # Generate MVOUT for C tile
+                # Generate MEMCPY for C tile (Accumulator -> DRAM)
                 pass
 
             with m.State("NEXT"):

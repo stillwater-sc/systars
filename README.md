@@ -129,7 +129,7 @@ Key parameters in `SystolicConfig`:
 | `tile_cols` | 1 | PEArray width (PEs per tile) |
 | `input_bits` | 8 | Input element width |
 | `acc_bits` | 32 | Accumulator width |
-| `dataflow` | OUTPUT_STATIONARY \| B_STATIONARY | Supported dataflow modes |
+| `dataflow` | OUTPUT_STATIONARY \| A_STATIONARY \| B_STATIONARY | Supported dataflow modes |
 | `sp_capacity_kb` | 256 | Scratchpad size |
 | `acc_capacity_kb` | 64 | Accumulator size |
 

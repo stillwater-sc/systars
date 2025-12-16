@@ -6,6 +6,7 @@ accelerators using Amaranth HDL.
 """
 
 from .config import Activation, Dataflow, SystolicConfig
+from .top import SystolicTop
 
 __version__ = "0.1.0"
-__all__ = ["SystolicConfig", "Dataflow", "Activation", "__version__"]
+__all__ = ["SystolicConfig", "Dataflow", "Activation", "SystolicTop", "__version__"]

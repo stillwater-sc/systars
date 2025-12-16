@@ -2,24 +2,50 @@
 
 from .commands import (
     ConfigFlags,
-    OpCode,
+    DescriptorChain,
+    # Descriptor-based DMA API
+    DmaDescriptor,
+    DmaFlags,
+    DmaOpcode,
+    # Execute controller API
+    ExecOpcode,
+    MemoryRegion,
+    # Legacy execute command encoding (for backward compatibility)
+    OpCode,  # Alias for ExecOpcode
     decode_command,
     encode_command,
+    get_memory_region,
+    is_local_memory,
     make_compute,
     make_config_ex,
-    make_mvin,
-    make_mvout,
+    make_crc32,
+    make_fence,
+    make_fill,
+    make_memcpy,
     make_preload,
 )
 
 __all__ = [
-    "OpCode",
+    # Descriptor-based DMA API
+    "DmaDescriptor",
+    "DmaFlags",
+    "DmaOpcode",
+    "DescriptorChain",
+    "MemoryRegion",
+    "make_memcpy",
+    "make_fill",
+    "make_fence",
+    "make_crc32",
+    "get_memory_region",
+    "is_local_memory",
+    # Execute controller API
+    "ExecOpcode",
     "ConfigFlags",
-    "encode_command",
-    "decode_command",
     "make_config_ex",
     "make_preload",
     "make_compute",
-    "make_mvin",
-    "make_mvout",
+    # Legacy execute command encoding
+    "OpCode",
+    "encode_command",
+    "decode_command",
 ]
