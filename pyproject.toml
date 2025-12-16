@@ -31,7 +31,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.1.6",
+    # NOTE: Pin ruff version to match .pre-commit-config.yaml and .github/workflows/lint.yml
+    "ruff==0.14.9",
     "mypy>=1.8",
     "pytest>=8.0",
     "pytest-cov>=4.1",

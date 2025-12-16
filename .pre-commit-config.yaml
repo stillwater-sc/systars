@@ -22,8 +22,10 @@ repos:
         args: ['--fix=lf']
 
   # Python - Ruff (fast linter and formatter)
+  # NOTE: Keep in sync with CI (.github/workflows/lint.yml) and pyproject.toml
+  # Run `pre-commit autoupdate` periodically to update
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.0
+    rev: v0.14.9
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]

@@ -297,6 +297,61 @@ check-tools:
     @which ruff && ruff --version || echo "ruff: not found"
     @which just && just --version || echo "just: not found"
 
+# Check ruff version consistency across config files
+check-ruff-version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Checking ruff version consistency..."
+    echo "====================================="
+
+    # Extract versions from each config file
+    precommit_ver=$(grep -A1 'astral-sh/ruff-pre-commit' .pre-commit-config.yaml | grep 'rev:' | sed 's/.*v//')
+    ci_ver=$(grep 'ruff==' .github/workflows/lint.yml | sed 's/.*ruff==//' | sed 's/ .*//')
+    pyproject_ver=$(grep 'ruff==' pyproject.toml | sed 's/.*ruff==//' | sed 's/[",].*//')
+    installed_ver=$(ruff --version 2>/dev/null | awk '{print $2}' || echo "not installed")
+
+    echo "  .pre-commit-config.yaml: $precommit_ver"
+    echo "  .github/workflows/lint.yml: $ci_ver"
+    echo "  pyproject.toml: $pyproject_ver"
+    echo "  installed: $installed_ver"
+    echo ""
+
+    if [[ "$precommit_ver" == "$ci_ver" && "$ci_ver" == "$pyproject_ver" ]]; then
+        echo "✓ All config files have matching ruff versions"
+        if [[ "$installed_ver" != "$pyproject_ver" ]]; then
+            echo "⚠ Installed version differs - run: pip install ruff==$pyproject_ver"
+        fi
+    else
+        echo "✗ Version mismatch detected!"
+        echo "  Update all files to use the same version."
+        exit 1
+    fi
+
+# Update ruff to latest version across all configs
+update-ruff:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Updating ruff to latest version..."
+
+    # Get latest version
+    latest=$(pip index versions ruff 2>/dev/null | head -1 | sed 's/.*(\(.*\))/\1/')
+    echo "Latest ruff version: $latest"
+
+    # Update pre-commit config
+    pre-commit autoupdate --repo https://github.com/astral-sh/ruff-pre-commit
+
+    # Update CI workflow
+    sed -i "s/ruff==[0-9.]*/ruff==$latest/" .github/workflows/lint.yml
+
+    # Update pyproject.toml
+    sed -i "s/ruff==[0-9.]*/ruff==$latest/" pyproject.toml
+
+    # Reinstall
+    pip install ruff==$latest
+
+    echo ""
+    echo "Updated to ruff $latest. Run 'just check-ruff-version' to verify."
+
 # Show project statistics
 stats:
     #!/usr/bin/env bash

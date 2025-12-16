@@ -272,9 +272,9 @@ class SystolicConfig:
         assert self.tile_cols > 0, "tile_cols must be positive"
         assert self.input_bits > 0, "input_bits must be positive"
         assert self.weight_bits > 0, "weight_bits must be positive"
-        assert (
-            self.acc_bits >= self.input_bits + self.weight_bits
-        ), "acc_bits should be >= input_bits + weight_bits to avoid overflow"
+        assert self.acc_bits >= self.input_bits + self.weight_bits, (
+            "acc_bits should be >= input_bits + weight_bits to avoid overflow"
+        )
         assert self.sp_banks > 0, "sp_banks must be positive"
         assert self.acc_banks > 0, "acc_banks must be positive"
         assert self.sp_capacity_kb > 0, "sp_capacity_kb must be positive"
