@@ -1,0 +1,48 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+#### Phase 2: Memory System (2025-12-15)
+
+- **LocalAddr** (`src/systars/memory/local_addr.py`): Unified address encoding utilities
+  - Static methods for bit field extraction: `is_acc()`, `accumulate()`, `read_full_row()`, `is_garbage()`
+  - Instance methods for bank/row decoding: `sp_bank()`, `sp_row()`, `acc_bank()`, `acc_row()`
+  - Address construction helpers: `make_sp_addr()`, `make_acc_addr()`, `make_garbage_addr()`
+
+- **ScratchpadBank** (`src/systars/memory/scratchpad.py`): Single bank local memory
+  - Configurable read latency pipeline
+  - Byte-level write masking with granularity=8
+  - Read/write ports with valid signaling
+
+- **Scratchpad** (`src/systars/memory/scratchpad.py`): Multi-bank scratchpad controller
+  - Address-based bank selection routing
+  - Parallel bank instantiation
+  - Pipelined bank selection to match read latency
+
+- **AccumulatorBank** (`src/systars/memory/accumulator.py`): Single bank accumulator memory
+  - Activation functions: NONE, RELU, RELU6
+  - Accumulate mode (read-modify-write) for partial sum accumulation
+  - Signed data storage with configurable width
+
+- **Accumulator** (`src/systars/memory/accumulator.py`): Multi-bank accumulator controller
+  - Bank selection via address decoding
+  - Activation function passthrough to banks
+
+- **Unit Tests**: 34 new tests for memory subsystem
+  - `tests/unit/test_local_addr.py`: 11 tests for address encoding
+  - `tests/unit/test_scratchpad.py`: 12 tests for scratchpad memory
+  - `tests/unit/test_accumulator.py`: 11 tests for accumulator memory
+
+#### Phase 1: Core Systolic Array (Previous)
+
+- **ProcessingElement (PE)**: MAC unit with input/weight propagation
+- **Tile**: Configurable grid of PEs with systolic data flow
+- **Mesh**: Top-level systolic array with multiple tiles
+- **SystolicConfig**: Centralized configuration dataclass
