@@ -14,10 +14,10 @@ import pytest
 from amaranth.sim import Simulator, Tick
 
 from systars.config import Dataflow, SystolicConfig
-from systars.core.tile import Tile
+from systars.core.pe_array import PEArray
 
 
-class TestTile:
+class TestPEArray:
     """Test suite for the Tile module."""
 
     @pytest.fixture
@@ -30,7 +30,7 @@ class TestTile:
             weight_bits=8,
             acc_bits=32,
             output_bits=20,
-            dataflow=Dataflow.OW,
+            dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY,
         )
 
     @pytest.fixture
@@ -43,7 +43,7 @@ class TestTile:
             weight_bits=8,
             acc_bits=32,
             output_bits=20,
-            dataflow=Dataflow.OW,
+            dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY,
         )
 
     @pytest.fixture
@@ -56,23 +56,23 @@ class TestTile:
             weight_bits=8,
             acc_bits=32,
             output_bits=20,
-            dataflow=Dataflow.OW,
+            dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY,
         )
 
     @pytest.fixture
     def tile_1x1(self, config_1x1):
         """Create a 1x1 Tile instance."""
-        return Tile(config_1x1)
+        return PEArray(config_1x1)
 
     @pytest.fixture
     def tile_2x2(self, config_2x2):
         """Create a 2x2 Tile instance."""
-        return Tile(config_2x2)
+        return PEArray(config_2x2)
 
     @pytest.fixture
     def tile_2x3(self, config_2x3):
         """Create a 2x3 Tile instance."""
-        return Tile(config_2x3)
+        return PEArray(config_2x3)
 
     def test_tile_1x1_instantiation(self, tile_1x1):
         """Test that 1x1 Tile can be instantiated."""
@@ -244,7 +244,7 @@ class TestTile:
         sim.run()  # Should not raise
 
 
-class TestTileVerilogGeneration:
+class TestPEArrayVerilogGeneration:
     """Test Verilog generation for Tile modules."""
 
     def test_generate_tile_1x1_verilog(self, tmp_path):
@@ -258,7 +258,7 @@ class TestTileVerilogGeneration:
             pytest.skip("Yosys not found")
 
         config = SystolicConfig(tile_rows=1, tile_cols=1)
-        tile = Tile(config)
+        tile = PEArray(config)
 
         output = verilog.convert(tile, name="Tile_1x1")
         assert "module Tile_1x1" in output
@@ -280,7 +280,7 @@ class TestTileVerilogGeneration:
             pytest.skip("Yosys not found")
 
         config = SystolicConfig(tile_rows=2, tile_cols=2)
-        tile = Tile(config)
+        tile = PEArray(config)
 
         output = verilog.convert(tile, name="Tile_2x2")
         assert "module Tile_2x2" in output
@@ -306,7 +306,7 @@ class TestTileVerilogGeneration:
             pytest.skip("Yosys not found")
 
         config = SystolicConfig(tile_rows=4, tile_cols=4)
-        tile = Tile(config)
+        tile = PEArray(config)
 
         output = verilog.convert(tile, name="Tile_4x4")
         assert "module Tile_4x4" in output

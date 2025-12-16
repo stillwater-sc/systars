@@ -1,16 +1,16 @@
 """
-Processing Element (PE) - The fundamental compute unit of the systolic array.
+Processing Element (PE) - The fundamental compute unit of the systolic matmul array.
 
-Each PE performs a multiply-accumulate (MAC) operation:
+Each PE performs a multiply-accumulate (MAC) operation for D = A × B + C:
     out = in_c + (in_a * in_b)
 
 The PE supports two dataflow modes:
-- Output-Stationary (OS): Accumulator stays in place, weights flow through
-- Weight-Stationary (WS): Weights stay in place, partial sums flow through
+- Output-Stationary: Result (D) accumulates in place, A and B flow through
+- B-Stationary: Right operand (B) stays in PE, A and partial sums flow through
 
 Data flows:
-- A (activations): flows horizontally (left to right)
-- B (weights/partial sums): flows vertically (top to bottom)
+- A (left operand): flows horizontally (left to right)
+- B (right operand/partial sums): flows vertically (top to bottom)
 - D (bias/initial value): flows vertically for preloading
 - C (result): output after accumulation
 """
@@ -66,7 +66,7 @@ class PE(Component):
                 "in_a": In(signed(input_width)),
                 "in_b": In(signed(weight_width)),
                 "in_d": In(signed(acc_width)),
-                "in_control_dataflow": In(1),  # 0=OS, 1=WS
+                "in_control_dataflow": In(1),  # 0=Output-Stationary, 1=B-Stationary
                 "in_control_propagate": In(1),  # Which register to output
                 "in_control_shift": In(5),  # Rounding shift amount
                 "in_valid": In(1),
@@ -111,11 +111,11 @@ class PE(Component):
         # Step 3: Select accumulator input based on dataflow and propagate
         acc_input = Signal(signed(cfg.acc_bits), name="acc_input")
 
-        with m.If(self.in_control_dataflow):  # Weight-Stationary mode
-            # In WS mode, we use in_d as the accumulator input
+        with m.If(self.in_control_dataflow):  # B-Stationary mode
+            # In B-Stationary mode, we use in_d as the accumulator input
             m.d.comb += acc_input.eq(self.in_d)
         with m.Else():  # Output-Stationary mode
-            # In OS mode, we accumulate into c1 or c2 based on propagate
+            # In Output-Stationary mode, we accumulate into c1 or c2 based on propagate
             with m.If(self.in_control_propagate):
                 m.d.comb += acc_input.eq(c2)
             with m.Else():
@@ -146,13 +146,13 @@ class PE(Component):
         with m.Else():
             m.d.comb += self.out_c.eq(c2)
 
-        # out_b: In WS mode, pass through partial sum; in OS mode, pass weight
+        # out_b: In B-Stationary mode, pass partial sum; in Output-Stationary, pass B operand
         # For now, simplified to pass through product (actual impl may differ)
-        with m.If(self.in_control_dataflow):  # WS
+        with m.If(self.in_control_dataflow):  # B-Stationary
             # Pass accumulated value down
             m.d.comb += self.out_b.eq(accumulated[: cfg.output_bits])
-        with m.Else():  # OS
-            # Pass weight down
+        with m.Else():  # Output-Stationary
+            # Pass B operand down
             m.d.comb += self.out_b.eq(self.in_b[: cfg.output_bits])
 
         # =================================================================

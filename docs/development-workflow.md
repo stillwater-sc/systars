@@ -63,13 +63,13 @@ just check-tools
 systars/
 ├── src/systars/           # Amaranth RTL source code
 │   ├── config.py          # Central configuration
-│   ├── core/              # PE, Tile, Mesh components
+│   ├── core/              # PE, PEArray, SystolicArray components
 │   └── memory/            # Scratchpad, Accumulator
 ├── tests/unit/            # Python unit tests (pytest)
 ├── verif/cocotb/tests/    # RTL simulation tests (cocotb)
 │   ├── pe/
-│   ├── tile/
-│   ├── mesh/
+│   ├── pe_array/
+│   ├── systolic_array/
 │   ├── scratchpad/
 │   └── accumulator/
 ├── gen/                   # Generated Verilog (gitignored)
@@ -188,8 +188,10 @@ just test-k "test_output"                  # Run tests matching pattern
 Once unit tests pass, generate synthesizable Verilog:
 
 ```bash
-just gen          # Generate all RTL
-just gen-pe       # Generate specific component
+just gen                    # Generate all RTL
+just gen-pe                 # Generate PE Verilog
+just gen-pe-array           # Generate PEArray Verilog
+just gen-systolic-array     # Generate SystolicArray Verilog
 ```
 
 Or manually:

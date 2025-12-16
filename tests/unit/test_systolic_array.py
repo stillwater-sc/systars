@@ -13,10 +13,10 @@ import pytest
 from amaranth.sim import Simulator, Tick
 
 from systars.config import Dataflow, SystolicConfig
-from systars.core.mesh import Mesh
+from systars.core.systolic_array import SystolicArray
 
 
-class TestMesh:
+class TestSystolicArray:
     """Test suite for the Mesh module."""
 
     @pytest.fixture
@@ -31,7 +31,7 @@ class TestMesh:
             weight_bits=8,
             acc_bits=32,
             output_bits=20,
-            dataflow=Dataflow.OW,
+            dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY,
         )
 
     @pytest.fixture
@@ -46,7 +46,7 @@ class TestMesh:
             weight_bits=8,
             acc_bits=32,
             output_bits=20,
-            dataflow=Dataflow.OW,
+            dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY,
         )
 
     @pytest.fixture
@@ -61,7 +61,7 @@ class TestMesh:
             weight_bits=8,
             acc_bits=32,
             output_bits=20,
-            dataflow=Dataflow.OW,
+            dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY,
         )
 
     @pytest.fixture
@@ -76,28 +76,28 @@ class TestMesh:
             weight_bits=8,
             acc_bits=32,
             output_bits=20,
-            dataflow=Dataflow.OW,
+            dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY,
         )
 
     @pytest.fixture
     def mesh_1x1(self, config_1x1_mesh_1x1_tile):
         """Create a minimal Mesh instance (single tile)."""
-        return Mesh(config_1x1_mesh_1x1_tile)
+        return SystolicArray(config_1x1_mesh_1x1_tile)
 
     @pytest.fixture
     def mesh_2x2(self, config_2x2_mesh_1x1_tile):
         """Create a 2x2 Mesh instance with 1x1 tiles."""
-        return Mesh(config_2x2_mesh_1x1_tile)
+        return SystolicArray(config_2x2_mesh_1x1_tile)
 
     @pytest.fixture
     def mesh_2x2_tiles(self, config_2x2_mesh_2x2_tile):
         """Create a 2x2 Mesh instance with 2x2 tiles."""
-        return Mesh(config_2x2_mesh_2x2_tile)
+        return SystolicArray(config_2x2_mesh_2x2_tile)
 
     @pytest.fixture
     def mesh_2x3(self, config_2x3_mesh_1x1_tile):
         """Create a 2x3 Mesh instance."""
-        return Mesh(config_2x3_mesh_1x1_tile)
+        return SystolicArray(config_2x3_mesh_1x1_tile)
 
     def test_mesh_1x1_instantiation(self, mesh_1x1):
         """Test that minimal Mesh (1x1 tiles) can be instantiated."""
@@ -304,7 +304,7 @@ class TestMesh:
         sim.run()  # Should not raise
 
 
-class TestMeshVerilogGeneration:
+class TestSystolicArrayVerilogGeneration:
     """Test Verilog generation for Mesh modules."""
 
     def test_generate_mesh_1x1_verilog(self, tmp_path):
@@ -318,7 +318,7 @@ class TestMeshVerilogGeneration:
             pytest.skip("Yosys not found")
 
         config = SystolicConfig(mesh_rows=1, mesh_cols=1, tile_rows=1, tile_cols=1)
-        mesh = Mesh(config)
+        mesh = SystolicArray(config)
 
         output = verilog.convert(mesh, name="Mesh_1x1")
         assert "module Mesh_1x1" in output
@@ -340,7 +340,7 @@ class TestMeshVerilogGeneration:
             pytest.skip("Yosys not found")
 
         config = SystolicConfig(mesh_rows=2, mesh_cols=2, tile_rows=1, tile_cols=1)
-        mesh = Mesh(config)
+        mesh = SystolicArray(config)
 
         output = verilog.convert(mesh, name="Mesh_2x2")
         assert "module Mesh_2x2" in output
@@ -351,9 +351,9 @@ class TestMeshVerilogGeneration:
         assert "in_b_0" in output
         assert "in_b_1" in output
 
-        # Check for tile submodules
-        assert "tile_0_0" in output
-        assert "tile_1_1" in output
+        # Check for pe_array submodules
+        assert "pe_array_0_0" in output
+        assert "pe_array_1_1" in output
 
         verilog_file = tmp_path / "mesh_2x2.v"
         verilog_file.write_text(output)
@@ -370,14 +370,14 @@ class TestMeshVerilogGeneration:
             pytest.skip("Yosys not found")
 
         config = SystolicConfig(mesh_rows=4, mesh_cols=4, tile_rows=1, tile_cols=1)
-        mesh = Mesh(config)
+        mesh = SystolicArray(config)
 
         output = verilog.convert(mesh, name="Mesh_4x4")
         assert "module Mesh_4x4" in output
 
-        # Check for tile submodules
-        assert "tile_0_0" in output
-        assert "tile_3_3" in output
+        # Check for pe_array submodules
+        assert "pe_array_0_0" in output
+        assert "pe_array_3_3" in output
 
         verilog_file = tmp_path / "mesh_4x4.v"
         verilog_file.write_text(output)
@@ -394,7 +394,7 @@ class TestMeshVerilogGeneration:
             pytest.skip("Yosys not found")
 
         config = SystolicConfig(mesh_rows=2, mesh_cols=2, tile_rows=2, tile_cols=2)
-        mesh = Mesh(config)
+        mesh = SystolicArray(config)
 
         output = verilog.convert(mesh, name="Mesh_2x2_tiles_2x2")
         assert "module Mesh_2x2_tiles_2x2" in output

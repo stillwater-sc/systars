@@ -1,17 +1,17 @@
 """
-Tile - A combinational grid of Processing Elements.
+PEArray - A combinational grid of Processing Elements.
 
-A Tile is the fundamental compute block of the systolic array, containing
-a configurable grid of PEs (tile_rows x tile_cols). Data flows through
-the tile in a systolic pattern:
+A PEArray is the fundamental compute block of the systolic matmul array,
+containing a configurable grid of PEs (tile_rows x tile_cols). Data flows
+through the array in a systolic pattern for D = A × B + C:
 
-- A (activations): flows horizontally (left to right)
-- B (weights/partial sums): flows vertically (top to bottom)
+- A (left operand): flows horizontally (left to right)
+- B (right operand/partial sums): flows vertically (top to bottom)
 - D (bias/preload): enters from top, chains through via out_c -> in_d
 
-Control signals are broadcast to all PEs within the tile.
+Control signals are broadcast to all PEs within the array.
 
-Example 2x3 Tile:
+Example 2x3 PEArray:
                  in_b[0]    in_b[1]    in_b[2]
                     |          |          |
     in_a[0] --> [PE(0,0)] -> [PE(0,1)] -> [PE(0,2)] --> out_a[0]
@@ -29,30 +29,30 @@ from ..config import SystolicConfig
 from .pe import PE
 
 
-class Tile(Component):
+class PEArray(Component):
     """
-    Tile - A combinational grid of Processing Elements.
+    PEArray - A combinational grid of Processing Elements.
 
-    The Tile instantiates a tile_rows x tile_cols grid of PEs and wires them
+    The PEArray instantiates a tile_rows x tile_cols grid of PEs and wires them
     together in a systolic pattern. All internal connections are combinational.
 
     Ports:
-        in_a_0..N: Input activations (one per row, flows right)
-        in_b_0..M: Input weights/partial sums (one per column, flows down)
+        in_a_0..N: Input A operands (one per row, flows right)
+        in_b_0..M: Input B operands/partial sums (one per column, flows down)
         in_d_0..M: Preload values (one per column, enters at top)
         in_control_*: Control signals (broadcast to all PEs)
         in_valid: Data valid signal
         in_id: Operation tag
         in_last: Last element in sequence
 
-        out_a_0..N: Output activations (right edge)
-        out_b_0..M: Output weights/partial sums (bottom edge)
+        out_a_0..N: Output A operands (right edge)
+        out_b_0..M: Output B operands/partial sums (bottom edge)
         out_c_0..M: Accumulated results (bottom edge)
         out_control_*: Pass-through control signals
         out_valid, out_id, out_last: Pass-through metadata
 
     Parameters:
-        config: SystolicConfig with tile dimensions and data widths
+        config: SystolicConfig with array dimensions and data widths
     """
 
     def __init__(self, config: SystolicConfig):

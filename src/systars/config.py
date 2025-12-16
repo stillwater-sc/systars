@@ -1,24 +1,38 @@
 """
 Systars Configuration Module
 
-This module defines the configuration dataclass for the systolic array generator.
+This module defines the configuration dataclass for the systolic matmul generator.
 All hardware parameters are specified here and propagate through the design.
+
+Note: This generator produces systolic arrays for matrix multiplication (D = A × B + C),
+not general systolic arrays. The dataflow modes refer to which operand stays stationary
+in the processing elements.
 """
 
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum, Flag, auto
 
 
-class Dataflow(Enum):
-    """Dataflow modes for the systolic array."""
+class Dataflow(Flag):
+    """
+    Dataflow modes for the systolic matmul array.
 
-    OS = auto()  # Output-Stationary: accumulator stays, weights flow through
-    IS = auto()  # Input-Stationary: input stays, weights and partials flow through
-    WS = auto()  # Weight-Stationary: weights stay, partial sums flow through
-    OI = auto()  # Runtime selectable between OS and IS
-    OW = auto()  # Runtime selectable between OS and WS
-    IW = auto()  # Runtime selectable between IS and WS
-    OIW = auto()  # Runtime selectable between OS, IS, and WS
+    For the operation D = A × B + C:
+    - OUTPUT_STATIONARY: Result (D) accumulates in place, A and B flow through
+    - A_STATIONARY: Left operand (A) stays in PE, B and partial sums flow through
+    - B_STATIONARY: Right operand (B) stays in PE, A and partial sums flow through
+
+    Combinations (using | operator) indicate hardware supports runtime selection:
+        Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY  # Supports both modes
+
+    Example:
+        >>> config = SystolicConfig(dataflow=Dataflow.OUTPUT_STATIONARY)
+        >>> config = SystolicConfig(dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY)
+    """
+
+    OUTPUT_STATIONARY = auto()  # D accumulates in PE, A and B flow through
+    A_STATIONARY = auto()  # A stays in PE, B and partial sums flow through
+    B_STATIONARY = auto()  # B stays in PE, A and partial sums flow through
 
 
 class Activation(Enum):
@@ -79,13 +93,18 @@ class SystolicConfig:
     # =========================================================================
     # Dataflow Configuration
     # =========================================================================
-    dataflow: Dataflow = Dataflow.OIW
+    dataflow: Dataflow = Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY
     """
-    Dataflow mode for the systolic array.
-    - OS: Output-stationary (best for quantized ops and long dot products)
-    - IS: Input-stationary (best for matvecs and image 1D/2D convolutions)
-    - WS: Weight-stationary (best for fully connected layers and 2D/3D convolutions)
-    - OIW: Runtime selectable
+    Dataflow mode(s) for the systolic matmul array (D = A × B + C).
+
+    Single modes:
+    - OUTPUT_STATIONARY: Result accumulates in PE (best for long dot products)
+    - A_STATIONARY: Left operand stays in PE (best for matvecs)
+    - B_STATIONARY: Right operand stays in PE (best for weight reuse)
+
+    Combinations (runtime selectable):
+    - OUTPUT_STATIONARY | B_STATIONARY: Default, supports both modes
+    - OUTPUT_STATIONARY | A_STATIONARY | B_STATIONARY: Fully configurable
     """
 
     # =========================================================================
@@ -286,7 +305,7 @@ DEFAULT_CONFIG = SystolicConfig()
 """Default configuration."""
 
 LEAN_CONFIG = SystolicConfig(
-    dataflow=Dataflow.WS,
+    dataflow=Dataflow.B_STATIONARY,
     max_in_flight_reqs=64,
     has_normalizations=False,
 )
@@ -295,7 +314,7 @@ LEAN_CONFIG = SystolicConfig(
 CHIP_CONFIG = SystolicConfig(
     sp_capacity_kb=64,
     acc_capacity_kb=32,
-    dataflow=Dataflow.WS,
+    dataflow=Dataflow.B_STATIONARY,
     acc_singleported=True,
     acc_sub_banks=2,
     mesh_output_delay=2,

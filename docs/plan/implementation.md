@@ -101,7 +101,7 @@ This document provides a comprehensive plan for rewriting the SYSTARS systolic a
 | `tile_cols` | 1 | PEs per tile (width) |
 | `input_bits` | 8 | Input/weight element width |
 | `acc_bits` | 32 | Accumulator element width |
-| `dataflow` | BOTH | WS, OS, or BOTH |
+| `dataflow` | OUTPUT_STATIONARY \| B_STATIONARY | Dataflow modes (Flag: OUTPUT_STATIONARY, A_STATIONARY, B_STATIONARY) |
 | `sp_capacity_kb` | 256 | Scratchpad size |
 | `sp_banks` | 4 | Scratchpad banks |
 | `acc_capacity_kb` | 64 | Accumulator size |
@@ -187,10 +187,17 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional, Callable
 
-class Dataflow(Enum):
-    OS = auto()   # Output-Stationary
-    WS = auto()   # Weight-Stationary
-    BOTH = auto() # Runtime selectable
+class Dataflow(Flag):
+    """
+    Dataflow modes for the systolic matmul array.
+    For the operation D = A × B + C:
+    - OUTPUT_STATIONARY: Result (D) accumulates in place, A and B flow through
+    - A_STATIONARY: Left operand (A) stays in PE, B and partial sums flow through
+    - B_STATIONARY: Right operand (B) stays in PE, A and partial sums flow through
+    """
+    OUTPUT_STATIONARY = auto()
+    A_STATIONARY = auto()
+    B_STATIONARY = auto()
 
 @dataclass
 class SYSTARSConfig:
@@ -207,7 +214,7 @@ class SYSTARSConfig:
     output_bits: int = 20  # PE output before accumulation
 
     # Dataflow
-    dataflow: Dataflow = Dataflow.BOTH
+    dataflow: Dataflow = Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY
 
     # Scratchpad configuration
     sp_capacity_kb: int = 256
@@ -287,11 +294,12 @@ class PE(Elaboratable):
     """
     Processing Element - the fundamental compute unit.
 
-    Performs: out = in_c + (in_a * in_b) >> shift
+    Performs: D = C + (A * B) >> shift
 
-    Supports both output-stationary and weight-stationary dataflows:
-    - OS: accumulator stays, weights flow through
-    - WS: weights stay, partial sums flow through
+    Supports multiple dataflow modes (can be combined with Flag):
+    - OUTPUT_STATIONARY: Result (D) accumulates in place, A and B flow through
+    - A_STATIONARY: Left operand (A) stays in PE, B and partial sums flow through
+    - B_STATIONARY: Right operand (B) stays in PE, A and partial sums flow through
     """
 
     def __init__(self, config: SYSTARSConfig):
@@ -374,20 +382,21 @@ class PE(Elaboratable):
         return m
 ```
 
-### 1.4 Tile and Mesh
+### 1.4 PEArray and SystolicArray
 
 ```python
-# pygemmini/core/tile.py
+# systars/core/pe_array.py
 from amaranth import *
 from .pe import PE
 
-class Tile(Elaboratable):
+class PEArray(Elaboratable):
     """
-    A tile is a combinational grid of PEs.
+    PEArray - A combinational grid of Processing Elements.
     Data flows: A rightward, B/D downward.
+    No pipeline registers within the array.
     """
 
-    def __init__(self, config: SYSTARSConfig):
+    def __init__(self, config: SystolicConfig):
         self.config = config
         rows = config.tile_rows
         cols = config.tile_cols
@@ -442,16 +451,17 @@ class Tile(Elaboratable):
 ```
 
 ```python
-# pygemmini/core/mesh.py
+# systars/core/systolic_array.py
 from amaranth import *
-from .tile import Tile
+from .pe_array import PEArray
 
-class Mesh(Elaboratable):
+class SystolicArray(Elaboratable):
     """
-    Mesh of tiles with pipeline registers between tiles.
+    SystolicArray - A pipelined grid of PEArrays for systolic matmul.
+    Pipeline registers between PEArray boundaries enable timing closure at scale.
     """
 
-    def __init__(self, config: SYSTARSConfig):
+    def __init__(self, config: SystolicConfig):
         self.config = config
         dim = config.mesh_rows  # Assume square for simplicity
 
@@ -474,15 +484,15 @@ class Mesh(Elaboratable):
         cfg = self.config
         rows, cols = cfg.mesh_rows, cfg.mesh_cols
 
-        # Create tile grid
-        tiles = [[Tile(cfg) for _ in range(cols)] for _ in range(rows)]
+        # Create PEArray grid
+        pe_arrays = [[PEArray(cfg) for _ in range(cols)] for _ in range(rows)]
         for r in range(rows):
             for c in range(cols):
-                m.submodules[f"tile_{r}_{c}"] = tiles[r][c]
+                m.submodules[f"tile_{r}_{c}"] = pe_arrays[r][c]
 
-        # Wire tiles with pipeline registers
-        # A flows rightward with latency between tiles
-        # B/D flow downward with latency between tiles
+        # Wire PEArrays with pipeline registers
+        # A flows rightward with latency between PEArrays
+        # B/D flow downward with latency between PEArrays
 
         # ... (similar wiring pattern with ShiftRegister equivalent)
 
@@ -491,9 +501,9 @@ class Mesh(Elaboratable):
 
 ### 1.5 Deliverables for Phase 1
 
-1. **Working PE** with both WS and OS dataflows
-2. **Tile** as combinational PE grid
-3. **Mesh** with configurable dimensions and pipeline registers
+1. **Working PE** with multiple dataflow modes (OUTPUT_STATIONARY, A_STATIONARY, B_STATIONARY)
+2. **PEArray** as combinational PE grid
+3. **SystolicArray** with configurable dimensions and pipeline registers between PEArrays
 4. **Unit tests** for each component using Amaranth's built-in simulator
 5. **Verilog generation** script
 
@@ -1095,16 +1105,16 @@ def compare_matmul_output():
 | Priority | Component | Complexity | Dependencies |
 |----------|-----------|------------|--------------|
 | 1 | PE | Low | None |
-| 2 | Tile | Low | PE |
-| 3 | Mesh | Medium | Tile |
+| 2 | PEArray | Low | PE |
+| 3 | SystolicArray | Medium | PEArray |
 | 4 | LocalAddr | Low | None |
 | 5 | ScratchpadBank | Medium | None |
 | 6 | Scratchpad | Medium | ScratchpadBank |
 | 7 | AccumulatorBank | High | None |
 | 8 | Transposer | Medium | None |
-| 9 | MeshWithDelays | High | Mesh, Transposer |
+| 9 | SystolicArrayWithDelays | High | SystolicArray, Transposer |
 | 10 | ReservationStation | High | None |
-| 11 | ExecuteController | High | MeshWithDelays, Memory |
+| 11 | ExecuteController | High | SystolicArrayWithDelays, Memory |
 | 12 | LoadController | Medium | DMA |
 | 13 | StoreController | Medium | DMA |
 | 14 | StreamReader | High | TLB (optional) |

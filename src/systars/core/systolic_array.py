@@ -1,63 +1,64 @@
 """
-Mesh - A pipelined grid of Tiles forming the systolic array compute fabric.
+SystolicArray - A pipelined grid of PEArrays forming the systolic matmul array.
 
-The Mesh instantiates a mesh_rows x mesh_cols grid of Tiles and adds pipeline
-registers between tile boundaries to enable proper systolic data flow.
+The SystolicArray instantiates a mesh_rows x mesh_cols grid of PEArrays and adds
+pipeline registers between boundaries to enable proper systolic data flow for
+the operation D = A × B + C.
 
-Key difference from Tile:
-- Tile: All PE connections are combinational (within-tile)
-- Mesh: Pipeline registers between tile boundaries (inter-tile)
+Key difference from PEArray:
+- PEArray: All PE connections are combinational (within-array)
+- SystolicArray: Pipeline registers between PEArray boundaries (inter-array)
 
-Data flows through the mesh in a systolic pattern:
-- A (activations): flows horizontally (left to right) with inter-tile registers
-- B (weights/partial sums): flows vertically (top to bottom) with inter-tile registers
-- D (bias/preload): chains through via out_c -> in_d with inter-tile registers
+Data flows through the array in a systolic pattern:
+- A (left operand): flows horizontally (left to right) with inter-array registers
+- B (right operand/partial sums): flows vertically (top to bottom) with registers
+- D (bias/preload): chains through via out_c -> in_d with inter-array registers
 
-Example 2x2 Mesh (each box is a Tile):
+Example 2x2 SystolicArray (each box is a PEArray):
 
            in_b[0..N]    in_b[N..2N]
               |              |
-in_a[0..M] -> [Tile 0,0] -R-> [Tile 0,1] -> out_a[0..M]
-              |              |
-             [R]            [R]           (R = pipeline register)
-              |              |
-in_a[M..] ->  [Tile 1,0] -R-> [Tile 1,1] -> out_a[M..]
-              |              |
-           out_b[0..N]    out_b[N..2N]
-           out_c[0..N]    out_c[N..2N]
+in_a[0..M] -> [PEArray 0,0] -R-> [PEArray 0,1] -> out_a[0..M]
+              |                  |
+             [R]                [R]           (R = pipeline register)
+              |                  |
+in_a[M..] ->  [PEArray 1,0] -R-> [PEArray 1,1] -> out_a[M..]
+              |                  |
+           out_b[0..N]       out_b[N..2N]
+           out_c[0..N]       out_c[N..2N]
 """
 
 from amaranth import Module, Signal, signed
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
-from .tile import Tile
+from .pe_array import PEArray
 
 
-class Mesh(Component):
+class SystolicArray(Component):
     """
-    Mesh - A pipelined grid of Tiles forming the systolic array.
+    SystolicArray - A pipelined grid of PEArrays for systolic matmul.
 
-    The Mesh instantiates a mesh_rows x mesh_cols grid of Tiles and wires them
-    together with pipeline registers at tile boundaries.
+    The SystolicArray instantiates a mesh_rows x mesh_cols grid of PEArrays
+    and wires them together with pipeline registers at boundaries.
 
     Ports:
-        in_a_0..N: Input activations (one per total row, flows right)
-        in_b_0..M: Input weights/partial sums (one per total column, flows down)
+        in_a_0..N: Input A operands (one per total row, flows right)
+        in_b_0..M: Input B operands/partial sums (one per total column, flows down)
         in_d_0..M: Preload values (one per total column, enters at top)
-        in_control_*: Control signals (broadcast/pipelined to tiles)
+        in_control_*: Control signals (broadcast/pipelined to arrays)
         in_valid: Data valid signal
         in_id: Operation tag
         in_last: Last element in sequence
 
-        out_a_0..N: Output activations (right edge)
-        out_b_0..M: Output weights/partial sums (bottom edge)
+        out_a_0..N: Output A operands (right edge)
+        out_b_0..M: Output B operands/partial sums (bottom edge)
         out_c_0..M: Accumulated results (bottom edge)
         out_control_*: Pass-through control signals
         out_valid, out_id, out_last: Pass-through metadata
 
     Parameters:
-        config: SystolicConfig with mesh/tile dimensions and data widths
+        config: SystolicConfig with mesh/array dimensions and data widths
     """
 
     def __init__(self, config: SystolicConfig):
@@ -67,7 +68,7 @@ class Mesh(Component):
         mesh_rows = config.mesh_rows
         mesh_cols = config.mesh_cols
 
-        # Tile dimensions (PEs per tile)
+        # PEArray dimensions (PEs per array)
         tile_rows = config.tile_rows
         tile_cols = config.tile_cols
 
@@ -123,13 +124,13 @@ class Mesh(Component):
         tile_rows = cfg.tile_rows
         tile_cols = cfg.tile_cols
 
-        # Create Tile grid
-        tiles = [[Tile(cfg) for _ in range(mesh_cols)] for _ in range(mesh_rows)]
+        # Create PEArray grid
+        pe_arrays = [[PEArray(cfg) for _ in range(mesh_cols)] for _ in range(mesh_rows)]
 
-        # Register all Tiles as submodules
+        # Register all PEArrays as submodules
         for mr in range(mesh_rows):
             for mc in range(mesh_cols):
-                m.submodules[f"tile_{mr}_{mc}"] = tiles[mr][mc]
+                m.submodules[f"pe_array_{mr}_{mc}"] = pe_arrays[mr][mc]
 
         # =================================================================
         # Horizontal (A) Wiring - flows left to right
@@ -138,7 +139,7 @@ class Mesh(Component):
             # First tile column gets external inputs
             for tr in range(tile_rows):
                 global_row = mr * tile_rows + tr
-                m.d.comb += getattr(tiles[mr][0], f"in_a_{tr}").eq(
+                m.d.comb += getattr(pe_arrays[mr][0], f"in_a_{tr}").eq(
                     getattr(self, f"in_a_{global_row}")
                 )
 
@@ -147,14 +148,14 @@ class Mesh(Component):
                 for tr in range(tile_rows):
                     # Pipeline register between tiles
                     pipe_a = Signal(signed(cfg.input_bits), name=f"pipe_a_{mr}_{mc}_{tr}")
-                    m.d.sync += pipe_a.eq(getattr(tiles[mr][mc - 1], f"out_a_{tr}"))
-                    m.d.comb += getattr(tiles[mr][mc], f"in_a_{tr}").eq(pipe_a)
+                    m.d.sync += pipe_a.eq(getattr(pe_arrays[mr][mc - 1], f"out_a_{tr}"))
+                    m.d.comb += getattr(pe_arrays[mr][mc], f"in_a_{tr}").eq(pipe_a)
 
             # Last tile column outputs to mesh edge
             for tr in range(tile_rows):
                 global_row = mr * tile_rows + tr
                 m.d.comb += getattr(self, f"out_a_{global_row}").eq(
-                    getattr(tiles[mr][mesh_cols - 1], f"out_a_{tr}")
+                    getattr(pe_arrays[mr][mesh_cols - 1], f"out_a_{tr}")
                 )
 
         # =================================================================
@@ -164,10 +165,10 @@ class Mesh(Component):
             # First tile row gets external inputs
             for tc in range(tile_cols):
                 global_col = mc * tile_cols + tc
-                m.d.comb += getattr(tiles[0][mc], f"in_b_{tc}").eq(
+                m.d.comb += getattr(pe_arrays[0][mc], f"in_b_{tc}").eq(
                     getattr(self, f"in_b_{global_col}")
                 )
-                m.d.comb += getattr(tiles[0][mc], f"in_d_{tc}").eq(
+                m.d.comb += getattr(pe_arrays[0][mc], f"in_d_{tc}").eq(
                     getattr(self, f"in_d_{global_col}")
                 )
 
@@ -178,20 +179,20 @@ class Mesh(Component):
                     pipe_b = Signal(signed(cfg.output_bits), name=f"pipe_b_{mr}_{mc}_{tc}")
                     pipe_d = Signal(signed(cfg.acc_bits), name=f"pipe_d_{mr}_{mc}_{tc}")
 
-                    m.d.sync += pipe_b.eq(getattr(tiles[mr - 1][mc], f"out_b_{tc}"))
-                    m.d.sync += pipe_d.eq(getattr(tiles[mr - 1][mc], f"out_c_{tc}"))
+                    m.d.sync += pipe_b.eq(getattr(pe_arrays[mr - 1][mc], f"out_b_{tc}"))
+                    m.d.sync += pipe_d.eq(getattr(pe_arrays[mr - 1][mc], f"out_c_{tc}"))
 
-                    m.d.comb += getattr(tiles[mr][mc], f"in_b_{tc}").eq(pipe_b)
-                    m.d.comb += getattr(tiles[mr][mc], f"in_d_{tc}").eq(pipe_d)
+                    m.d.comb += getattr(pe_arrays[mr][mc], f"in_b_{tc}").eq(pipe_b)
+                    m.d.comb += getattr(pe_arrays[mr][mc], f"in_d_{tc}").eq(pipe_d)
 
             # Last tile row outputs to mesh edge
             for tc in range(tile_cols):
                 global_col = mc * tile_cols + tc
                 m.d.comb += getattr(self, f"out_b_{global_col}").eq(
-                    getattr(tiles[mesh_rows - 1][mc], f"out_b_{tc}")
+                    getattr(pe_arrays[mesh_rows - 1][mc], f"out_b_{tc}")
                 )
                 m.d.comb += getattr(self, f"out_c_{global_col}").eq(
-                    getattr(tiles[mesh_rows - 1][mc], f"out_c_{tc}")
+                    getattr(pe_arrays[mesh_rows - 1][mc], f"out_c_{tc}")
                 )
 
         # =================================================================
@@ -203,29 +204,33 @@ class Mesh(Component):
         for mc in range(mesh_cols):
             # First row gets direct external control
             m.d.comb += [
-                tiles[0][mc].in_control_dataflow.eq(self.in_control_dataflow),
-                tiles[0][mc].in_control_propagate.eq(self.in_control_propagate),
-                tiles[0][mc].in_control_shift.eq(self.in_control_shift),
-                tiles[0][mc].in_valid.eq(self.in_valid),
-                tiles[0][mc].in_id.eq(self.in_id),
-                tiles[0][mc].in_last.eq(self.in_last),
+                pe_arrays[0][mc].in_control_dataflow.eq(self.in_control_dataflow),
+                pe_arrays[0][mc].in_control_propagate.eq(self.in_control_propagate),
+                pe_arrays[0][mc].in_control_shift.eq(self.in_control_shift),
+                pe_arrays[0][mc].in_valid.eq(self.in_valid),
+                pe_arrays[0][mc].in_id.eq(self.in_id),
+                pe_arrays[0][mc].in_last.eq(self.in_last),
             ]
 
             # Subsequent rows chain from previous row's output
             for mr in range(1, mesh_rows):
                 m.d.comb += [
-                    tiles[mr][mc].in_control_dataflow.eq(tiles[mr - 1][mc].out_control_dataflow),
-                    tiles[mr][mc].in_control_propagate.eq(tiles[mr - 1][mc].out_control_propagate),
-                    tiles[mr][mc].in_control_shift.eq(tiles[mr - 1][mc].out_control_shift),
-                    tiles[mr][mc].in_valid.eq(tiles[mr - 1][mc].out_valid),
-                    tiles[mr][mc].in_id.eq(tiles[mr - 1][mc].out_id),
-                    tiles[mr][mc].in_last.eq(tiles[mr - 1][mc].out_last),
+                    pe_arrays[mr][mc].in_control_dataflow.eq(
+                        pe_arrays[mr - 1][mc].out_control_dataflow
+                    ),
+                    pe_arrays[mr][mc].in_control_propagate.eq(
+                        pe_arrays[mr - 1][mc].out_control_propagate
+                    ),
+                    pe_arrays[mr][mc].in_control_shift.eq(pe_arrays[mr - 1][mc].out_control_shift),
+                    pe_arrays[mr][mc].in_valid.eq(pe_arrays[mr - 1][mc].out_valid),
+                    pe_arrays[mr][mc].in_id.eq(pe_arrays[mr - 1][mc].out_id),
+                    pe_arrays[mr][mc].in_last.eq(pe_arrays[mr - 1][mc].out_last),
                 ]
 
         # =================================================================
         # Control Output - from bottom-right tile (longest path)
         # =================================================================
-        bottom_right = tiles[mesh_rows - 1][mesh_cols - 1]
+        bottom_right = pe_arrays[mesh_rows - 1][mesh_cols - 1]
         m.d.comb += [
             self.out_control_dataflow.eq(bottom_right.out_control_dataflow),
             self.out_control_propagate.eq(bottom_right.out_control_propagate),

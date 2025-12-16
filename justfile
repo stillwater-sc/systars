@@ -151,19 +151,19 @@ typecheck:
 # =============================================================================
 
 # Generate all RTL
-gen: gen-pe gen-tile gen-mesh
+gen: gen-pe gen-pe-array gen-systolic-array
 
 # Generate PE Verilog
 gen-pe:
     python3 {{project_root}}/scripts/gen_pe.py
 
-# Generate Tile Verilog
-gen-tile:
-    python3 {{project_root}}/scripts/gen_tile.py
+# Generate PEArray Verilog
+gen-pe-array:
+    python3 {{project_root}}/scripts/gen_pe_array.py
 
-# Generate Mesh Verilog
-gen-mesh:
-    python3 {{project_root}}/scripts/gen_mesh.py
+# Generate SystolicArray Verilog
+gen-systolic-array:
+    python3 {{project_root}}/scripts/gen_systolic_array.py
 
 # =============================================================================
 # Testing
@@ -181,7 +181,7 @@ test-cocotb:
     #!/usr/bin/env bash
     set -euo pipefail
     failed=0
-    for component in pe tile mesh scratchpad accumulator; do
+    for component in pe pe_array systolic_array scratchpad accumulator; do
         testdir="{{verif_dir}}/cocotb/tests/$component"
         if [ -d "$testdir" ]; then
             echo "========================================"

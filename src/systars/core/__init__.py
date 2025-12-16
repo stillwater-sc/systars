@@ -1,14 +1,20 @@
 """
-Core systolic array components.
+Core systolic matmul array components.
 
 This module contains the fundamental building blocks:
 - PE: Processing Element (MAC unit)
-- Tile: Combinational grid of PEs
-- Mesh: Pipelined grid of Tiles
+- PEArray: Combinational grid of PEs
+- SystolicArray: Pipelined grid of PEArrays
+
+Note: Tile and Mesh are deprecated aliases for PEArray and SystolicArray.
 """
 
-from .mesh import Mesh
 from .pe import PE, PEWithShift
-from .tile import Tile
+from .pe_array import PEArray
+from .systolic_array import SystolicArray
 
-__all__ = ["PE", "PEWithShift", "Tile", "Mesh"]
+# Deprecated aliases for backwards compatibility
+Tile = PEArray
+Mesh = SystolicArray
+
+__all__ = ["PE", "PEWithShift", "PEArray", "SystolicArray", "Tile", "Mesh"]
