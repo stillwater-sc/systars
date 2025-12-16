@@ -43,6 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Phase 1: Core Systolic Array (Previous)
 
 - **ProcessingElement (PE)**: MAC unit with input/weight propagation
-- **Tile**: Configurable grid of PEs with systolic data flow
-- **Mesh**: Top-level systolic array with multiple tiles
+- **PEArray**: Combinational grid of PEs with systolic data flow
+- **SystolicArray**: Top-level pipelined grid of PEArrays
 - **SystolicConfig**: Centralized configuration dataclass

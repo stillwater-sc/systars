@@ -1,7 +1,7 @@
 """
-Cocotb tests for the Tile module.
+Cocotb tests for the PEArray module.
 
-These tests verify the Tile module behavior using cycle-accurate RTL simulation.
+These tests verify the PEArray module behavior using cycle-accurate RTL simulation.
 """
 
 import cocotb
@@ -10,8 +10,8 @@ from cocotb.triggers import RisingEdge
 
 
 @cocotb.test()
-async def test_tile_reset(dut):
-    """Test Tile initial state after reset."""
+async def test_pe_array_reset(dut):
+    """Test PEArray initial state after reset."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -22,12 +22,12 @@ async def test_tile_reset(dut):
     dut.rst.value = 0
     await RisingEdge(dut.clk)
 
-    dut._log.info("Tile reset complete")
+    dut._log.info("PEArray reset complete")
 
 
 @cocotb.test()
-async def test_tile_simple_operation(dut):
-    """Test simple operation through 1x1 Tile (single PE)."""
+async def test_pe_array_simple_operation(dut):
+    """Test simple operation through 1x1 PEArray (single PE)."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -61,8 +61,8 @@ async def test_tile_simple_operation(dut):
 
 
 @cocotb.test()
-async def test_tile_passthrough(dut):
-    """Test that control signals pass through the Tile correctly."""
+async def test_pe_array_passthrough(dut):
+    """Test that control signals pass through the PEArray correctly."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -95,12 +95,12 @@ async def test_tile_passthrough(dut):
     assert dut.out_control_dataflow.value == 1, "out_control_dataflow should be 1"
     assert dut.out_control_propagate.value == 1, "out_control_propagate should be 1"
 
-    dut._log.info("Tile pass-through test passed")
+    dut._log.info("PEArray pass-through test passed")
 
 
 @cocotb.test()
-async def test_tile_a_flow(dut):
-    """Test that A data flows through the tile horizontally."""
+async def test_pe_array_a_flow(dut):
+    """Test that A data flows through the PEArray horizontally."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -128,4 +128,4 @@ async def test_tile_a_flow(dut):
     # A should pass through (registered)
     assert dut.out_a_0.value == 77, f"out_a_0 should be 77, got {dut.out_a_0.value}"
 
-    dut._log.info("Tile A-flow test passed")
+    dut._log.info("PEArray A-flow test passed")

@@ -48,15 +48,15 @@ This document provides a comprehensive plan for rewriting the SYSTARS systolic a
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │                    Systolic Array                       │   │
 │  │  ┌─────────────────────────────────────────────────┐    │   │
-│  │  │              MeshWithDelays                     │    │   │
+│  │  │              SystolicArrayWithDelays            │    │   │
 │  │  │  ┌───────────────────────────────────────────┐  │    │   │
-│  │  │  │                 Mesh                      │  │    │   │
+│  │  │  │            SystolicArray                  │  │    │   │
 │  │  │  │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐          │  │    │   │
-│  │  │  │  │Tile │→│Tile │→│Tile │→│Tile │ ...      │  │    │   │
+│  │  │  │  │ PE  │→│ PE  │→│ PE  │→│ PE  │ ...      │  │    │   │
 │  │  │  │  └──┬──┘ └──┬──┘ └──┬──┘ └──┬──┘          │  │    │   │
 │  │  │  │     ↓       ↓       ↓       ↓             │  │    │   │
 │  │  │  │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐          │  │    │   │
-│  │  │  │  │Tile │→│Tile │→│Tile │→│Tile │ ...      │  │    │   │
+│  │  │  │  │ PE  │→│ PE  │→│ PE  │→│ PE  │ ...      │  │    │   │
 │  │  │  │  └─────┘ └─────┘ └─────┘ └─────┘          │  │    │   │
 │  │  │  └───────────────────────────────────────────┘  │    │   │
 │  │  │  + Transposer + Input Buffers + Tag Tracking    │    │   │
@@ -127,9 +127,9 @@ pygemmini/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── pe.py              # Processing Element
-│   │   ├── tile.py            # Tile (grid of PEs)
-│   │   ├── mesh.py            # Mesh (grid of Tiles)
-│   │   └── mesh_with_delays.py # Full mesh with I/O buffering
+│   │   ├── pe_array.py        # PEArray (grid of PEs)
+│   │   ├── systolic_array.py  # SystolicArray (grid of PEArrays)
+│   │   └── systolic_array_with_delays.py # SystolicArray with I/O buffering
 │   ├── memory/
 │   │   ├── __init__.py
 │   │   ├── local_addr.py      # Address encoding/decoding
@@ -158,7 +158,7 @@ pygemmini/
 ├── tests/
 │   ├── test_pe.py
 │   ├── test_tile.py
-│   ├── test_mesh.py
+│   ├── test_systolic_array.py
 │   ├── test_scratchpad.py
 │   ├── test_accumulator.py
 │   ├── test_transposer.py
@@ -466,17 +466,17 @@ class SystolicArray(Elaboratable):
         dim = config.grid_rows  # Assume square for simplicity
 
         # Vector inputs
-        self.in_a = [Signal(signed(config.input_bits), name=f"mesh_in_a_{i}")
+        self.in_a = [Signal(signed(config.input_bits), name=f"array_in_a_{i}")
                      for i in range(dim)]
-        self.in_b = [Signal(signed(config.weight_bits), name=f"mesh_in_b_{i}")
+        self.in_b = [Signal(signed(config.weight_bits), name=f"array_in_b_{i}")
                      for i in range(dim)]
-        self.in_d = [Signal(signed(config.acc_bits), name=f"mesh_in_d_{i}")
+        self.in_d = [Signal(signed(config.acc_bits), name=f"array_in_d_{i}")
                      for i in range(dim)]
 
         # Vector outputs
-        self.out_b = [Signal(signed(config.output_bits), name=f"mesh_out_b_{i}")
+        self.out_b = [Signal(signed(config.output_bits), name=f"array_out_b_{i}")
                       for i in range(dim)]
-        self.out_c = [Signal(signed(config.acc_bits), name=f"mesh_out_c_{i}")
+        self.out_c = [Signal(signed(config.acc_bits), name=f"array_out_c_{i}")
                       for i in range(dim)]
 
     def elaborate(self, platform):
@@ -727,7 +727,7 @@ class ReservationStation(Elaboratable):
 ```python
 # pygemmini/controller/execute.py
 from amaranth import *
-from ..core.mesh_with_delays import MeshWithDelays
+from ..core.systolic_array_with_delays import SystolicArrayWithDelays
 
 class ExecuteController(Elaboratable):
     """
@@ -765,8 +765,8 @@ class ExecuteController(Elaboratable):
     def elaborate(self, platform):
         m = Module()
 
-        # Instantiate mesh
-        m.submodules.mesh = mesh = MeshWithDelays(self.config)
+        # Instantiate systolic array
+        m.submodules.array = array = SystolicArrayWithDelays(self.config)
 
         # State machine
         # States: IDLE, CONFIG, PRELOAD, COMPUTE, FLUSH
@@ -829,7 +829,7 @@ class StreamWriter(Elaboratable):
 ### 3.5 Deliverables for Phase 3
 
 1. **ReservationStation** with dependency tracking
-2. **ExecuteController** FSM with mesh integration
+2. **ExecuteController** FSM with systolic array integration
 3. **LoadController** with 3 configuration states
 4. **StoreController** with pooling support
 5. **StreamReader/Writer** DMA engines
@@ -1081,8 +1081,8 @@ def compare_pe_output():
     """Compare single PE behavior"""
     pass
 
-def compare_mesh_output():
-    """Compare full mesh behavior"""
+def compare_array_output():
+    """Compare full systolic array behavior"""
     pass
 
 def compare_matmul_output():
@@ -1139,7 +1139,7 @@ def compare_matmul_output():
 
 1. **Set up repository** with Amaranth HDL, pytest, and development dependencies
 2. **Implement PE** with comprehensive unit tests
-3. **Build Tile and Mesh** incrementally
+3. **Build PEArray and SystolicArray** incrementally
 4. **Create simple testbench** that exercises basic matmul
 5. **Compare against fsim** output for validation
 

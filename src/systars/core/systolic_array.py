@@ -58,7 +58,7 @@ class SystolicArray(Component):
         out_valid, out_id, out_last: Pass-through metadata
 
     Parameters:
-        config: SystolicConfig with mesh/array dimensions and data widths
+        config: SystolicConfig with grid dimensions and data widths
     """
 
     def __init__(self, config: SystolicConfig):
@@ -76,7 +76,7 @@ class SystolicArray(Component):
         total_rows = grid_rows * tile_rows
         total_cols = grid_cols * tile_cols
 
-        # Build port signature dynamically based on mesh dimensions
+        # Build port signature dynamically based on grid dimensions
         ports = {}
 
         # Vector inputs - A (one per total row)

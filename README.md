@@ -21,7 +21,7 @@ Systars generates synthesizable Verilog for configurable systolic array accelera
 
 ## Features
 
-- **Configurable Systolic Array**: Parameterized mesh dimensions, data types, and dataflows
+- **Configurable Systolic Array**: Parameterized grid dimensions, data types, and dataflows
 - **Universal Dataflow Support**: Output-stationary (OS), input-stationary (IS), and weight-stationary (WS) modes
 - **Modern Python**: Clean, type-hinted Python 3.10+ codebase
 - **Amaranth HDL**: Leverage Python's expressiveness for hardware design
@@ -168,7 +168,7 @@ systars/
 ├── src/systars/
 │   ├── config.py          # Configuration dataclass
 │   ├── arithmetic/        # Arithmetic operations
-│   ├── core/              # PE, Tile, Mesh
+│   ├── core/              # PE, PEArray, SystolicArray
 │   │   └── pe.py          # Processing Element
 │   ├── memory/            # Scratchpad, Accumulator
 │   ├── controller/        # Load/Execute/Store controllers
@@ -191,8 +191,8 @@ See [implementation plan](./doc/plan/implementation.md) for the detailed impleme
 
 - [x] Configuration system
 - [x] Processing Element (PE)
-- [x] Tile
-- [x] Mesh
+- [x] PEArray
+- [x] SystolicArray
 
 ### Phase 2: Memory System
 

@@ -19,7 +19,7 @@ just test
 
 ## Features
 
-- **Configurable Systolic Array**: Parameterized mesh dimensions, data types, and dataflows
+- **Configurable Systolic Array**: Parameterized grid dimensions, data types, and dataflows
 - **Dual Dataflow Support**: Output-stationary (OS) and weight-stationary (WS) modes
 - **Modern Python**: Clean, type-hinted Python 3.10+ codebase
 - **Amaranth HDL**: Leverage Python's expressiveness for hardware design
