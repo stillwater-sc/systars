@@ -13,8 +13,12 @@ class Dataflow(Enum):
     """Dataflow modes for the systolic array."""
 
     OS = auto()  # Output-Stationary: accumulator stays, weights flow through
+    IS = auto()  # Input-Stationary: input stays, weights and partials flow through
     WS = auto()  # Weight-Stationary: weights stay, partial sums flow through
-    BOTH = auto()  # Runtime selectable between OS and WS
+    OI = auto()  # Runtime selectable between OS and IS
+    OW = auto()  # Runtime selectable between OS and WS
+    IW = auto()  # Runtime selectable between IS and WS
+    OIW = auto()  # Runtime selectable between OS, IS, and WS
 
 
 class Activation(Enum):
@@ -75,12 +79,13 @@ class SystolicConfig:
     # =========================================================================
     # Dataflow Configuration
     # =========================================================================
-    dataflow: Dataflow = Dataflow.BOTH
+    dataflow: Dataflow = Dataflow.OIW
     """
     Dataflow mode for the systolic array.
-    - OS: Output-stationary (better for memory-intensive ops)
-    - WS: Weight-stationary (better for weight-reuse)
-    - BOTH: Runtime selectable
+    - OS: Output-stationary (best for quantized ops and long dot products)
+    - IS: Input-stationary (best for matvecs and image 1D/2D convolutions)
+    - WS: Weight-stationary (best for fully connected layers and 2D/3D convolutions)
+    - OIW: Runtime selectable
     """
 
     # =========================================================================

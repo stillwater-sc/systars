@@ -27,7 +27,7 @@ class TestPE:
             weight_bits=8,
             acc_bits=32,
             output_bits=20,
-            dataflow=Dataflow.BOTH,
+            dataflow=Dataflow.OW,
         )
 
     @pytest.fixture
