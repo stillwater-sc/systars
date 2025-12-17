@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Examples and Wavefront Visualization (2025-12-16)
+
+- **Examples Framework** (`examples/`): User-facing demonstration applications
+  - `examples/common/dram_model.py`: Simulated DRAM with matrix load/store operations
+  - `examples/common/tensor_utils.py`: Matrix packing, unpacking, and tiling utilities
+  - `examples/gemm/01_simple_matmul.py`: Complete matrix multiply demo with command generation
+  - `examples/gemm/02_animated_wavefront.py`: Terminal animation of systolic wavefront
+  - `examples/gemm/03_wavefront_gif.py`: GIF generator for shareable animations
+
+- **Wavefront Documentation** (`docs/wavefront-animation.md`): Comprehensive guide
+  - Theory of wavefront data flow and skewing patterns
+  - Cycle-by-cycle breakdown of systolic array operation
+  - Visualization tool usage and color coding guide
+  - GIF generation for Slack/documentation sharing
+
+- **End-to-End Integration Tests** (`tests/unit/test_gemm_e2e.py`)
+  - `SimulatedAXIDRAM` class for testing with inline AXI handling
+  - Tests for load, store, execute, and full GEMM sequence
+  - Verification against NumPy reference computations
+
+- **Top-Level Integration** (`src/systars/top.py`): SystolicTop module
+  - Wires all accelerator components together
+  - Command dispatch to load/store/execute controllers
+  - AXI interface connection to StreamReader/StreamWriter
+
 #### Phase 2: Memory System (2025-12-15)
 
 - **LocalAddr** (`src/systars/memory/local_addr.py`): Unified address encoding utilities
