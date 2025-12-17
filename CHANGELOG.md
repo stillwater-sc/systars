@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Skew Buffer Timing Visualization (2025-12-17)
+
+- **Interactive Step Mode**: `--step` flag for manual single-stepping through animation
+- **Dynamic Sizing**: `--k` now defaults to `--size` for intuitive square matrix behavior
+- **Timeline Logging**: Cycle-by-cycle event log with throughput metrics after validation
+
+### Fixed
+
+#### Skew Buffer Display Fixes (2025-12-17)
+
+- **SRAM Timing Display**: Fixed k-value calculation showing k=-1 when data became valid
+- **Column Alignment**: Fixed Skew A (4-char) and Skew B (5-char) column width consistency
+- **Dot-Value Alignment**: Changed dot position to align with value ones digit
+- **Dynamic Left Margin**: Margin now scales with array size (`7 + max_depth * 4`)
+- **FIFO Register Mapping**: Fixed slot assignment so data enters at deepest register, not R0
+  - Formula: `R[d]` displays `fifo[d - depth + fifo_len]`
+- **Display Timing**: All state now captured and displayed consistently after `step()`
+
 #### Examples and Wavefront Visualization (2025-12-16)
 
 - **Examples Framework** (`examples/`): User-facing demonstration applications
