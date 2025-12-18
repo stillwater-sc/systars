@@ -36,7 +36,9 @@ dev = [
     "mypy>=1.8",
     "pytest>=8.0",
     "pytest-cov>=4.1",
+    "pytest-subtests>=0.11",
     "pre-commit>=3.6",
+    "numpy>=1.24",  # Required for GEMM demo/e2e tests
 ]
 sim = [
     "cocotb>=2.0",
