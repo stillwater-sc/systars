@@ -661,7 +661,13 @@ class TestGemmEndToEndVerilog:
 
     def test_verilog_generation_small(self):
         """Test Verilog generation for small config."""
+        from amaranth._toolchain.yosys import find_yosys
         from amaranth.back import verilog
+
+        try:
+            find_yosys(lambda ver: ver >= (0, 40))
+        except Exception:
+            pytest.skip("Yosys not found")
 
         config = SystolicConfig(
             grid_rows=1,

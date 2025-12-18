@@ -278,7 +278,13 @@ class TestGemmDemoVerilog:
 
     def test_verilog_generation(self):
         """Test that SystolicTop generates valid Verilog."""
+        from amaranth._toolchain.yosys import find_yosys
         from amaranth.back import verilog
+
+        try:
+            find_yosys(lambda ver: ver >= (0, 40))
+        except Exception:
+            pytest.skip("Yosys not found")
 
         config = SystolicConfig(
             grid_rows=1,
@@ -302,7 +308,13 @@ class TestGemmDemoVerilog:
 
     def test_verilog_contains_submodules(self):
         """Test that generated Verilog contains all submodules."""
+        from amaranth._toolchain.yosys import find_yosys
         from amaranth.back import verilog
+
+        try:
+            find_yosys(lambda ver: ver >= (0, 40))
+        except Exception:
+            pytest.skip("Yosys not found")
 
         config = SystolicConfig(
             grid_rows=1,
