@@ -16,8 +16,10 @@ The hardware automatically:
 - Generates internal command sequences (LOAD, PRELOAD, COMPUTE, STORE)
 """
 
+from .conv2d import Conv2d
 from .matmul import Matmul
 
 __all__ = [
+    "Conv2d",
     "Matmul",
 ]
