@@ -905,8 +905,400 @@ class StencilMachineSim:
 
 
 # =============================================================================
+# Parallel Tile Processing
+# =============================================================================
+
+
+@dataclass
+class TileProcessor:
+    """
+    A single tile processor (stencil engine instance).
+
+    Each tile processor handles a horizontal strip of the feature map,
+    with its own line buffers and MAC pipeline.
+    """
+
+    tile_id: int
+    start_row: int  # First input row this tile processes
+    end_row: int  # Last input row (exclusive)
+    input_width: int
+    kernel_size: int
+    num_filters: int
+
+    # Line buffers (local to this tile)
+    line_buffers: list = field(default_factory=list)
+
+    # MAC pipeline (pipelined mode)
+    mac_pipeline: PipelinedMAC = None
+
+    # Window and shift registers
+    window: np.ndarray = None
+    shift_regs: list = field(default_factory=list)
+
+    # Position tracking
+    input_row: int = 0
+    read_col: int = 0
+    output_row: int = 0
+    output_col: int = 0
+    lb_write_idx: int = 0
+    lb_read_base: int = 0
+    rows_buffered: int = 0
+
+    # State
+    state: str = "IDLE"
+    done: bool = False
+
+    # Output storage
+    output: np.ndarray = None
+    current_mac_results: np.ndarray = None
+    filters: np.ndarray = None
+
+    def __post_init__(self):
+        K = self.kernel_size
+        self.line_buffers = [LineBuffer(self.input_width) for _ in range(K)]
+        self.mac_pipeline = PipelinedMAC(kernel_size=K, num_filters=self.num_filters)
+        self.shift_regs = [[0 for _ in range(K)] for _ in range(K)]
+        self.window = np.zeros((K, K), dtype=np.int8)
+        self.current_mac_results = np.zeros(self.num_filters, dtype=np.int32)
+
+    def setup(self, filters: np.ndarray, out_width: int):
+        """Initialize tile for processing."""
+        K = self.kernel_size
+        self.filters = filters
+        self.mac_pipeline.filters = filters
+
+        tile_out_h = max(0, self.end_row - self.start_row - K + 1)
+        self.output = np.zeros((self.num_filters, tile_out_h, out_width), dtype=np.int32)
+
+        self.input_row = 0
+        self.read_col = 0
+        self.output_row = 0
+        self.output_col = 0
+        self.lb_write_idx = 0
+        self.lb_read_base = 0
+        self.rows_buffered = 0
+        self.state = "WAIT_DATA"
+        self.done = False
+
+        for lb in self.line_buffers:
+            lb.data = np.zeros(self.input_width, dtype=np.int8)
+            lb.filled = False
+            lb.fill_progress = 0
+
+        for row in range(K):
+            for col in range(K):
+                self.shift_regs[row][col] = 0
+
+        self.mac_pipeline.reset()
+
+    def receive_row(self, row_data: np.ndarray) -> bool:
+        """Receive a row of data. Returns True if can start computing."""
+        K = self.kernel_size
+        lb = self.line_buffers[self.lb_write_idx]
+        lb.data = row_data.copy()
+        lb.filled = True
+        lb.fill_progress = self.input_width
+
+        self.rows_buffered += 1
+        self.input_row += 1
+        self.lb_write_idx = (self.lb_write_idx + 1) % K
+
+        if self.rows_buffered >= K and self.state == "WAIT_DATA":
+            self.state = "COMPUTING"
+            self.read_col = 0
+            return True
+        return False
+
+    def step(self, out_width: int) -> bool:
+        """Execute one cycle. Returns True if still active."""
+        if self.done:
+            return False
+
+        K = self.kernel_size
+
+        if self.state == "WAIT_DATA":
+            return True
+
+        if self.state == "COMPUTING":
+            for row in range(K):
+                phys_idx = (self.lb_read_base + row) % K
+                lb = self.line_buffers[phys_idx]
+                for col in range(K - 1):
+                    self.shift_regs[row][col] = self.shift_regs[row][col + 1]
+                if self.read_col < self.input_width:
+                    self.shift_regs[row][K - 1] = lb.data[self.read_col]
+                else:
+                    self.shift_regs[row][K - 1] = 0
+
+            for row in range(K):
+                for col in range(K):
+                    self.window[row, col] = self.shift_regs[row][col]
+
+            window_valid = self.read_col >= K - 1 and self.output_col < out_width
+
+            if window_valid:
+                self.mac_pipeline.push(self.window.copy(), (self.output_row, self.output_col))
+                for entry in self.mac_pipeline.results_ready:
+                    r, c_pos = entry.output_pos
+                    for f in range(self.num_filters):
+                        self.output[f, r, c_pos] = entry.final_sums[f]
+                        self.current_mac_results[f] = entry.final_sums[f]
+                self.mac_pipeline.results_ready = []
+                self.output_col += 1
+
+            self.read_col += 1
+
+            if self.read_col >= self.input_width:
+                self.read_col = 0
+                self.output_col = 0
+                self.output_row += 1
+                self.lb_read_base = (self.lb_read_base + 1) % K
+                for row in range(K):
+                    for col in range(K):
+                        self.shift_regs[row][col] = 0
+
+                tile_out_h = self.end_row - self.start_row - K + 1
+                if self.output_row >= tile_out_h:
+                    self.state = "DRAINING"
+                elif self.rows_buffered < self.input_row + K:
+                    self.state = "WAIT_DATA"
+
+        elif self.state == "DRAINING":
+            completed = self.mac_pipeline.step()
+            for entry in completed:
+                r, c_pos = entry.output_pos
+                for f in range(self.num_filters):
+                    self.output[f, r, c_pos] = entry.final_sums[f]
+
+            if self.mac_pipeline.get_occupancy() == 0:
+                self.done = True
+                self.state = "DONE"
+
+        return not self.done
+
+
+@dataclass
+class ParallelStencilMachine:
+    """
+    Parallel stencil machine with multiple tile processors.
+
+    The feature map is divided into horizontal tiles, each processed
+    by a separate stencil engine for spatial parallelism.
+    """
+
+    input_height: int
+    input_width: int
+    kernel_size: int
+    num_filters: int
+    num_tiles: int = 2
+
+    scratchpad: Scratchpad = None
+    tiles: list = field(default_factory=list)
+    filters: np.ndarray = None
+    expected_output: np.ndarray = None
+    output: np.ndarray = None
+
+    cycle: int = 0
+    state: str = "INIT"
+    rows_per_tile: list = field(default_factory=list)
+    last_action: str = ""
+
+    def __post_init__(self):
+        K = self.kernel_size
+        out_h = self.input_height - K + 1
+
+        self.scratchpad = Scratchpad(
+            height=self.input_height,
+            width=self.input_width,
+            cache_line_width=self.input_width,
+        )
+
+        rows_per_tile_base = out_h // self.num_tiles
+        remainder = out_h % self.num_tiles
+
+        self.tiles = []
+        current_out_row = 0
+
+        for i in range(self.num_tiles):
+            tile_out_rows = rows_per_tile_base + (1 if i < remainder else 0)
+            next_out_row = current_out_row + tile_out_rows
+
+            start_row = current_out_row
+            end_row = next_out_row + K - 1
+
+            tile = TileProcessor(
+                tile_id=i,
+                start_row=start_row,
+                end_row=min(end_row, self.input_height),
+                input_width=self.input_width,
+                kernel_size=K,
+                num_filters=self.num_filters,
+            )
+            self.tiles.append(tile)
+            self.rows_per_tile.append((start_row, min(end_row, self.input_height)))
+            current_out_row = next_out_row
+
+        out_w = self.input_width - K + 1
+        self.output = np.zeros((self.num_filters, out_h, out_w), dtype=np.int32)
+
+    def setup(self, input_image: np.ndarray, filters: np.ndarray):
+        """Initialize with input data."""
+        K = self.kernel_size
+        out_h = self.input_height - K + 1
+        out_w = self.input_width - K + 1
+
+        self.scratchpad.load_image(input_image)
+        self.filters = filters.copy()
+
+        self.expected_output = np.zeros((self.num_filters, out_h, out_w), dtype=np.int32)
+        for f in range(self.num_filters):
+            for i in range(out_h):
+                for j in range(out_w):
+                    window = input_image[i : i + K, j : j + K]
+                    self.expected_output[f, i, j] = np.sum(window * filters[f])
+
+        for tile in self.tiles:
+            tile.setup(filters, out_w)
+
+        self.cycle = 0
+        self.state = "DISTRIBUTING"
+        self.last_action = "Starting parallel tile processing..."
+
+    def step(self) -> bool:
+        """Execute one cycle of parallel processing."""
+        if self.state == "DONE":
+            return False
+
+        K = self.kernel_size
+        out_w = self.input_width - K + 1
+
+        if self.state == "DISTRIBUTING":
+            tiles_needing_data = [t for t in self.tiles if t.state == "WAIT_DATA" and not t.done]
+
+            if tiles_needing_data:
+                tile = tiles_needing_data[0]
+                start, end = self.rows_per_tile[tile.tile_id]
+                row_to_fetch = start + tile.input_row
+
+                if row_to_fetch < end:
+                    row_data = self.scratchpad.data[row_to_fetch, :]
+                    tile.receive_row(row_data)
+                    self.last_action = f"Row {row_to_fetch} → Tile {tile.tile_id}"
+
+            for tile in self.tiles:
+                if tile.state in ["COMPUTING", "DRAINING"]:
+                    tile.step(out_w)
+
+            if all(t.done for t in self.tiles):
+                self.state = "ASSEMBLING"
+                self.last_action = "All tiles complete, assembling..."
+
+        elif self.state == "ASSEMBLING":
+            current_out_row = 0
+            for tile in self.tiles:
+                tile_out_h = tile.output.shape[1]
+                for f in range(self.num_filters):
+                    self.output[f, current_out_row : current_out_row + tile_out_h, :] = tile.output[
+                        f, :, :
+                    ]
+                current_out_row += tile_out_h
+
+            self.state = "DONE"
+            self.last_action = "Processing complete!"
+
+        self.cycle += 1
+        return self.state != "DONE"
+
+    def get_tile_status(self) -> list:
+        """Get status of each tile for visualization."""
+        return [
+            {
+                "id": t.tile_id,
+                "state": t.state,
+                "input_row": t.input_row,
+                "output_row": t.output_row,
+                "rows_buffered": t.rows_buffered,
+                "pipeline_occupancy": t.mac_pipeline.get_occupancy(),
+                "pipeline_total": t.mac_pipeline.total_stages,
+                "done": t.done,
+                "row_range": self.rows_per_tile[t.tile_id],
+            }
+            for t in self.tiles
+        ]
+
+
+# =============================================================================
 # Visualization
 # =============================================================================
+
+
+def visualize_parallel_state(psim: ParallelStencilMachine):
+    """Print the current state of the parallel stencil machine."""
+    c = Colors
+    K = psim.kernel_size
+
+    print(f"\n{c.BOLD}{'═' * 80}{c.RESET}")
+    print(f"{c.BOLD}Cycle {psim.cycle:3d} │ {psim.num_tiles} Tiles │ {psim.last_action}{c.RESET}")
+    print(f"{'═' * 80}{c.RESET}")
+
+    # Scratchpad with tile ownership
+    print(f"\n{c.ORANGE}┌─ SCRATCHPAD ({psim.input_height}×{psim.input_width}) ─┐{c.RESET}")
+    tile_colors = [c.CYAN, c.MAGENTA, c.YELLOW, c.GREEN]
+
+    for i in range(min(psim.input_height, 10)):
+        tile_owner = None
+        for t, (start, end) in enumerate(psim.rows_per_tile):
+            if start <= i < end:
+                tile_owner = t
+                break
+        tc = tile_colors[tile_owner % len(tile_colors)] if tile_owner is not None else c.DIM
+        row_data = " ".join(f"{v:2d}" for v in psim.scratchpad.data[i, :6])
+        if psim.input_width > 6:
+            row_data += " ..."
+        print(f"  {tc}Row {i:2d} [T{tile_owner}]:{c.RESET} [{row_data}]")
+
+    if psim.input_height > 10:
+        print(f"  {c.DIM}... ({psim.input_height - 10} more){c.RESET}")
+
+    # Tile status
+    print(f"\n{c.BLUE}┌─ TILE PROCESSORS ({psim.num_tiles} engines) ─┐{c.RESET}")
+
+    for ts in psim.get_tile_status():
+        tc = tile_colors[ts["id"] % len(tile_colors)]
+        if ts["done"]:
+            state_str = f"{c.GREEN}✓ DONE{c.RESET}"
+        elif ts["state"] == "COMPUTING":
+            state_str = f"{c.YELLOW}▶ COMP{c.RESET}"
+        elif ts["state"] == "WAIT_DATA":
+            state_str = f"{c.DIM}◌ WAIT{c.RESET}"
+        elif ts["state"] == "DRAINING":
+            state_str = f"{c.BLUE}↓ DRAIN{c.RESET}"
+        else:
+            state_str = ts["state"][:6]
+
+        occ, tot = ts["pipeline_occupancy"], ts["pipeline_total"]
+        pipe_bar = "█" * occ + "░" * (tot - occ)
+        start, end = ts["row_range"]
+        print(
+            f"  {tc}T{ts['id']}{c.RESET} [{start:2d}-{end - 1:2d}] {state_str} "
+            f"in:{ts['input_row']:2d} out:{ts['output_row']:2d} [{pipe_bar}]"
+        )
+
+    active = sum(1 for ts in psim.get_tile_status() if ts["state"] == "COMPUTING")
+    in_flight = sum(ts["pipeline_occupancy"] for ts in psim.get_tile_status())
+    print(f"\n  {c.GREEN}Active: {active}/{psim.num_tiles}  In-flight: {in_flight} MACs{c.RESET}")
+
+    # Output
+    out_h = psim.input_height - K + 1
+    out_w = psim.input_width - K + 1
+    print(f"\n{c.GREEN}┌─ OUTPUT ({psim.num_filters}×{out_h}×{out_w}) ─┐{c.RESET}")
+    for f in range(min(psim.num_filters, 2)):
+        row_strs = []
+        for row in range(min(out_h, 3)):
+            vals = " ".join(f"{psim.output[f, row, col]:3d}" for col in range(min(out_w, 5)))
+            row_strs.append(f"[{vals}]")
+        print(f"  Ch{f}: {' '.join(row_strs)}")
+    print()
 
 
 def visualize_state(sim: StencilMachineSim, compact: bool = False):
@@ -1379,6 +1771,170 @@ def run_animated_demo(
         return False
 
 
+def run_parallel_demo(
+    width: int = 16,
+    height: int = 12,
+    kernel_size: int = 3,
+    num_filters: int = 2,
+    num_tiles: int = 2,
+    delay_ms: int = 300,
+    step_mode: bool = False,
+    use_color: bool = True,
+):
+    """Run the parallel tile processing demonstration."""
+    if not use_color:
+        Colors.disable()
+
+    c = Colors
+    K = kernel_size
+
+    print(f"{c.BOLD}{'═' * 80}{c.RESET}")
+    print(f"{c.BOLD}Parallel Stencil Machine Animation ({num_tiles} Tile Processors){c.RESET}")
+    print(f"{c.BOLD}{'═' * 80}{c.RESET}")
+
+    # Show parallel architecture
+    print(f"""
+{c.BOLD}Parallel Tile Processing Architecture{c.RESET}
+{c.BOLD}====================================={c.RESET}
+
+                    ┌─────────────────────────────────────┐
+                    │         SCRATCHPAD (Shared)         │
+                    │       ┌───────────────────────┐     │
+                    │       │    Feature Map H×W    │     │
+                    │       └───────────────────────┘     │
+                    │          │     │     │     │        │
+                    └──────────┼─────┼─────┼─────┼────────┘
+                               ▼     ▼     ▼     ▼
+    ┌────────────────┬────────────────┬────────────────┬────────────────┐
+    │   {c.CYAN}Tile 0{c.RESET}       │   {c.MAGENTA}Tile 1{c.RESET}       │   {c.YELLOW}Tile 2{c.RESET}       │   {c.GREEN}Tile N{c.RESET}       │
+    │  (rows 0-3)    │  (rows 3-6)    │  (rows 6-9)    │  (rows ...)    │
+    │ ┌──────────┐   │ ┌──────────┐   │ ┌──────────┐   │ ┌──────────┐   │
+    │ │Line Bufs │   │ │Line Bufs │   │ │Line Bufs │   │ │Line Bufs │   │
+    │ │ Window   │   │ │ Window   │   │ │ Window   │   │ │ Window   │   │
+    │ │ MAC Pipe │   │ │ MAC Pipe │   │ │ MAC Pipe │   │ │ MAC Pipe │   │
+    │ └────┬─────┘   │ └────┬─────┘   │ └────┬─────┘   │ └────┬─────┘   │
+    └──────┼─────────┴──────┼─────────┴──────┼─────────┴──────┼─────────┘
+           │                │                │                │
+           └────────────────┴────────────────┴────────────────┘
+                                    │
+                                    ▼
+                    ┌─────────────────────────────────────┐
+                    │       Output Assembly (Merged)      │
+                    └─────────────────────────────────────┘
+
+{c.BOLD}Key Benefits:{c.RESET}
+  • {c.GREEN}N× throughput{c.RESET} with N parallel tile engines
+  • Each tile has independent line buffers and MAC pipeline
+  • Tiles process different spatial regions simultaneously
+  • Shared scratchpad amortizes DRAM access
+""")
+
+    # Create test data
+    np.random.seed(42)
+    input_image = np.random.randint(1, 10, size=(height, width), dtype=np.int8)
+    filters = np.random.randint(-2, 3, size=(num_filters, K, K), dtype=np.int8)
+
+    print(f"\n{c.ORANGE}Input Image ({height}×{width}):{c.RESET}")
+    for i in range(min(height, 8)):
+        print(f"  Row {i}: {input_image[i, :8].tolist()}{'...' if width > 8 else ''}")
+    if height > 8:
+        print("  ...")
+
+    print(f"\n{c.BLUE}Filters ({num_filters} × {K}×{K}):{c.RESET}")
+    for f in range(num_filters):
+        print(f"  Filter {f}:\n{filters[f]}")
+
+    # Create parallel simulator
+    psim = ParallelStencilMachine(
+        input_height=height,
+        input_width=width,
+        kernel_size=kernel_size,
+        num_filters=num_filters,
+        num_tiles=num_tiles,
+    )
+    psim.setup(input_image, filters)
+
+    print(f"\n{c.BOLD}Configuration:{c.RESET}")
+    print(f"  Tiles: {num_tiles}")
+    print("  Rows per tile: ", end="")
+    for t, (start, end) in enumerate(psim.rows_per_tile):
+        print(f"T{t}:[{start}-{end - 1}] ", end="")
+    print()
+
+    if step_mode:
+        print(f"\n{c.BOLD}STEP MODE: Press Enter to advance, 'q' to quit, 'r' to run{c.RESET}")
+    else:
+        print(f"\n{c.BOLD}Press Enter to start animation (Ctrl+C to stop)...{c.RESET}")
+
+    try:
+        input()
+    except KeyboardInterrupt:
+        print("\nSkipping animation...")
+        return True
+
+    # Animation loop
+    running = not step_mode
+    try:
+        while True:
+            clear_screen()
+            print(f"{c.BOLD}Parallel Stencil Animation ({num_tiles} Tiles){c.RESET}")
+            print(f"Conv2D: [{height}×{width}] ⊛ [{K}×{K}] → Output")
+            if step_mode:
+                print(f"{c.DIM}[STEP MODE] Enter=next, r=run, q=quit{c.RESET}")
+
+            visualize_parallel_state(psim)
+
+            if psim.state == "DONE":
+                break
+
+            if step_mode and not running:
+                try:
+                    user_input = input(f"{c.BOLD}>{c.RESET} ").strip().lower()
+                    if user_input == "q":
+                        break
+                    elif user_input == "r":
+                        running = True
+                except EOFError:
+                    break
+            else:
+                time.sleep(delay_ms / 1000.0)
+
+            if not psim.step():
+                break
+
+    except KeyboardInterrupt:
+        print("\nAnimation interrupted.")
+
+    # Show final result
+    clear_screen()
+    print(f"\n{c.BOLD}{'═' * 80}{c.RESET}")
+    print(f"{c.BOLD}Final State (Cycle {psim.cycle}){c.RESET}")
+    print(f"{'═' * 80}")
+
+    visualize_parallel_state(psim)
+
+    # Verify result
+    print(f"\n{c.BOLD}Verification:{c.RESET}")
+    all_match = np.array_equal(psim.output, psim.expected_output)
+
+    for f in range(num_filters):
+        print(f"\n  Filter {f}:")
+        print(f"    Expected: {psim.expected_output[f].tolist()}")
+        print(f"    Computed: {psim.output[f].tolist()}")
+
+        if np.array_equal(psim.output[f], psim.expected_output[f]):
+            print(f"    {c.GREEN}✓ MATCH{c.RESET}")
+        else:
+            print(f"    {c.RED}✗ MISMATCH{c.RESET}")
+
+    if all_match:
+        print(f"\n{c.GREEN}{c.BOLD}✓ PASS: All outputs match expected!{c.RESET}")
+        return True
+    else:
+        print(f"\n{c.RED}{c.BOLD}✗ FAIL: Some outputs don't match!{c.RESET}")
+        return False
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -1407,8 +1963,28 @@ def main():
         action="store_true",
         help="Use pipelined MAC with II=1 (high throughput mode)",
     )
+    parser.add_argument(
+        "--tiles",
+        type=int,
+        default=0,
+        help="Number of parallel tile processors (0=single engine mode)",
+    )
 
     args = parser.parse_args()
+
+    # If tiles specified, run parallel demo
+    if args.tiles > 0:
+        success = run_parallel_demo(
+            width=args.width,
+            height=args.height,
+            kernel_size=args.kernel,
+            num_filters=args.filters,
+            num_tiles=args.tiles,
+            delay_ms=args.delay,
+            step_mode=args.step,
+            use_color=not args.no_color,
+        )
+        sys.exit(0 if success else 1)
 
     success = run_animated_demo(
         width=args.width,
