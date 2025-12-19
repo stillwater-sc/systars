@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### ISA-Level Matmul Instruction (2025-12-18)
+
+- **Matmul ISA Instruction** (`src/systars/isa/matmul.py`): High-level tiled matrix multiply
+  - Configuration interface: dimensions (M, N, K), addresses, strides, options
+  - Automatic dataflow selection: Output-Stationary, A-Stationary, B-Stationary
+  - Tiled computation with edge tile handling for arbitrary matrix sizes
+  - Internal command generation: LOAD_A, LOAD_B, LOAD_D, EXEC_CONFIG, EXEC_PRELOAD, EXEC_COMPUTE, STORE_C
+  - Backpressure handling via valid/ready handshake on command interface
+  - Double buffering with bank toggling for latency hiding
+
+- **ISA Module** (`src/systars/isa/__init__.py`): New ISA instructions package
+
+- **Matmul Example** (`examples/gemm/07_isa_matmul.py`): Interactive demonstration
+  - Shows configuration, tiling, command generation, and dataflow selection
+  - Supports configurable M, N, K dimensions and array size
+  - Validates command counts against expected values
+
+- **Matmul Unit Tests** (`tests/unit/test_matmul.py`): 13 comprehensive tests
+  - Configuration interface tests
+  - Address calculation for tiled operations
+  - Dataflow selection heuristics
+  - Command emission verification
+  - Backpressure handling
+  - Double buffering bank toggling
+  - Multi-tile execution
+  - Bias loading (LOAD_D)
+  - Error handling
+
+- **Implementation Plan** (`docs/plan/isa-instructions.md`): Design documentation for Matmul and Conv2d
+
+### Changed
+
+#### CI Improvements (2025-12-18)
+
+- **Unit Tests CI**: Added OSS CAD Suite (Yosys) to unit tests job for full Verilog generation test coverage
+- **Dependencies**: Added `numpy>=1.24` to dev dependencies for GEMM demo/e2e tests
+
+### Fixed
+
+#### Verilog Generation Tests (2025-12-18)
+
+- Added skip-if-no-Yosys logic to 3 tests in `test_gemm_demo.py` and `test_gemm_e2e.py`
+- All 23 Verilog generation tests now properly skip when Yosys unavailable (safety net)
+
 #### Skew Buffer Timing Visualization (2025-12-17)
 
 - **Interactive Step Mode**: `--step` flag for manual single-stepping through animation
