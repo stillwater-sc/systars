@@ -32,8 +32,11 @@ from typing import Any
 from amaranth import Module, unsigned
 from amaranth.lib.wiring import Component, In, Out
 
+from .barrier import BarrierUnitSim
 from .config import SIMTConfig
+from .global_memory import GlobalMemorySim
 from .partition import PartitionSim, create_gemm_program
+from .shared_memory import SharedMemorySim
 from .warp_scheduler import Instruction
 
 
@@ -112,6 +115,15 @@ class SMSim:
     # Partitions
     partitions: list[PartitionSim] = field(default_factory=list)
 
+    # SM-wide shared memory (accessible from all partitions)
+    shared_memory: SharedMemorySim = field(init=False)  # type: ignore[assignment]
+
+    # Global memory (DRAM)
+    global_memory: GlobalMemorySim = field(init=False)  # type: ignore[assignment]
+
+    # Barrier unit
+    barrier_unit: BarrierUnitSim = field(init=False)  # type: ignore[assignment]
+
     # State
     state: SMState = SMState.IDLE
     cycle: int = 0
@@ -123,10 +135,26 @@ class SMSim:
     total_bank_conflicts: int = 0
 
     def __post_init__(self):
-        """Initialize all partitions."""
-        self.partitions = [
-            PartitionSim(self.config, partition_id=i) for i in range(self.config.num_partitions)
-        ]
+        """Initialize all partitions and SM-wide resources."""
+        # SM-wide shared memory
+        self.shared_memory = SharedMemorySim(self.config)
+
+        # Global memory (DRAM)
+        self.global_memory = GlobalMemorySim(self.config)
+
+        # Barrier unit
+        self.barrier_unit = BarrierUnitSim(self.config)
+
+        # Create partitions and connect to SM-wide resources
+        self.partitions = []
+        for i in range(self.config.num_partitions):
+            partition = PartitionSim(self.config, partition_id=i)
+            # Connect partition's LSU to SM-wide shared memory and global memory
+            partition.load_store_unit.shared_memory = self.shared_memory
+            partition.load_store_unit.global_memory = self.global_memory
+            # Also update partition's shared memory reference
+            partition.shared_memory = self.shared_memory
+            self.partitions.append(partition)
 
     def load_program(
         self,

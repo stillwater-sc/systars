@@ -85,14 +85,66 @@ class SIMTConfig:
     """Maximum instructions in I-cache."""
 
     # =========================================================================
-    # Memory Configuration
+    # Unified L1/Shared Memory Configuration
     # =========================================================================
+    # Since NVIDIA Volta (2017), shared memory and L1 cache share the same
+    # physical SRAM with configurable partitioning.
+
+    unified_cache_kb: int = 64
+    """Total combined SRAM for shared memory + L1 cache."""
 
     shared_memory_kb: int = 48
-    """Shared memory size in KB (configurable partition with L1)."""
+    """Shared memory partition size in KB (programmer-controlled scratchpad)."""
 
     l1_cache_kb: int = 16
-    """L1 data cache size in KB."""
+    """L1 data cache partition size in KB (auto-cached global memory)."""
+
+    shared_memory_banks: int = 32
+    """Number of shared memory banks (typically matches warp size)."""
+
+    l1_line_size: int = 128
+    """L1 cache line size in bytes."""
+
+    l1_associativity: int = 4
+    """L1 cache associativity (ways)."""
+
+    # =========================================================================
+    # Memory Latencies (in cycles)
+    # =========================================================================
+
+    shared_mem_latency: int = 4
+    """Shared memory access latency in cycles (conflict-free)."""
+
+    l1_hit_latency: int = 20
+    """L1 cache hit latency in cycles."""
+
+    l1_miss_latency: int = 200
+    """L1 cache miss latency in cycles (includes DRAM access)."""
+
+    # =========================================================================
+    # Memory Coalescing Configuration
+    # =========================================================================
+
+    coalescing_window: int = 128
+    """Coalescing window size in bytes (128B segment for transaction merging)."""
+
+    max_outstanding_requests: int = 16
+    """Maximum in-flight memory requests per SM."""
+
+    # =========================================================================
+    # Address Space Configuration
+    # =========================================================================
+    # 32-bit address layout:
+    # [31:30] = 00: Global Memory
+    # [31:30] = 01: Shared Memory
+    # [31:30] = 10: Constant Memory (read-only, cached)
+    # [31:30] = 11: Reserved
+
+    shared_memory_base: int = 0x4000_0000
+    """Base address for shared memory address space."""
+
+    constant_memory_base: int = 0x8000_0000
+    """Base address for constant memory address space."""
 
     # =========================================================================
     # Pipeline Configuration
@@ -144,8 +196,17 @@ class SIMTConfig:
     shared_mem_access_energy_pj: float = 8.0
     """Energy per 32-bit shared memory access."""
 
+    shared_mem_conflict_energy_pj: float = 8.0
+    """Additional energy per shared memory bank conflict cycle."""
+
     l1_cache_access_energy_pj: float = 15.0
     """Energy per L1 cache line access."""
+
+    dram_access_energy_pj: float = 200.0
+    """Energy per DRAM access (128-byte line)."""
+
+    coalescing_energy_pj: float = 2.0
+    """Energy overhead per coalescing analysis."""
 
     # =========================================================================
     # Derived Properties
@@ -170,6 +231,31 @@ class SIMTConfig:
     def registers_per_thread(self) -> int:
         """Maximum registers per thread (hardware limit is typically 255)."""
         return min(255, self.registers_per_partition // self.warp_size)
+
+    @property
+    def shared_memory_bytes(self) -> int:
+        """Shared memory size in bytes."""
+        return self.shared_memory_kb * 1024
+
+    @property
+    def shared_memory_words(self) -> int:
+        """Shared memory size in 32-bit words."""
+        return self.shared_memory_bytes // 4
+
+    @property
+    def shared_memory_words_per_bank(self) -> int:
+        """Number of 32-bit words per shared memory bank."""
+        return self.shared_memory_words // self.shared_memory_banks
+
+    @property
+    def l1_cache_lines(self) -> int:
+        """Number of L1 cache lines."""
+        return (self.l1_cache_kb * 1024) // self.l1_line_size
+
+    @property
+    def l1_cache_sets(self) -> int:
+        """Number of L1 cache sets."""
+        return self.l1_cache_lines // self.l1_associativity
 
     def instruction_energy_pj(self) -> float:
         """Total energy overhead per instruction (excluding ALU)."""

@@ -73,3 +73,55 @@ The animation shows:
   # Fast mode with GEMM workload
   python examples/simt/01_animated_simt.py --gemm --k 8 --fast
 ```
+
+## Summary of SIMT Memory architecture
+
+## Phase 1: Core Memory Path
+
+- config.py: Extended with memory parameters (unified cache, shared memory banks, latencies, address space config)
+- shared_memory.py: New file - Banked shared memory with conflict detection
+- load_store_unit.py: New file - LSU with address space decoding and routing
+- partition.py: Integrated LSU, routes LD/ST to memory instead of ALU
+
+## Phase 2: Memory Coalescing
+
+- global_memory.py: New file - Dict-based DRAM simulation with matrix operations
+- memory_coalescer.py: New file - Analyzes 32 thread addresses, groups into 128B transactions
+
+## Phase 3: Barrier Synchronization
+
+- barrier.py: New file - __syncthreads() implementation with warp arrival tracking
+
+## Phase 4: Functional GEMM Test
+
+- test_simt_memory.py: 19 new tests covering:
+  - Shared memory read/write, bank conflict detection
+  - Global memory matrix operations
+  - Memory coalescing analysis
+  - SM memory sharing between partitions
+  - Functional GEMM with NumPy verification
+
+## Phase 5: Energy Model Extension
+
+- energy_model.py: Extended to include memory costs (shared, L1, DRAM)
+- Added energy_from_sm_statistics() for post-simulation analysis
+
+## Test Results
+
+- 327 tests pass (308 original + 19 new memory tests)
+- All linting checks pass
+
+## New Architecture Components
+
+```text
+  SM Controller
+  ├── Global Memory (DRAM simulation)
+  ├── Shared Memory (SM-wide, 32 banks)
+  ├── Barrier Unit
+  └── Partitions (4)
+      ├── Warp Scheduler (STALLED_MEM support)
+      ├── Register File
+      ├── Operand Collector
+      ├── Execution Unit
+      └── Load/Store Unit → Memory Coalescer → Shared/Global Memory
+```

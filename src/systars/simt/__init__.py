@@ -29,20 +29,26 @@ Usage:
     stats = sm.get_statistics()
 """
 
+from .barrier import BarrierSlot, BarrierState, BarrierUnitSim
 from .config import DEFAULT_SIMT_CONFIG, LARGE_SIMT_CONFIG, SMALL_SIMT_CONFIG, SIMTConfig
 from .energy_model import (
     Conv2DWorkload,
     EnergyBreakdown,
     GEMMWorkload,
     compare_architectures,
+    energy_from_sm_statistics,
     estimate_simt_energy,
     estimate_stencil_energy,
     estimate_systolic_energy,
 )
 from .execution_unit import OPCODE_LATENCY, OPCODE_MAP, ExecutionUnitSim, Opcode
+from .global_memory import GlobalMemorySim
+from .load_store_unit import AddressSpace, LoadStoreUnitSim
+from .memory_coalescer import CoalescingResult, MemoryCoalescerSim, analyze_access_pattern
 from .operand_collector import CollectorState, OperandCollectorSim, OperandState
 from .partition import PartitionSim, create_gemm_program, create_test_program
 from .register_file import BankState, RegisterFileSim
+from .shared_memory import SharedMemoryBankState, SharedMemorySim
 from .sm_controller import SMSim, SMState, run_gemm_simulation
 from .warp_scheduler import Instruction, SchedulingPolicy, WarpSchedulerSim, WarpState
 
@@ -52,6 +58,10 @@ __all__ = [
     "DEFAULT_SIMT_CONFIG",
     "SMALL_SIMT_CONFIG",
     "LARGE_SIMT_CONFIG",
+    # Barrier
+    "BarrierUnitSim",
+    "BarrierSlot",
+    "BarrierState",
     # Energy Model
     "EnergyBreakdown",
     "GEMMWorkload",
@@ -60,6 +70,7 @@ __all__ = [
     "estimate_systolic_energy",
     "estimate_stencil_energy",
     "compare_architectures",
+    "energy_from_sm_statistics",
     # SM Controller
     "SMSim",
     "SMState",
@@ -85,4 +96,16 @@ __all__ = [
     "Opcode",
     "OPCODE_MAP",
     "OPCODE_LATENCY",
+    # Shared Memory
+    "SharedMemorySim",
+    "SharedMemoryBankState",
+    # Load/Store Unit
+    "LoadStoreUnitSim",
+    "AddressSpace",
+    # Global Memory
+    "GlobalMemorySim",
+    # Memory Coalescer
+    "MemoryCoalescerSim",
+    "CoalescingResult",
+    "analyze_access_pattern",
 ]

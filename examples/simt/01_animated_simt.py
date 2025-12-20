@@ -167,7 +167,11 @@ def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
     lines.append("")
 
     # Warp Schedulers section
-    lines.append(draw_box("WARP SCHEDULERS (4 partitions x 8 warps)", 75))
+    warp_header = (
+        f"WARP SCHEDULERS ({config.num_partitions} partitions × "
+        f"{config.max_warps_per_partition} warps)"
+    )
+    lines.append(draw_box(warp_header, 75))
 
     for p_idx, p_vis in enumerate(vis["partitions"]):
         warp_line = f"│ P{p_idx}: "
@@ -209,7 +213,12 @@ def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
     lines.append("")
 
     # Register Files section
-    lines.append(draw_box("REGISTER FILES (64K Registers, 16 Banks per Partition)", 75))
+    total_regs_k = config.total_registers // 1024
+    reg_header = (
+        f"REGISTER FILES ({total_regs_k}K Registers, "
+        f"{config.register_banks_per_partition} Banks per Partition)"
+    )
+    lines.append(draw_box(reg_header, 75))
 
     for p_idx, p_vis in enumerate(vis["partitions"]):
         bank_line = f"│ P{p_idx}: "
@@ -234,7 +243,8 @@ def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
     lines.append("")
 
     # Operand Collectors section
-    lines.append(draw_box("OPERAND COLLECTORS (2 per partition)", 75))
+    coll_header = f"OPERAND COLLECTORS ({config.collectors_per_partition} per partition)"
+    lines.append(draw_box(coll_header, 75))
 
     for p_idx, p_vis in enumerate(vis["partitions"]):
         collector_line = f"│ P{p_idx}: "
@@ -259,8 +269,12 @@ def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
     lines.append(draw_box_end(75))
     lines.append("")
 
-    # Execution Pipeline section - show 8 ALUs per partition with utilization
-    lines.append(draw_box("ALU CLUSTER (8 ALUs × 4 stages per partition)", 75))
+    # Execution Pipeline section - show ALUs per partition with utilization
+    alu_header = (
+        f"ALU CLUSTER ({config.cores_per_partition} ALUs × "
+        f"{config.pipeline_stages} stages per partition)"
+    )
+    lines.append(draw_box(alu_header, 75))
 
     for p_idx, p_vis in enumerate(vis["partitions"]):
         alu_detail = p_vis.get("alu_detail", {})

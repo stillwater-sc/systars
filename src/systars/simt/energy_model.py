@@ -104,6 +104,11 @@ class EnergyBreakdown:
             return 0.0
         return (self.compute_pj / self.total_pj) * 100
 
+    @property
+    def memory_pj(self) -> float:
+        """Total memory access energy."""
+        return self.shared_mem_pj + self.l1_cache_pj + self.dram_pj
+
     def __str__(self) -> str:
         """Format energy breakdown as string."""
         lines = [
@@ -116,6 +121,10 @@ class EnergyBreakdown:
             f"    - Reg Read:  {self.register_read_pj:.1f} pJ",
             f"    - Reg Write: {self.register_write_pj:.1f} pJ",
             f"    - Conflicts: {self.bank_conflict_pj:.1f} pJ",
+            f"  Memory:               {self.memory_pj:.1f} pJ",
+            f"    - Shared:  {self.shared_mem_pj:.1f} pJ",
+            f"    - L1 Cache: {self.l1_cache_pj:.1f} pJ",
+            f"    - DRAM:    {self.dram_pj:.1f} pJ",
             f"  Compute:              {self.compute_pj:.1f} pJ",
             f"    - ALU:  {self.alu_pj:.1f} pJ",
             f"    - FMA:  {self.fma_pj:.1f} pJ",
@@ -191,6 +200,7 @@ class Conv2DWorkload:
 def estimate_simt_energy(
     workload: GEMMWorkload,
     config: SIMTConfig,
+    include_memory: bool = True,
 ) -> EnergyBreakdown:
     """
     Estimate SIMT energy for GEMM workload.
@@ -200,9 +210,15 @@ def estimate_simt_energy(
     - 3 register reads (A, B, accumulator)
     - 1 register write (accumulator update)
 
+    Memory operations (if include_memory=True):
+    - Load A and B elements from global memory
+    - Store C elements to global memory
+    - Shared memory for tile reuse
+
     Args:
         workload: GEMM workload specification
         config: SIMT configuration
+        include_memory: Include memory access energy (default True)
 
     Returns:
         Energy breakdown.
@@ -212,6 +228,27 @@ def estimate_simt_energy(
     # Each MAC = 1 FMA instruction
     num_instructions = num_macs
 
+    # Memory operations (simplified tiled GEMM model)
+    # Assume tiles load A and B once, with some reuse
+    # Shared memory for tile coordination
+    shared_mem_accesses = 0
+    dram_accesses = 0
+
+    if include_memory:
+        # Each input element read once from DRAM, cached in shared memory
+        # A: M×K elements, B: K×N elements, C: M×N elements (write)
+        dram_reads = workload.a_elements + workload.b_elements
+        dram_writes = workload.c_elements
+        dram_accesses = dram_reads + dram_writes
+
+        # Shared memory used for tile coordination
+        # Assume 16×16 tiles, each tile loads to shared memory
+        tile_size = 16
+        num_tiles_m = (workload.M + tile_size - 1) // tile_size
+        num_tiles_n = (workload.N + tile_size - 1) // tile_size
+        num_tiles_k = (workload.K + tile_size - 1) // tile_size
+        shared_mem_accesses = num_tiles_m * num_tiles_n * num_tiles_k * tile_size * tile_size * 2
+
     breakdown = EnergyBreakdown(
         instruction_fetch_pj=num_instructions * config.instruction_fetch_energy_pj,
         instruction_decode_pj=num_instructions * config.instruction_decode_energy_pj,
@@ -220,9 +257,44 @@ def estimate_simt_energy(
         register_write_pj=num_instructions * config.register_write_energy_pj,
         operand_collect_pj=num_instructions * 3 * config.operand_collect_energy_pj,
         fma_pj=num_instructions * config.fma_energy_pj,
+        shared_mem_pj=shared_mem_accesses * config.shared_mem_access_energy_pj,
+        dram_pj=dram_accesses * config.dram_access_energy_pj,
     )
 
     return breakdown
+
+
+def energy_from_sm_statistics(stats: dict) -> EnergyBreakdown:
+    """
+    Create EnergyBreakdown from SMSim statistics.
+
+    Args:
+        stats: Statistics dictionary from SMSim.get_statistics()
+
+    Returns:
+        EnergyBreakdown populated from simulation data.
+    """
+    # Aggregate partition stats
+    total_shared_mem_energy = 0.0
+    total_dram_energy = 0.0
+    total_coalescing_energy = 0.0
+
+    for p_stats in stats.get("partition_stats", []):
+        lsu_stats = p_stats.get("lsu_stats", {})
+        smem_stats = p_stats.get("shared_memory_stats", {})
+
+        total_shared_mem_energy += smem_stats.get("total_energy_pj", 0.0)
+        total_dram_energy += lsu_stats.get("total_energy_pj", 0.0)
+
+        coalescer_stats = lsu_stats.get("coalescer_stats", {})
+        total_coalescing_energy += coalescer_stats.get("total_energy_pj", 0.0)
+
+    return EnergyBreakdown(
+        # Total energy is reported by SMSim
+        fma_pj=stats.get("energy_pj", 0.0),  # Simplified: total as FMA
+        shared_mem_pj=total_shared_mem_energy,
+        dram_pj=total_dram_energy + total_coalescing_energy,
+    )
 
 
 def estimate_systolic_energy(
