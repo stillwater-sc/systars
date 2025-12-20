@@ -536,22 +536,38 @@ class SMLevelLSUSim:
         }
 
     def get_visualization(self) -> dict[str, Any]:
-        """Get visualization data."""
+        """Get visualization data for animation display."""
+        # MIO queue entries
+        mio_queue = [
+            {
+                "partition": entry.partition_id,
+                "warp": entry.warp_id,
+                "is_load": entry.is_load,
+                "opcode": entry.instruction.opcode,
+            }
+            for entry in self.mio_queue
+        ]
+
+        # Active MSHRs
         active_mshrs = [
             {
                 "idx": i,
-                "addr": hex(m.cache_line_addr),
+                "cache_line": m.cache_line_addr,
+                "addr_hex": hex(m.cache_line_addr),
                 "state": m.state.name,
-                "waiters": len(m.waiters),
+                "num_waiters": len(m.waiters),
                 "cycles_remaining": m.cycles_remaining,
+                "is_store": m.is_store,
             }
             for i, m in enumerate(self.mshrs)
             if m.state != MSHRState.INVALID
         ]
+
         return {
+            "mio_queue": mio_queue,
             "mio_queue_depth": len(self.mio_queue),
             "mio_queue_max": self.config.mio_queue_depth,
-            "active_mshrs": len(active_mshrs),
+            "active_mshrs": active_mshrs,
+            "active_mshr_count": len(active_mshrs),
             "num_mshrs": self.config.num_mshrs,
-            "mshr_entries": active_mshrs[:8],  # Show first 8 for display
         }

@@ -1,0 +1,314 @@
+{
+  "traceEvents": [
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "name": "Warp 7"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "name": "Warp 6"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "name": "Warp 5"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "name": "Warp 4"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "name": "Warp 3"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "name": "Warp 2"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "name": "Warp 1"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "name": "Warp 0"
+      }
+    },
+    {
+      "name": "process_name",
+      "ph": "M",
+      "pid": 0,
+      "args": {
+        "name": "Partition 0 (LSU max_pending=2)"
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 5000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 6000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 7000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 8000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 9000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 10000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 11000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 12000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 8000,
+      "dur": 201000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 9000,
+      "dur": 201000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10000,
+      "dur": 399000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11000,
+      "dur": 399000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 12000,
+      "dur": 597000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13000,
+      "dur": 597000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 15000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    }
+  ],
+  "displayTimeUnit": "ns",
+  "metadata": {
+    "description": "SIMT v1 Simulation (per-partition LSU, max_pending=2)",
+    "note": "This version has the LSU queue overflow bug - watch for DROPPED events"
+  },
+  "stackFrames": {}
+}

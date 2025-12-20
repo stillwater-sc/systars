@@ -220,21 +220,43 @@ class TimelineLogger:
 
     Creates a detailed log of when each operation is issued and completes,
     helping identify bubbles and serialization issues.
+
+    Supports two output formats:
+    - csv: Simple CSV format for spreadsheet analysis
+    - chrome: Chrome Trace format (JSON) for chrome://tracing or Perfetto
     """
 
     def __init__(self, filename: str = "timeline.log"):
         self.filename = filename
         self.events: list[dict] = []
         self.enabled = False
+        self.format = "csv"
+        # Track in-flight events for Chrome Trace format (to compute duration)
+        # Key: (partition, warp, opcode, dst) -> issue event
+        self.in_flight: dict[tuple, dict] = {}
+        # Chrome Trace events (complete events with duration)
+        self.trace_events: list[dict] = []
 
-    def enable(self, filename: str = "timeline.log"):
-        """Enable timeline logging to specified file."""
+    def enable(self, filename: str = "timeline.log", fmt: str = "csv"):
+        """
+        Enable timeline logging to specified file.
+
+        Args:
+            filename: Output file path
+            fmt: Output format - "csv" or "chrome" (Chrome Trace JSON)
+        """
         self.filename = filename
+        self.format = fmt
         self.enabled = True
         self.events = []
-        # Write header
-        with open(self.filename, "w") as f:
-            f.write("cycle,event,partition,warp,opcode,dst,src1,src2,latency,info\n")
+        self.in_flight = {}
+        self.trace_events = []
+
+        if self.format == "csv":
+            # Write CSV header
+            with open(self.filename, "w") as f:
+                f.write("cycle,event,partition,warp,opcode,dst,src1,src2,latency,info\n")
+        # Chrome format is written at finalize()
 
     def log_issue(
         self,
@@ -264,7 +286,13 @@ class TimelineLogger:
             "info": info,
         }
         self.events.append(event)
-        self._write_event(event)
+
+        if self.format == "csv":
+            self._write_csv_event(event)
+        else:
+            # Track in-flight for duration calculation
+            key = (partition, warp, opcode, dst)
+            self.in_flight[key] = event
 
     def log_complete(
         self, cycle: int, partition: int, warp: int, opcode: str, dst: int, info: str = ""
@@ -285,7 +313,18 @@ class TimelineLogger:
             "info": info,
         }
         self.events.append(event)
-        self._write_event(event)
+
+        if self.format == "csv":
+            self._write_csv_event(event)
+        else:
+            # Match with in-flight issue event
+            key = (partition, warp, opcode, dst)
+            issue_event = self.in_flight.pop(key, None)
+            if issue_event:
+                self._add_chrome_trace_event(issue_event, cycle)
+            else:
+                # No matching issue - create instant event at completion
+                self._add_chrome_trace_instant(cycle, partition, warp, opcode, dst, info)
 
     def log_stall(self, cycle: int, partition: int, warp: int, reason: str):
         """Log a stall event."""
@@ -304,10 +343,15 @@ class TimelineLogger:
             "info": reason,
         }
         self.events.append(event)
-        self._write_event(event)
 
-    def _write_event(self, event: dict):
-        """Append event to log file."""
+        if self.format == "csv":
+            self._write_csv_event(event)
+        else:
+            # Stalls are instant events in Chrome Trace
+            self._add_chrome_trace_stall(cycle, partition, warp, reason)
+
+    def _write_csv_event(self, event: dict):
+        """Append event to CSV log file."""
         with open(self.filename, "a") as f:
             f.write(
                 f"{event['cycle']},{event['event']},{event['partition']},"
@@ -316,16 +360,144 @@ class TimelineLogger:
                 f'"{event["info"]}"\n'
             )
 
+    def _add_chrome_trace_event(self, issue_event: dict, complete_cycle: int):
+        """Add a complete Chrome Trace event with duration."""
+        issue_cycle = issue_event["cycle"]
+        duration = complete_cycle - issue_cycle
+
+        # Categorize by opcode type
+        opcode = issue_event["opcode"]
+        if opcode in ("LD", "ST"):
+            category = "memory"
+        elif opcode in ("FFMA", "FMA", "IMUL", "MUL"):
+            category = "compute,mul"
+        elif opcode in ("IADD", "ADD", "SUB", "MOV"):
+            category = "compute,alu"
+        else:
+            category = "compute"
+
+        # Chrome Trace event format
+        # ts/dur in microseconds - treat cycles as microseconds for readability
+        trace_event = {
+            "name": opcode,
+            "cat": category,
+            "ph": "X",  # Complete event (has duration)
+            "ts": issue_cycle * 1000,  # microseconds (cycle * 1000 for ns precision)
+            "dur": max(1, duration) * 1000,  # duration in microseconds
+            "pid": issue_event["partition"],  # Partition as process
+            "tid": issue_event["warp"],  # Warp as thread
+            "args": {
+                "dst": issue_event["dst"],
+                "src1": issue_event["src1"],
+                "src2": issue_event["src2"],
+                "latency": issue_event["latency"],
+            },
+        }
+        self.trace_events.append(trace_event)
+
+    def _add_chrome_trace_instant(
+        self, cycle: int, partition: int, warp: int, opcode: str, dst: int, info: str
+    ):
+        """Add an instant Chrome Trace event (no matching issue)."""
+        trace_event = {
+            "name": f"{opcode}_complete",
+            "cat": "memory" if opcode in ("LD", "ST") else "compute",
+            "ph": "i",  # Instant event
+            "ts": cycle * 1000,
+            "s": "t",  # Scope: thread
+            "pid": partition,
+            "tid": warp,
+            "args": {"dst": dst, "info": info},
+        }
+        self.trace_events.append(trace_event)
+
+    def _add_chrome_trace_stall(self, cycle: int, partition: int, warp: int, reason: str):
+        """Add a stall as an instant Chrome Trace event."""
+        trace_event = {
+            "name": "STALL",
+            "cat": "stall",
+            "ph": "i",  # Instant event
+            "ts": cycle * 1000,
+            "s": "t",  # Scope: thread
+            "pid": partition,
+            "tid": warp,
+            "args": {"reason": reason},
+        }
+        self.trace_events.append(trace_event)
+
+    def finalize(self):
+        """
+        Finalize the trace file (required for Chrome Trace format).
+
+        Call this at the end of simulation to write the JSON file.
+        """
+        if not self.enabled or self.format != "chrome":
+            return
+
+        import json
+
+        # Build Chrome Trace JSON structure
+        trace_data = {
+            "traceEvents": self.trace_events,
+            "displayTimeUnit": "ns",
+            "metadata": {
+                "description": "SIMT Streaming Multiprocessor Simulation",
+            },
+            # Process and thread names for better visualization
+            "stackFrames": {},
+        }
+
+        # Add process/thread name metadata events
+        partitions_seen: set[int] = set()
+        warps_seen: set[tuple[int, int]] = set()
+        for e in self.trace_events:
+            pid = e.get("pid", 0)
+            tid = e.get("tid", 0)
+            if pid not in partitions_seen:
+                partitions_seen.add(pid)
+                trace_data["traceEvents"].insert(
+                    0,
+                    {
+                        "name": "process_name",
+                        "ph": "M",
+                        "pid": pid,
+                        "args": {"name": f"Partition {pid}"},
+                    },
+                )
+            if (pid, tid) not in warps_seen:
+                warps_seen.add((pid, tid))
+                trace_data["traceEvents"].insert(
+                    0,
+                    {
+                        "name": "thread_name",
+                        "ph": "M",
+                        "pid": pid,
+                        "tid": tid,
+                        "args": {"name": f"Warp {tid}"},
+                    },
+                )
+
+        with open(self.filename, "w") as f:
+            json.dump(trace_data, f, indent=2)
+
+        print(f"Chrome Trace written to: {self.filename}")
+        print("  Open in Chrome: chrome://tracing or https://ui.perfetto.dev")
+
     def print_summary(self):
         """Print summary of logged events."""
         if not self.events:
             return
+
+        # Finalize Chrome Trace file if needed
+        if self.format == "chrome":
+            self.finalize()
 
         issues = [e for e in self.events if e["event"] == "ISSUE"]
         completes = [e for e in self.events if e["event"] == "COMPLETE"]
         stalls = [e for e in self.events if e["event"] == "STALL"]
 
         print(f"\nTimeline Summary ({self.filename}):")
+        print(f"  Format: {self.format}")
         print(f"  Total events: {len(self.events)}")
         print(f"  Issues: {len(issues)}")
         print(f"  Completes: {len(completes)}")
@@ -715,61 +887,68 @@ def visualize_sm_state(
     lines.append(draw_box_end(75))
     lines.append("")
 
-    # Memory System section - show LSU activity, pending requests, coalescing
-    lines.append(draw_box("MEMORY SYSTEM (LSU → Coalescer → Cache → DRAM)", 75))
+    # Memory System section - show SM-level LSU activity and MSHR status
+    lines.append(draw_box("MEMORY SYSTEM (MIO Queue → MSHR → Cache → DRAM)", 75))
 
-    for p_idx in range(len(sm.partitions)):
-        partition = sm.partitions[p_idx]
-        lsu_vis = partition.load_store_unit.get_visualization()
-        pending_reqs = lsu_vis["requests"]
+    # Get SM-level LSU visualization
+    lsu_vis = sm.sm_lsu.get_visualization()
 
-        # Build memory line showing pending requests
-        mem_line = f"│ P{p_idx}: "
+    # Show MIO Queue status
+    mio_entries = lsu_vis.get("mio_queue", [])
+    mio_line = "│ MIO Queue: "
+    if not mio_entries:
+        mio_line += f"{Colors.DIM}Empty{Colors.RESET}"
+    else:
+        req_strs = []
+        for entry in mio_entries[:6]:  # Show max 6 entries
+            part = entry.get("partition", 0)
+            warp = entry.get("warp", 0)
+            op = "LD" if entry.get("is_load", True) else "ST"
+            req_strs.append(f"{Colors.CYAN}P{part}W{warp}:{op}{Colors.RESET}")
+        mio_line += " ".join(req_strs)
+        if len(mio_entries) > 6:
+            mio_line += f" +{len(mio_entries) - 6}"
+    clean_len = len(re.sub(r"\033\[[0-9;]*m", "", mio_line))
+    mio_line += " " * max(0, 74 - clean_len) + "│"
+    lines.append(mio_line)
 
-        if not pending_reqs:
-            mem_line += f"{Colors.DIM}No pending memory requests{Colors.RESET}"
-        else:
-            # Show each pending request compactly
-            req_strs = []
-            for req in pending_reqs[:4]:  # Show max 4 requests
-                warp = req["warp_id"]
-                op = "LD" if req["is_load"] else "ST"
-                space = req["space"][:3].upper()  # GLO or SHA
-                cycles = req["cycles_remaining"]
+    # Show active MSHRs
+    active_mshrs = lsu_vis.get("active_mshrs", [])
+    mshr_line = "│ MSHRs: "
+    if not active_mshrs:
+        mshr_line += f"{Colors.DIM}No active cache line requests{Colors.RESET}"
+    else:
+        mshr_strs = []
+        for mshr in active_mshrs[:4]:  # Show max 4 MSHRs
+            addr = mshr.get("cache_line", 0)
+            waiters = mshr.get("num_waiters", 0)
+            cycles = mshr.get("cycles_remaining", 0)
+            # Color based on wait time
+            if cycles > 100:
+                color = Colors.RED
+            elif cycles > 50:
+                color = Colors.YELLOW
+            else:
+                color = Colors.GREEN
+            mshr_strs.append(f"{color}0x{addr:04x}({waiters}w,{cycles}c){Colors.RESET}")
+        mshr_line += " ".join(mshr_strs)
+        if len(active_mshrs) > 4:
+            mshr_line += f" +{len(active_mshrs) - 4}"
+    clean_len = len(re.sub(r"\033\[[0-9;]*m", "", mshr_line))
+    mshr_line += " " * max(0, 74 - clean_len) + "│"
+    lines.append(mshr_line)
 
-                # Color based on how long it's been waiting
-                if cycles > 100:
-                    color = Colors.RED
-                elif cycles > 50:
-                    color = Colors.YELLOW
-                else:
-                    color = Colors.CYAN
+    # Summary line with LSU statistics
+    stats = sm.sm_lsu.get_statistics()
+    total_loads = stats.get("total_loads", 0)
+    total_stores = stats.get("total_stores", 0)
+    primary = stats.get("total_primary_misses", 0)
+    secondary = stats.get("total_secondary_misses", 0)
 
-                req_strs.append(f"{color}W{warp}:{op}.{space}({cycles}){Colors.RESET}")
-
-            mem_line += " ".join(req_strs)
-            if len(pending_reqs) > 4:
-                mem_line += f" +{len(pending_reqs) - 4} more"
-
-        clean_len = len(re.sub(r"\033\[[0-9;]*m", "", mem_line))
-        mem_line += " " * max(0, 74 - clean_len) + "│"
-        lines.append(mem_line)
-
-    # Summary line with coalescing efficiency
-    total_pending = sum(
-        len(p.load_store_unit.get_visualization()["requests"]) for p in sm.partitions
-    )
-    total_loads = sum(p.load_store_unit.total_loads for p in sm.partitions)
-    total_stores = sum(p.load_store_unit.total_stores for p in sm.partitions)
-
-    summary = f"│ Pending: {total_pending}  Loads: {total_loads}  Stores: {total_stores}"
-
-    # Get coalescing stats from partition 0 (main partition)
-    if sm.partitions:
-        coal_stats = sm.partitions[0].load_store_unit.coalescer.get_statistics()
-        if coal_stats["total_analyses"] > 0:
-            efficiency = coal_stats["avg_efficiency"] * 100
-            summary += f"  Coalesce: {efficiency:.0f}%"
+    summary = f"│ LD:{total_loads} ST:{total_stores} Primary:{primary} Secondary:{secondary}"
+    if primary + secondary > 0:
+        hit_rate = secondary / (primary + secondary) * 100
+        summary += f" (MSHR hit:{hit_rate:.0f}%)"
 
     clean_len = len(re.sub(r"\033\[[0-9;]*m", "", summary))
     summary += " " * max(0, 74 - clean_len) + "│"
@@ -1125,7 +1304,14 @@ def main():
         type=str,
         default=None,
         metavar="FILE",
-        help="Write timeline log to FILE (CSV format for analysis)",
+        help="Write timeline log to FILE",
+    )
+    parser.add_argument(
+        "--timeline-format",
+        type=str,
+        default="chrome",
+        choices=["csv", "chrome"],
+        help="Timeline format: csv (spreadsheet) or chrome (Chrome Trace JSON, default)",
     )
 
     args = parser.parse_args()
@@ -1141,8 +1327,8 @@ def main():
 
     # Enable timeline logging if requested
     if args.timeline:
-        timeline_logger.enable(args.timeline)
-        print(f"Timeline logging enabled: {args.timeline}")
+        timeline_logger.enable(args.timeline, fmt=args.timeline_format)
+        print(f"Timeline logging enabled: {args.timeline} (format: {args.timeline_format})")
 
     # GEMM tracker for visualization (only for tiled mode)
     gemm_tracker = None

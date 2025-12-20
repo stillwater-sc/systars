@@ -166,7 +166,9 @@ class PartitionSim:
         self.operand_collector = OperandCollectorSim(self.config, self.partition_id)
         self.execution_unit = ExecutionUnitSim(self.config, self.partition_id)
         self.shared_memory = SharedMemorySim(self.config)
-        self.load_store_unit = LoadStoreUnitSim(self.config, self.partition_id)
+        self.load_store_unit = LoadStoreUnitSim(
+            self.config, self.partition_id, max_pending=self.config.lsu_max_pending
+        )
         # Connect LSU to shared memory
         self.load_store_unit.shared_memory = self.shared_memory
 

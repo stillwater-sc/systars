@@ -132,6 +132,23 @@ class SIMTConfig:
     """Maximum in-flight memory requests per SM."""
 
     # =========================================================================
+    # Per-Partition LSU Configuration (v1 architecture)
+    # =========================================================================
+    # The v1 architecture uses per-partition LSUs with limited queue depth.
+    # This is the root cause of the LSU queue overflow bug.
+
+    lsu_max_pending: int = 2
+    """Maximum pending memory requests per partition LSU.
+
+    WARNING: This is deliberately set low (2) to demonstrate the LSU queue
+    overflow bug in the v1 architecture. With 8 warps per partition and
+    200-cycle memory latency, this queue depth is woefully inadequate.
+
+    To hide latency properly: queue_depth >= warps * (latency / issue_rate)
+    = 8 * (200 / 1) = 1600 requests needed, but we only have 2!
+    """
+
+    # =========================================================================
     # Address Space Configuration
     # =========================================================================
     # 32-bit address layout:

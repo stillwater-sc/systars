@@ -378,3 +378,47 @@ Sources:
 - <https://modal.com/gpu-glossary/device-hardware/load-store-unit>
 - <https://www2.eecs.berkeley.edu/Pubs/TechRpts/2016/EECS-2016-143.pdf>
 - <https://web.engr.oregonstate.edu/~chenliz/publications/2019_ICS_Dynamcially%20Linked%20MSHRs.pdf>
+
+## Chrome Trace format feature
+
+Usage:
+
+```bash
+  # Chrome Trace format (default)
+  python examples/simt/01_animated_simt.py --tiled --m 8 --n 8 --k 4 \
+      --fast --fast-mem --timeline trace.json
+
+  # Explicit format choice
+  python examples/simt/01_animated_simt.py --timeline trace.json --timeline-format chrome
+  python examples/simt/01_animated_simt.py --timeline events.csv --timeline-format csv
+```
+
+Viewing the trace:
+
+  1. Open chrome://tracing in Chrome/Chromium
+  2. Click "Load" and select the JSON file
+  3. Or use <https://ui.perfetto.dev> (better UI)
+
+Chrome Trace features:
+
+- Each partition shows as a separate "process" (row group)
+- Each warp shows as a separate "thread" (row within partition)
+- Events show as colored bars with duration
+- Categories: memory (LD/ST), compute,mul (FFMA), compute,alu (IADD/MOV)
+- Zoom and pan to explore the timeline
+- Click events to see args (dst, src1, src2, latency)
+
+  Event structure:
+
+```json
+  {
+    "name": "FFMA",
+    "cat": "compute,mul",
+    "ph": "X",           // Complete event with duration
+    "ts": 15000,         // Start time (cycle × 1000 for ns)
+    "dur": 4000,         // Duration (4 cycles)
+    "pid": 0,            // Partition 0
+    "tid": 2,            // Warp 2
+    "args": {"dst": 5, "src1": 1, "src2": 2, "latency": 4}
+  }
+```

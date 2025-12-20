@@ -1,46 +1,53 @@
 #!/usr/bin/env python3
 """
-Animated SIMT Streaming Multiprocessor Visualization.
+Animated SIMT Streaming Multiprocessor Visualization (V1 - Per-Partition LSU).
 
-This example demonstrates the NVIDIA-style Streaming Multiprocessor (SM)
-architecture with real-time animation showing:
-- Warp scheduling and issue
-- Register file bank accesses and conflicts
-- Operand collection progress
-- Execution pipeline flow
-- Energy consumption breakdown
+This is the V1 architecture with per-partition LSUs that have a configurable
+queue depth (default: 2). This version demonstrates the LSU queue overflow bug
+where memory instructions are silently dropped when the queue is full.
 
-The visualization helps understand why SIMT architectures have significant
-instruction overhead compared to systolic arrays and stencil machines.
+The visualization helps understand:
+- Why per-partition LSUs with small queues are problematic
+- How queue depth affects latency hiding
+- The difference between issues and completions when drops occur
 
 Usage:
     python 01_animated_simt.py [options]
 
 Options:
-    --warps N       Number of warps to simulate (auto-calculated for tiled)
-    --instructions  Number of instructions per warp (default: 16)
-    --delay MS      Delay between frames in milliseconds (default: 200)
-    --fast          Fast mode (no animation delay)
-    --step          Step mode (press Enter to advance each cycle)
-    --gemm          Use GEMM workload (sequential, same program in all warps)
-    --tiled         Use tiled GEMM (parallel, each warp computes different tile)
-    -m M            GEMM output rows (default: 8)
-    -n N            GEMM output cols (default: 8)
-    --k K           GEMM reduction dimension (default: 4)
+    --warps N           Number of warps to simulate (auto-calculated for tiled)
+    --instructions      Number of instructions per warp (default: 16)
+    --delay MS          Delay between frames in milliseconds (default: 200)
+    --fast              Fast mode (no animation delay)
+    --step              Step mode (press Enter to advance each cycle)
+    --gemm              Use GEMM workload (sequential, same program in all warps)
+    --tiled             Use tiled GEMM (parallel, each warp computes different tile)
+    -m M                GEMM output rows (default: 8)
+    -n N                GEMM output cols (default: 8)
+    --k K               GEMM reduction dimension (default: 4)
+    --lsu-queue-depth N LSU max pending requests per partition (default: 2)
+    --mem-latency CYC   Global memory latency in cycles (default: 200)
+    --timeline FILE     Write timeline log to FILE
+    --timeline-format   Format: csv or chrome (default: chrome)
 
 Examples:
     # Basic test program
     python 01_animated_simt.py --fast
 
-    # Sequential GEMM (4 warps running same program, uses MOV not LD)
-    python 01_animated_simt.py --gemm --k 4 --fast
-
-    # Tiled GEMM: 8x8 output = 64 elements = 2 warps (uses real LD/ST)
-    # Note: --fast-mem reduces memory latency from 200 to 4 cycles for demo
+    # Tiled GEMM with default buggy queue depth (2) - watch for missing completions
     python 01_animated_simt.py --tiled -m 8 -n 8 --k 2 --fast --fast-mem
 
-    # Tiled GEMM step mode: 8x4 output = 32 elements = 1 warp
-    python 01_animated_simt.py --tiled -m 8 -n 4 --k 2 --step --fast-mem
+    # Same but with Chrome Trace output to visualize the drops
+    python 01_animated_simt.py --tiled -m 8 -n 8 --k 2 --fast --fast-mem \
+        --timeline v1_buggy.json
+
+    # Fix the bug by increasing queue depth to 8 (one per warp)
+    python 01_animated_simt.py --tiled -m 8 -n 8 --k 2 --fast --fast-mem \
+        --lsu-queue-depth 8 --timeline v1_fixed.json
+
+    # Compare behavior with different memory latencies
+    python 01_animated_simt.py --tiled -m 8 -n 8 --k 2 --fast \
+        --mem-latency 50 --timeline v1_50cyc.json
 """
 
 import argparse
@@ -220,21 +227,46 @@ class TimelineLogger:
 
     Creates a detailed log of when each operation is issued and completes,
     helping identify bubbles and serialization issues.
+
+    Supports two output formats:
+    - csv: Simple CSV format for spreadsheet analysis
+    - chrome: Chrome Trace format (JSON) for chrome://tracing or Perfetto
+
+    The Chrome Trace format is particularly useful for visualizing the v1
+    per-partition LSU architecture's limitations (max_pending=2 causing drops).
     """
 
     def __init__(self, filename: str = "timeline.log"):
         self.filename = filename
         self.events: list[dict] = []
         self.enabled = False
+        self.format = "csv"
+        # Track in-flight events for Chrome Trace format (to compute duration)
+        # Key: (partition, warp, opcode, dst) -> issue event
+        self.in_flight: dict[tuple, dict] = {}
+        # Chrome Trace events (complete events with duration)
+        self.trace_events: list[dict] = []
 
-    def enable(self, filename: str = "timeline.log"):
-        """Enable timeline logging to specified file."""
+    def enable(self, filename: str = "timeline.log", fmt: str = "csv"):
+        """
+        Enable timeline logging to specified file.
+
+        Args:
+            filename: Output file path
+            fmt: Output format - "csv" or "chrome" (Chrome Trace JSON)
+        """
         self.filename = filename
+        self.format = fmt
         self.enabled = True
         self.events = []
-        # Write header
-        with open(self.filename, "w") as f:
-            f.write("cycle,event,partition,warp,opcode,dst,src1,src2,latency,info\n")
+        self.in_flight = {}
+        self.trace_events = []
+
+        if self.format == "csv":
+            # Write CSV header
+            with open(self.filename, "w") as f:
+                f.write("cycle,event,partition,warp,opcode,dst,src1,src2,latency,info\n")
+        # Chrome format is written at finalize()
 
     def log_issue(
         self,
@@ -264,7 +296,13 @@ class TimelineLogger:
             "info": info,
         }
         self.events.append(event)
-        self._write_event(event)
+
+        if self.format == "csv":
+            self._write_csv_event(event)
+        else:
+            # Track in-flight for duration calculation
+            key = (partition, warp, opcode, dst)
+            self.in_flight[key] = event
 
     def log_complete(
         self, cycle: int, partition: int, warp: int, opcode: str, dst: int, info: str = ""
@@ -285,7 +323,18 @@ class TimelineLogger:
             "info": info,
         }
         self.events.append(event)
-        self._write_event(event)
+
+        if self.format == "csv":
+            self._write_csv_event(event)
+        else:
+            # Match with in-flight issue event
+            key = (partition, warp, opcode, dst)
+            issue_event = self.in_flight.pop(key, None)
+            if issue_event:
+                self._add_chrome_trace_event(issue_event, cycle)
+            else:
+                # No matching issue - create instant event at completion
+                self._add_chrome_trace_instant(cycle, partition, warp, opcode, dst, info)
 
     def log_stall(self, cycle: int, partition: int, warp: int, reason: str):
         """Log a stall event."""
@@ -304,10 +353,54 @@ class TimelineLogger:
             "info": reason,
         }
         self.events.append(event)
-        self._write_event(event)
 
-    def _write_event(self, event: dict):
-        """Append event to log file."""
+        if self.format == "csv":
+            self._write_csv_event(event)
+        else:
+            # Stalls are instant events in Chrome Trace
+            self._add_chrome_trace_stall(cycle, partition, warp, reason)
+
+    def log_lsu_drop(self, cycle: int, partition: int, warp: int, opcode: str, dst: int):
+        """
+        Log when an LSU request is dropped (v1 bug - queue full).
+
+        This is specific to the v1 architecture where max_pending=2 causes
+        memory instructions to be silently dropped when the queue is full.
+        """
+        if not self.enabled:
+            return
+        event = {
+            "cycle": cycle,
+            "event": "LSU_DROP",
+            "partition": partition,
+            "warp": warp,
+            "opcode": opcode,
+            "dst": dst,
+            "src1": -1,
+            "src2": -1,
+            "latency": 0,
+            "info": "LSU queue full - instruction dropped!",
+        }
+        self.events.append(event)
+
+        if self.format == "csv":
+            self._write_csv_event(event)
+        else:
+            # Mark as a warning event in Chrome Trace
+            trace_event = {
+                "name": f"{opcode}_DROPPED",
+                "cat": "error",
+                "ph": "i",
+                "ts": cycle * 1000,
+                "s": "t",
+                "pid": partition,
+                "tid": warp,
+                "args": {"dst": dst, "reason": "LSU queue full (max_pending=2)"},
+            }
+            self.trace_events.append(trace_event)
+
+    def _write_csv_event(self, event: dict):
+        """Append event to CSV log file."""
         with open(self.filename, "a") as f:
             f.write(
                 f"{event['cycle']},{event['event']},{event['partition']},"
@@ -316,20 +409,152 @@ class TimelineLogger:
                 f'"{event["info"]}"\n'
             )
 
+    def _add_chrome_trace_event(self, issue_event: dict, complete_cycle: int):
+        """Add a complete Chrome Trace event with duration."""
+        issue_cycle = issue_event["cycle"]
+        duration = complete_cycle - issue_cycle
+
+        # Categorize by opcode type
+        opcode = issue_event["opcode"]
+        if opcode in ("LD", "ST"):
+            category = "memory"
+        elif opcode in ("FFMA", "FMA", "IMUL", "MUL"):
+            category = "compute,mul"
+        elif opcode in ("IADD", "ADD", "SUB", "MOV"):
+            category = "compute,alu"
+        else:
+            category = "compute"
+
+        # Chrome Trace event format
+        # ts/dur in microseconds - treat cycles as microseconds for readability
+        trace_event = {
+            "name": opcode,
+            "cat": category,
+            "ph": "X",  # Complete event (has duration)
+            "ts": issue_cycle * 1000,  # microseconds (cycle * 1000 for ns precision)
+            "dur": max(1, duration) * 1000,  # duration in microseconds
+            "pid": issue_event["partition"],  # Partition as process
+            "tid": issue_event["warp"],  # Warp as thread
+            "args": {
+                "dst": issue_event["dst"],
+                "src1": issue_event["src1"],
+                "src2": issue_event["src2"],
+                "latency": issue_event["latency"],
+            },
+        }
+        self.trace_events.append(trace_event)
+
+    def _add_chrome_trace_instant(
+        self, cycle: int, partition: int, warp: int, opcode: str, dst: int, info: str
+    ):
+        """Add an instant Chrome Trace event (no matching issue)."""
+        trace_event = {
+            "name": f"{opcode}_complete",
+            "cat": "memory" if opcode in ("LD", "ST") else "compute",
+            "ph": "i",  # Instant event
+            "ts": cycle * 1000,
+            "s": "t",  # Scope: thread
+            "pid": partition,
+            "tid": warp,
+            "args": {"dst": dst, "info": info},
+        }
+        self.trace_events.append(trace_event)
+
+    def _add_chrome_trace_stall(self, cycle: int, partition: int, warp: int, reason: str):
+        """Add a stall as an instant Chrome Trace event."""
+        trace_event = {
+            "name": "STALL",
+            "cat": "stall",
+            "ph": "i",  # Instant event
+            "ts": cycle * 1000,
+            "s": "t",  # Scope: thread
+            "pid": partition,
+            "tid": warp,
+            "args": {"reason": reason},
+        }
+        self.trace_events.append(trace_event)
+
+    def finalize(self):
+        """
+        Finalize the trace file (required for Chrome Trace format).
+
+        Call this at the end of simulation to write the JSON file.
+        """
+        if not self.enabled or self.format != "chrome":
+            return
+
+        import json
+
+        # Build Chrome Trace JSON structure
+        trace_data = {
+            "traceEvents": self.trace_events,
+            "displayTimeUnit": "ns",
+            "metadata": {
+                "description": "SIMT v1 Simulation (per-partition LSU, max_pending=2)",
+                "note": "This version has the LSU queue overflow bug - watch for DROPPED events",
+            },
+            "stackFrames": {},
+        }
+
+        # Add process/thread name metadata events
+        partitions_seen: set[int] = set()
+        warps_seen: set[tuple[int, int]] = set()
+        for e in self.trace_events:
+            pid = e.get("pid", 0)
+            tid = e.get("tid", 0)
+            if pid not in partitions_seen:
+                partitions_seen.add(pid)
+                trace_data["traceEvents"].insert(
+                    0,
+                    {
+                        "name": "process_name",
+                        "ph": "M",
+                        "pid": pid,
+                        "args": {"name": f"Partition {pid} (LSU max_pending=2)"},
+                    },
+                )
+            if (pid, tid) not in warps_seen:
+                warps_seen.add((pid, tid))
+                trace_data["traceEvents"].insert(
+                    0,
+                    {
+                        "name": "thread_name",
+                        "ph": "M",
+                        "pid": pid,
+                        "tid": tid,
+                        "args": {"name": f"Warp {tid}"},
+                    },
+                )
+
+        with open(self.filename, "w") as f:
+            json.dump(trace_data, f, indent=2)
+
+        print(f"Chrome Trace written to: {self.filename}")
+        print("  Open in Chrome: chrome://tracing or https://ui.perfetto.dev")
+        print("  Note: Look for DROPPED events showing LSU queue overflow bug!")
+
     def print_summary(self):
         """Print summary of logged events."""
         if not self.events:
             return
 
+        # Finalize Chrome Trace file if needed
+        if self.format == "chrome":
+            self.finalize()
+
         issues = [e for e in self.events if e["event"] == "ISSUE"]
         completes = [e for e in self.events if e["event"] == "COMPLETE"]
         stalls = [e for e in self.events if e["event"] == "STALL"]
+        drops = [e for e in self.events if e["event"] == "LSU_DROP"]
 
         print(f"\nTimeline Summary ({self.filename}):")
+        print(f"  Format: {self.format}")
         print(f"  Total events: {len(self.events)}")
         print(f"  Issues: {len(issues)}")
         print(f"  Completes: {len(completes)}")
         print(f"  Stalls: {len(stalls)}")
+        if drops:
+            print(f"  {Colors.RED}LSU Drops: {len(drops)} (BUG!){Colors.RESET}")
 
         # Count by opcode
         opcode_counts: dict[str, int] = {}
@@ -1125,24 +1350,56 @@ def main():
         type=str,
         default=None,
         metavar="FILE",
-        help="Write timeline log to FILE (CSV format for analysis)",
+        help="Write timeline log to FILE",
+    )
+    parser.add_argument(
+        "--timeline-format",
+        type=str,
+        default="chrome",
+        choices=["csv", "chrome"],
+        help="Timeline format: csv (spreadsheet) or chrome (Chrome Trace JSON, default)",
+    )
+    parser.add_argument(
+        "--lsu-queue-depth",
+        type=int,
+        default=2,
+        metavar="N",
+        help="LSU max pending requests per partition (default: 2, the buggy value)",
+    )
+    parser.add_argument(
+        "--mem-latency",
+        type=int,
+        default=None,
+        metavar="CYCLES",
+        help="Global memory latency in cycles (default: 200, or 1 with --fast-mem)",
     )
 
     args = parser.parse_args()
 
-    # Create SM with optional fast memory latencies
+    # Create SM with configurable parameters
     config = SIMTConfig()
+
+    # LSU queue depth (the key parameter for demonstrating the v1 bug)
+    config.lsu_max_pending = args.lsu_queue_depth
+    if args.lsu_queue_depth != 2:
+        print(f"LSU queue depth: {args.lsu_queue_depth} (default buggy value is 2)")
+
+    # Memory latency
     if args.fast_mem:
         # Reduce latencies for demo purposes (near-instant memory)
         config.l1_miss_latency = 1  # Instead of 200
         config.shared_mem_latency = 1  # Instead of 4
         print("Using fast memory latencies for demo (1 cycle)")
+    if args.mem_latency is not None:
+        config.l1_miss_latency = args.mem_latency
+        print(f"Global memory latency: {args.mem_latency} cycles")
+
     sm = SMSim(config)
 
     # Enable timeline logging if requested
     if args.timeline:
-        timeline_logger.enable(args.timeline)
-        print(f"Timeline logging enabled: {args.timeline}")
+        timeline_logger.enable(args.timeline, fmt=args.timeline_format)
+        print(f"Timeline logging enabled: {args.timeline} (format: {args.timeline_format})")
 
     # GEMM tracker for visualization (only for tiled mode)
     gemm_tracker = None
