@@ -8,7 +8,7 @@ This document analyzes different hardware architecture approaches for implementi
 2. [Architecture Options](#architecture-options)
    - [SIMD (CPU-style)](#1-simd-single-instruction-multiple-data)
    - [SIMT (GPU-style)](#2-simt-single-instruction-multiple-threads)
-   - [im2col + Systolic Array](#3-im2col--systolic-array)
+   - [im2col with Systolic Array](#3-im2col-with-systolic-array)
    - [Stencil Machine](#4-stencil-machine)
 3. [Comparative Analysis](#comparative-analysis)
 4. [Energy Analysis](#energy-analysis)
@@ -226,7 +226,7 @@ __global__ void conv2d_naive(float* X, float* F, float* Y, ...) {
 
 ---
 
-### 3. im2col + Systolic Array
+### 3. im2col with Systolic Array
 
 #### im2col Overview
 
@@ -856,7 +856,7 @@ This provides flexibility to configure SYSTARS for different market segments wit
 
 - [Implementation Plan](../plan/implementation.md)
 - [ISA Instructions](../plan/isa-instructions.md)
-- [DMA Descriptors](../plan/dma-descriptors.md)
+- [DMA Descriptors](../architecture/dma-descriptors.md)
 
 ---
 

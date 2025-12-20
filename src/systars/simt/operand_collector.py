@@ -68,7 +68,8 @@ class OperandState(IntEnum):
     """State of a single operand slot."""
 
     EMPTY = 0  # Not needed
-    PENDING = auto()  # Waiting for register file
+    PENDING = auto()  # Waiting for register file read request
+    READING = auto()  # Register file read in progress (1-cycle latency)
     READY = auto()  # Data received
 
 
@@ -80,10 +81,15 @@ class OperandSlot:
     register_addr: int | None = None
     value: int = 0
     bank_id: int = 0
+    pending_value: int = 0  # Value waiting to be latched after read latency
 
     def needs_fetch(self) -> bool:
         """Check if this slot needs to fetch from register file."""
         return self.state == OperandState.PENDING
+
+    def is_reading(self) -> bool:
+        """Check if this slot is waiting for read to complete."""
+        return self.state == OperandState.READING
 
 
 @dataclass
@@ -105,11 +111,15 @@ class CollectorEntry:
 
     def is_ready(self) -> bool:
         """Check if all needed operands are ready."""
-        return all(op.state != OperandState.PENDING for op in self.operands)
+        return all(op.state in (OperandState.EMPTY, OperandState.READY) for op in self.operands)
 
     def pending_banks(self) -> list[int]:
         """Get list of banks we're waiting to read from."""
         return [op.bank_id for op in self.operands if op.state == OperandState.PENDING]
+
+    def reading_count(self) -> int:
+        """Get count of operands waiting for read to complete."""
+        return sum(1 for op in self.operands if op.state == OperandState.READING)
 
     def get_visualization(self) -> str:
         """Get visualization of operand collection progress."""
@@ -119,6 +129,8 @@ class CollectorEntry:
                 symbols.append("·")
             elif op.state == OperandState.PENDING:
                 symbols.append("□")
+            elif op.state == OperandState.READING:
+                symbols.append("◐")  # Half-filled = reading in progress
             else:  # READY
                 symbols.append("■")
         return "".join(symbols)
@@ -347,6 +359,10 @@ class OperandCollectorSim:
         """
         Attempt to collect pending operands from register file.
 
+        This implements proper 2-phase collection with 1-cycle latency:
+        - Phase 1: PENDING -> READING (request read from register file)
+        - Phase 2: READING -> READY (latch the read data)
+
         Args:
             register_read_func: Function to read registers, returns (data, conflict, conflict_banks)
 
@@ -359,38 +375,42 @@ class OperandCollectorSim:
             if collector.state != CollectorState.COLLECTING:
                 continue
 
-            # Gather pending register addresses
+            # Phase 2: Latch data for operands that were READING
+            for op in collector.operands:
+                if op.state == OperandState.READING:
+                    op.value = op.pending_value
+                    op.state = OperandState.READY
+                    self.total_energy_pj += self.config.operand_collect_energy_pj
+
+            # Phase 1: Request reads for PENDING operands
             pending_addrs = [
                 op.register_addr for op in collector.operands if op.state == OperandState.PENDING
             ]
 
-            if not pending_addrs:
-                # All operands ready
-                collector.state = CollectorState.READY
-                continue
+            if pending_addrs:
+                # Read from register file
+                data, has_conflict, conflict_banks = register_read_func(pending_addrs)
 
-            # Read from register file
-            data, has_conflict, conflict_banks = register_read_func(pending_addrs)
+                if has_conflict:
+                    self.total_bank_conflicts += len(conflict_banks)
+                    all_conflicts.extend(conflict_banks)
+                    self.total_energy_pj += (
+                        len(conflict_banks) * self.config.bank_conflict_energy_pj
+                    )
 
-            if has_conflict:
-                self.total_bank_conflicts += len(conflict_banks)
-                all_conflicts.extend(conflict_banks)
-                self.total_energy_pj += len(conflict_banks) * self.config.bank_conflict_energy_pj
-
-            # Update operand slots with received data
-            data_idx = 0
-            for op in collector.operands:
-                if op.state == OperandState.PENDING:
-                    # Check if this operand's bank had a conflict
-                    if (
-                        op.bank_id not in conflict_banks
-                        or pending_addrs.index(op.register_addr) == 0
-                    ):
-                        # Received data (first accessor wins on conflict)
-                        op.value = data[data_idx]
-                        op.state = OperandState.READY
-                        self.total_energy_pj += self.config.operand_collect_energy_pj
-                    data_idx += 1
+                # Update operand slots - transition to READING state
+                data_idx = 0
+                for op in collector.operands:
+                    if op.state == OperandState.PENDING:
+                        # Check if this operand's bank had a conflict
+                        if (
+                            op.bank_id not in conflict_banks
+                            or pending_addrs.index(op.register_addr) == 0
+                        ):
+                            # Store pending value, will be latched next cycle
+                            op.pending_value = data[data_idx]
+                            op.state = OperandState.READING
+                        data_idx += 1
 
             collector.cycles_waiting += 1
 
@@ -451,8 +471,12 @@ class OperandCollectorSim:
                 status.append("empty")
             elif c.state == CollectorState.COLLECTING:
                 ready = sum(1 for op in c.operands if op.state == OperandState.READY)
+                reading = sum(1 for op in c.operands if op.state == OperandState.READING)
                 total = sum(1 for op in c.operands if op.state != OperandState.EMPTY)
-                status.append(f"{ready}/{total}")
+                if reading > 0:
+                    status.append(f"{ready}+{reading}/{total}")
+                else:
+                    status.append(f"{ready}/{total}")
             elif c.state == CollectorState.READY:
                 status.append("FIRE!")
             else:

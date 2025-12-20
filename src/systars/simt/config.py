@@ -14,7 +14,7 @@ class SIMTConfig:
 
     Based on NVIDIA SM architecture with:
     - 4 partitions (processing blocks)
-    - 32 cores (8 per partition)
+    - 128 cores (32 per partition, matching warp size)
     - 64K registers (16K per partition)
     - Operand collectors for register gathering
     - Warp-based SIMT execution
@@ -31,8 +31,8 @@ class SIMTConfig:
     num_partitions: int = 4
     """Number of processing partitions (sub-cores) in the SM."""
 
-    cores_per_partition: int = 8
-    """Number of CUDA cores per partition (32 total)."""
+    cores_per_partition: int = 32
+    """Number of Execution cores per partition)."""
 
     warp_size: int = 32
     """Number of threads per warp (SIMT execution width)."""
@@ -68,7 +68,7 @@ class SIMTConfig:
     # Operand Collectors (per partition)
     # =========================================================================
 
-    collectors_per_partition: int = 2
+    collectors_per_partition: int = 8
     """Number of operand collectors per partition for latency hiding."""
 
     operands_per_collector: int = 3
@@ -153,7 +153,7 @@ class SIMTConfig:
 
     @property
     def total_cores(self) -> int:
-        """Total number of CUDA cores in the SM."""
+        """Total number of execution cores in the SM."""
         return self.num_partitions * self.cores_per_partition
 
     @property

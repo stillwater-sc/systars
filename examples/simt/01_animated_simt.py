@@ -82,7 +82,7 @@ def move_cursor(row: int, col: int):
 
 def draw_box(title: str, width: int = 70) -> str:
     """Draw a box header."""
-    padding = width - len(title) - 4
+    padding = width - len(title) - 5
     return f"┌─ {title} " + "─" * padding + "┐"
 
 
@@ -136,6 +136,8 @@ def format_collector_slot(char: str) -> str:
         return Colors.GREEN + "■" + Colors.RESET
     elif char == "□":
         return Colors.YELLOW + "□" + Colors.RESET
+    elif char == "◐":
+        return Colors.CYAN + "◐" + Colors.RESET
     else:
         return Colors.DIM + "·" + Colors.RESET
 
@@ -165,7 +167,7 @@ def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
     lines.append("")
 
     # Warp Schedulers section
-    lines.append(draw_box("WARP SCHEDULERS (4 partitions × 8 warps)", 75))
+    lines.append(draw_box("WARP SCHEDULERS (4 partitions x 8 warps)", 75))
 
     for p_idx, p_vis in enumerate(vis["partitions"]):
         warp_line = f"│ P{p_idx}: "
@@ -257,24 +259,41 @@ def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
     lines.append(draw_box_end(75))
     lines.append("")
 
-    # Execution Pipeline section
-    lines.append(draw_box("EXECUTION PIPELINE (4 stages)", 75))
+    # Execution Pipeline section - show 8 ALUs per partition with utilization
+    lines.append(draw_box("ALU CLUSTER (8 ALUs × 4 stages per partition)", 75))
 
     for p_idx, p_vis in enumerate(vis["partitions"]):
-        pipe_line = f"│ P{p_idx}: "
-        for i, stage in enumerate(p_vis["pipeline"]):
-            stage_names = ["FETCH", "DECODE", "EXEC", "WB"]
-            name = stage_names[i] if i < len(stage_names) else f"S{i}"
-            if stage != "----":
-                pipe_line += f"{Colors.CYAN}{name}:{stage}{Colors.RESET} │ "
+        alu_detail = p_vis.get("alu_detail", {})
+        utilization = alu_detail.get("utilization", 0.0)
+        alus = alu_detail.get("alus", [])
+
+        # First line: ALU IDs and utilization
+        alu_line = f"│ P{p_idx}: "
+        for i in range(min(8, len(alus))):
+            alu = alus[i]
+            if alu["busy"]:
+                alu_line += f"{Colors.GREEN}A{i}{Colors.RESET}"
             else:
-                pipe_line += f"{Colors.DIM}{name}:----{Colors.RESET} │ "
+                alu_line += f"{Colors.DIM}A{i}{Colors.RESET}"
+        alu_line += f"  Util:{Colors.CYAN}{utilization:4.0f}%{Colors.RESET}"
+
+        # Show pipeline stages for first 4 ALUs (space constrained)
+        alu_line += " │ "
+        for i in range(min(4, len(alus))):
+            stages = alus[i]["stages"]
+            stage_str = ""
+            for s in stages:
+                if s == "--":
+                    stage_str += f"{Colors.DIM}·{Colors.RESET}"
+                else:
+                    stage_str += f"{Colors.CYAN}█{Colors.RESET}"
+            alu_line += f"{stage_str} "
 
         # Pad to width
-        clean_len = len(re.sub(r"\033\[[0-9;]*m", "", pipe_line))
+        clean_len = len(re.sub(r"\033\[[0-9;]*m", "", alu_line))
         padding = 74 - clean_len
-        pipe_line += " " * max(0, padding) + "│"
-        lines.append(pipe_line)
+        alu_line += " " * max(0, padding) + "│"
+        lines.append(alu_line)
 
     lines.append(draw_box_end(75))
     lines.append("")

@@ -1,5 +1,5 @@
 site_name: Systars
-site_description: Python-based systolic array RTL generator using Amaranth HDL
+site_description: Python-based RTL generators of parallel operators, matmul, conv2d, and simt using Amaranth HDL
 site_url: https://stillwater-sc.github.io/systars
 
 repo_name: stillwater-sc/systars
@@ -9,11 +9,38 @@ theme:
   name: material
   features:
     - content.code.copy
+    - navigation.sections
+    - navigation.expand
 
 nav:
   - Home: index.md
+  - Getting Started:
+    - Development Environment: initial-development-environment.md
+    - Development Workflow: development-workflow.md
+  - Design:
+    - SIMT Architecture: design/simt-architecture.md
+    - Stencil Machine: design/stencil-machine-microarchitecture.md
+    - Conv2D Options: design/conv2d-architecture-options.md
+  - Architecture:
+    - DMA Descriptors: architecture/dma-descriptors.md
+  - Guides:
+    - Wavefront Animation: wavefront-animation.md
+  - Planning:
+    - Implementation Plan: plan/implementation.md
+    - ISA Instructions: plan/isa-instructions.md
+    - PolarFire Deployment: plan/polarfire-deployment.md
+  - Session Logs:
+    - 2025-12-18 ISA Matmul: sessions/2025-12-18-isa-matmul-instruction.md
+    - 2025-12-17 Skew Buffer: sessions/2025-12-17-skew-buffer-visualization.md
+    - 2025-12-16 Wavefront: sessions/2025-12-16-examples-wavefront-animation.md
+    - 2025-12-15 Memory System: sessions/2025-12-15-phase2-memory-system.md
 
 markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - tables
+  - toc:
+      permalink: true

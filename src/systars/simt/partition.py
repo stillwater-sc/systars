@@ -263,7 +263,7 @@ class PartitionSim:
             "ipc": self.total_instructions / max(1, self.cycle),
         }
 
-    def get_visualization(self) -> dict:
+    def get_visualization(self) -> dict[str, Any]:
         """Get visualization data for all components."""
         return {
             "warp_states": self.scheduler.get_visualization(),
@@ -271,6 +271,7 @@ class PartitionSim:
             "collectors": self.operand_collector.get_visualization(),
             "collector_status": self.operand_collector.get_status(),
             "pipeline": self.execution_unit.get_visualization(),
+            "alu_detail": self.execution_unit.get_detailed_visualization(),
         }
 
 
