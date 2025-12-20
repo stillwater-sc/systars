@@ -94,46 +94,97 @@ class OperandSlot:
 
 @dataclass
 class CollectorEntry:
-    """Entry in an operand collector."""
+    """Entry in an operand collector.
+
+    In SIMT, each warp instruction needs operands for all 32 threads.
+    Each thread needs up to 3 source operands (src1, src2, src3).
+    Total: 32 threads × 3 sources = 96 operand slots per collector.
+
+    The operand slots are organized as thread_operands[thread_id][src_idx].
+    """
 
     collector_id: int
+    warp_size: int = 32  # Number of threads per warp
     state: CollectorState = CollectorState.EMPTY
     warp_id: int = 0
     instruction: Instruction | None = None
-    operands: list = field(default_factory=list)  # List of OperandSlot
+    # Per-thread operands: thread_operands[thread_id][src_idx]
+    thread_operands: list = field(default_factory=list)
     destination: int | None = None
     cycles_waiting: int = 0
 
     def __post_init__(self):
-        """Initialize operand slots."""
-        if not self.operands:
-            self.operands = [OperandSlot() for _ in range(3)]
+        """Initialize operand slots for all threads."""
+        if not self.thread_operands:
+            # 32 threads × 3 sources = 96 operand slots
+            self.thread_operands = [
+                [OperandSlot() for _ in range(3)] for _ in range(self.warp_size)
+            ]
 
     def is_ready(self) -> bool:
-        """Check if all needed operands are ready."""
-        return all(op.state in (OperandState.EMPTY, OperandState.READY) for op in self.operands)
+        """Check if all needed operands for all threads are ready."""
+        for thread_ops in self.thread_operands:
+            for op in thread_ops:
+                if op.state not in (OperandState.EMPTY, OperandState.READY):
+                    return False
+        return True
 
     def pending_banks(self) -> list[int]:
-        """Get list of banks we're waiting to read from."""
-        return [op.bank_id for op in self.operands if op.state == OperandState.PENDING]
+        """Get list of banks we're waiting to read from (across all threads)."""
+        banks = []
+        for thread_ops in self.thread_operands:
+            for op in thread_ops:
+                if op.state == OperandState.PENDING:
+                    banks.append(op.bank_id)
+        return banks
 
     def reading_count(self) -> int:
         """Get count of operands waiting for read to complete."""
-        return sum(1 for op in self.operands if op.state == OperandState.READING)
+        count = 0
+        for thread_ops in self.thread_operands:
+            for op in thread_ops:
+                if op.state == OperandState.READING:
+                    count += 1
+        return count
+
+    def get_source_progress(self, src_idx: int) -> tuple[int, int, int]:
+        """Get progress for a specific source operand across all threads.
+
+        Returns:
+            Tuple of (ready_count, reading_count, pending_count)
+        """
+        ready = reading = pending = 0
+        for thread_ops in self.thread_operands:
+            op = thread_ops[src_idx]
+            if op.state == OperandState.READY:
+                ready += 1
+            elif op.state == OperandState.READING:
+                reading += 1
+            elif op.state == OperandState.PENDING:
+                pending += 1
+        return ready, reading, pending
 
     def get_visualization(self) -> str:
-        """Get visualization of operand collection progress."""
-        symbols = []
-        for op in self.operands:
-            if op.state == OperandState.EMPTY:
-                symbols.append("·")
-            elif op.state == OperandState.PENDING:
-                symbols.append("□")
-            elif op.state == OperandState.READING:
-                symbols.append("◐")  # Half-filled = reading in progress
-            else:  # READY
-                symbols.append("■")
-        return "".join(symbols)
+        """Get compact visualization of operand collection progress.
+
+        Shows per-source progress as a mini progress bar.
+        Each source shows: ready/total or a state indicator.
+        """
+        result = []
+        for src_idx in range(3):
+            ready, reading, pending = self.get_source_progress(src_idx)
+            total_needed = ready + reading + pending
+            if total_needed == 0:
+                result.append("·")  # Source not needed
+            elif ready == self.warp_size:
+                result.append("■")  # All threads ready
+            elif reading > 0:
+                result.append("◐")  # Reading in progress
+            elif pending > 0:
+                result.append("□")  # Pending
+            else:
+                result.append("■")  # Ready
+        return "".join(result)
 
 
 class OperandCollector(Component):
@@ -305,13 +356,20 @@ class OperandCollectorSim:
 
     def __post_init__(self):
         """Initialize collector entries."""
+        warp_size = self.config.warp_size
         self.collectors = [
-            CollectorEntry(collector_id=i) for i in range(self.config.collectors_per_partition)
+            CollectorEntry(collector_id=i, warp_size=warp_size)
+            for i in range(self.config.collectors_per_partition)
         ]
 
-    def _get_bank(self, reg_addr: int) -> int:
-        """Get bank ID for a register address."""
-        return reg_addr % self.config.register_banks_per_partition
+    def _get_bank(self, reg_addr: int, thread_id: int) -> int:
+        """Get bank ID for a register address.
+
+        In SIMT, each thread's register is in a different bank to enable
+        conflict-free access when all threads access the same register number.
+        bank_id = (reg_addr + thread_id) % num_banks
+        """
+        return (reg_addr + thread_id) % self.config.register_banks_per_partition
 
     def allocate(
         self,
@@ -320,6 +378,9 @@ class OperandCollectorSim:
     ) -> int | None:
         """
         Allocate a collector for a new instruction.
+
+        In SIMT, this allocates operand collection for all 32 threads.
+        Each thread needs its own operand values from the register file.
 
         Args:
             warp_id: Warp issuing the instruction
@@ -337,15 +398,18 @@ class OperandCollectorSim:
                 collector.destination = instruction.dst
                 collector.cycles_waiting = 0
 
-                # Initialize operand slots
-                for i, src in enumerate([instruction.src1, instruction.src2, instruction.src3]):
-                    if src is not None:
-                        collector.operands[i].state = OperandState.PENDING
-                        collector.operands[i].register_addr = src
-                        collector.operands[i].bank_id = self._get_bank(src)
-                    else:
-                        collector.operands[i].state = OperandState.EMPTY
-                        collector.operands[i].register_addr = None
+                # Initialize operand slots for all 32 threads
+                sources = [instruction.src1, instruction.src2, instruction.src3]
+                for thread_id in range(collector.warp_size):
+                    for src_idx, src in enumerate(sources):
+                        op = collector.thread_operands[thread_id][src_idx]
+                        if src is not None:
+                            op.state = OperandState.PENDING
+                            op.register_addr = src
+                            op.bank_id = self._get_bank(src, thread_id)
+                        else:
+                            op.state = OperandState.EMPTY
+                            op.register_addr = None
 
                 return collector.collector_id
 
@@ -354,17 +418,20 @@ class OperandCollectorSim:
 
     def collect_operands(
         self,
-        register_read_func,
+        register_file,
     ) -> list[int]:
         """
-        Attempt to collect pending operands from register file.
+        Attempt to collect pending operands from register file for all threads.
 
         This implements proper 2-phase collection with 1-cycle latency:
         - Phase 1: PENDING -> READING (request read from register file)
         - Phase 2: READING -> READY (latch the read data)
 
+        In SIMT, all 32 threads' operands are collected in parallel.
+        Bank conflicts occur when multiple threads access the same bank.
+
         Args:
-            register_read_func: Function to read registers, returns (data, conflict, conflict_banks)
+            register_file: RegisterFileSim with per-thread read capability
 
         Returns:
             List of banks that had conflicts.
@@ -375,76 +442,89 @@ class OperandCollectorSim:
             if collector.state != CollectorState.COLLECTING:
                 continue
 
-            # Phase 2: Latch data for operands that were READING
-            for op in collector.operands:
-                if op.state == OperandState.READING:
-                    op.value = op.pending_value
-                    op.state = OperandState.READY
-                    self.total_energy_pj += self.config.operand_collect_energy_pj
+            # Phase 2: Latch data for all threads' operands that were READING
+            for thread_ops in collector.thread_operands:
+                for op in thread_ops:
+                    if op.state == OperandState.READING:
+                        op.value = op.pending_value
+                        op.state = OperandState.READY
+                        self.total_energy_pj += self.config.operand_collect_energy_pj
 
-            # Phase 1: Request reads for PENDING operands
-            pending_addrs = [
-                op.register_addr for op in collector.operands if op.state == OperandState.PENDING
-            ]
-
-            if pending_addrs:
-                # Read from register file
-                data, has_conflict, conflict_banks = register_read_func(pending_addrs)
-
-                if has_conflict:
-                    self.total_bank_conflicts += len(conflict_banks)
-                    all_conflicts.extend(conflict_banks)
-                    self.total_energy_pj += (
-                        len(conflict_banks) * self.config.bank_conflict_energy_pj
-                    )
-
-                # Update operand slots - transition to READING state
-                data_idx = 0
-                for op in collector.operands:
+            # Phase 1: Collect pending reads across all threads
+            # Group by bank to detect conflicts
+            pending_by_bank: dict[int, list[tuple[int, int, OperandSlot]]] = {}
+            for thread_id, thread_ops in enumerate(collector.thread_operands):
+                for src_idx, op in enumerate(thread_ops):
                     if op.state == OperandState.PENDING:
-                        # Check if this operand's bank had a conflict
-                        if (
-                            op.bank_id not in conflict_banks
-                            or pending_addrs.index(op.register_addr) == 0
-                        ):
-                            # Store pending value, will be latched next cycle
-                            op.pending_value = data[data_idx]
-                            op.state = OperandState.READING
-                        data_idx += 1
+                        bank = op.bank_id
+                        if bank not in pending_by_bank:
+                            pending_by_bank[bank] = []
+                        pending_by_bank[bank].append((thread_id, src_idx, op))
+
+            # Process reads - first access to each bank succeeds, others conflict
+            conflict_banks = []
+            for bank, ops_list in pending_by_bank.items():
+                if len(ops_list) > 1:
+                    # Bank conflict - only first access succeeds this cycle
+                    conflict_banks.append(bank)
+                    self.total_bank_conflicts += len(ops_list) - 1
+
+                # First access always succeeds
+                thread_id, src_idx, op = ops_list[0]
+                # Read per-thread value from register file
+                if op.register_addr is not None:
+                    op.pending_value = register_file.read_thread(op.register_addr, thread_id)
+                else:
+                    op.pending_value = 0
+                op.state = OperandState.READING
+
+            if conflict_banks:
+                all_conflicts.extend(conflict_banks)
+                self.total_energy_pj += len(conflict_banks) * self.config.bank_conflict_energy_pj
 
             collector.cycles_waiting += 1
 
-            # Check if all operands now ready
+            # Check if all operands for all threads are ready
             if collector.is_ready():
                 collector.state = CollectorState.READY
 
         self.cycles_collecting += 1
         return all_conflicts
 
-    def fire(self) -> tuple[int, Instruction, list[int]] | None:
+    def fire(self) -> tuple[int, Instruction, list[list[int]]] | None:
         """
         Fire a ready instruction to execution unit.
 
+        In SIMT, all 32 threads fire together. Returns per-thread operand values.
+
         Returns:
-            Tuple of (warp_id, instruction, operand_values) or None.
+            Tuple of (warp_id, instruction, per_thread_operands) where
+            per_thread_operands[thread_id][src_idx] is the operand value.
+            Returns None if no collector is ready.
         """
         for collector in self.collectors:
             if collector.state == CollectorState.READY:
-                # Get operand values
-                operand_values = [
-                    op.value if op.state == OperandState.READY else 0 for op in collector.operands
-                ]
+                # Get operand values for all 32 threads
+                # per_thread_operands[thread_id][src_idx]
+                per_thread_operands = []
+                for thread_id in range(collector.warp_size):
+                    thread_ops = collector.thread_operands[thread_id]
+                    thread_values = [
+                        op.value if op.state == OperandState.READY else 0 for op in thread_ops
+                    ]
+                    per_thread_operands.append(thread_values)
 
-                result = (collector.warp_id, collector.instruction, operand_values)
+                result = (collector.warp_id, collector.instruction, per_thread_operands)
 
-                # Reset collector
+                # Reset collector for all threads
                 collector.state = CollectorState.EMPTY
                 collector.instruction = None
                 collector.warp_id = 0
-                for op in collector.operands:
-                    op.state = OperandState.EMPTY
-                    op.register_addr = None
-                    op.value = 0
+                for thread_ops in collector.thread_operands:
+                    for op in thread_ops:
+                        op.state = OperandState.EMPTY
+                        op.register_addr = None
+                        op.value = 0
 
                 self.total_fires += 1
                 return result
@@ -459,20 +539,37 @@ class OperandCollectorSim:
         """Check if any collector is empty."""
         return any(c.state == CollectorState.EMPTY for c in self.collectors)
 
+    def is_busy(self) -> bool:
+        """Check if any collector is actively collecting or ready to fire."""
+        return any(
+            c.state in (CollectorState.COLLECTING, CollectorState.READY) for c in self.collectors
+        )
+
     def get_visualization(self) -> list[str]:
         """Get visualization of all collectors."""
         return [c.get_visualization() for c in self.collectors]
 
     def get_status(self) -> list[str]:
-        """Get status strings for all collectors."""
+        """Get status strings for all collectors.
+
+        Shows per-source progress across all 32 threads.
+        """
         status = []
         for c in self.collectors:
             if c.state == CollectorState.EMPTY:
                 status.append("empty")
             elif c.state == CollectorState.COLLECTING:
-                ready = sum(1 for op in c.operands if op.state == OperandState.READY)
-                reading = sum(1 for op in c.operands if op.state == OperandState.READING)
-                total = sum(1 for op in c.operands if op.state != OperandState.EMPTY)
+                # Count total ready/reading/pending across all threads and sources
+                ready = reading = pending = 0
+                for thread_ops in c.thread_operands:
+                    for op in thread_ops:
+                        if op.state == OperandState.READY:
+                            ready += 1
+                        elif op.state == OperandState.READING:
+                            reading += 1
+                        elif op.state == OperandState.PENDING:
+                            pending += 1
+                total = ready + reading + pending
                 if reading > 0:
                     status.append(f"{ready}+{reading}/{total}")
                 else:

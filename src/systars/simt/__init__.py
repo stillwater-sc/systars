@@ -46,7 +46,14 @@ from .global_memory import GlobalMemorySim
 from .load_store_unit import AddressSpace, LoadStoreUnitSim
 from .memory_coalescer import CoalescingResult, MemoryCoalescerSim, analyze_access_pattern
 from .operand_collector import CollectorState, OperandCollectorSim, OperandState
-from .partition import PartitionSim, create_gemm_program, create_test_program
+from .partition import (
+    PartitionSim,
+    create_gemm_program,
+    create_test_program,
+    create_tiled_gemm_program,
+    get_gemm_warp_count,
+    get_warp_tile_info,
+)
 from .register_file import BankState, RegisterFileSim
 from .shared_memory import SharedMemoryBankState, SharedMemorySim
 from .sm_controller import SMSim, SMState, run_gemm_simulation
@@ -79,6 +86,9 @@ __all__ = [
     "PartitionSim",
     "create_gemm_program",
     "create_test_program",
+    "create_tiled_gemm_program",
+    "get_gemm_warp_count",
+    "get_warp_tile_info",
     # Warp Scheduler
     "WarpSchedulerSim",
     "Instruction",

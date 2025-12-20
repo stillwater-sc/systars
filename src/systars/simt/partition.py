@@ -144,6 +144,7 @@ class PartitionSim:
     total_stalls: int = 0
     total_bank_conflicts: int = 0
     total_memory_stalls: int = 0
+    instruction_counts: dict = field(default_factory=dict)  # Per-opcode counts
 
     # Components (initialized in __post_init__, not passed to __init__)
     scheduler: WarpSchedulerSim = field(init=False)  # type: ignore[assignment]
@@ -177,16 +178,32 @@ class PartitionSim:
         opcode = OPCODE_MAP.get(instruction.opcode, Opcode.NOP)
         return opcode in (Opcode.LD, Opcode.ST)
 
-    def _compute_addresses(self, _instruction: Instruction, operands: list[int]) -> list[int]:
+    def _compute_addresses(
+        self, _instruction: Instruction, per_thread_operands: list[list[int]]
+    ) -> list[int]:
         """
         Compute per-thread addresses for memory instructions.
 
-        For now, all 32 threads compute the same base address from src1.
-        Thread-specific addressing can be extended later.
+        Each thread computes its own address from its src1 operand.
+        This models true SIMT behavior where threads can have different addresses.
+
+        Args:
+            _instruction: Memory instruction
+            per_thread_operands: Per-thread operands [thread_id][src_idx]
+
+        Returns:
+            List of 32 addresses, one per thread.
         """
-        base_addr = operands[0] if operands else 0
-        # Each thread accesses base_addr + thread_id * 4 (stride by 4 bytes)
-        return [base_addr + tid * 4 for tid in range(32)]
+        addresses = []
+        for thread_id in range(32):
+            if thread_id < len(per_thread_operands):
+                thread_ops = per_thread_operands[thread_id]
+                # src1 (thread_ops[0]) contains the address for this thread
+                addr = thread_ops[0] if len(thread_ops) > 0 else 0
+            else:
+                addr = 0
+            addresses.append(addr)
+        return addresses
 
     def step(self) -> dict[str, Any]:
         """
@@ -195,7 +212,7 @@ class PartitionSim:
         Returns:
             Dictionary with cycle status information.
         """
-        completed_list: list[tuple[int, int, int]] = []
+        completed_list: list[tuple[int, int, list[int]]] = []
         conflicts_list: list[int] = []
         memory_completed_list: list[tuple[int, int, list[int]]] = []
         status: dict[str, Any] = {
@@ -212,6 +229,13 @@ class PartitionSim:
         self.register_file.reset_cycle()
         self.shared_memory.reset_cycle()
 
+        # 0. Process pending register file writes (bank-conflicted)
+        # This drains writes that couldn't complete last cycle
+        writes_done = self.register_file.process_pending_writes()
+        if writes_done > 0:
+            # Pending writes consumed bank bandwidth
+            pass
+
         # 1. Warp scheduler: select and issue instruction
         issue_result = self.scheduler.schedule()
         if issue_result:
@@ -225,8 +249,8 @@ class PartitionSim:
         else:
             self.total_stalls += 1
 
-        # 2. Operand collection: read from register file
-        conflicts = self.operand_collector.collect_operands(self.register_file.read)
+        # 2. Operand collection: read per-thread values from register file
+        conflicts = self.operand_collector.collect_operands(self.register_file)
         if conflicts:
             conflicts_list.extend(conflicts)
             self.total_bank_conflicts += len(conflicts)
@@ -234,17 +258,17 @@ class PartitionSim:
         # 3. Fire ready instructions to execution unit or LSU
         fire_result = self.operand_collector.fire()
         if fire_result:
-            warp_id, instruction, operands = fire_result
+            warp_id, instruction, per_thread_operands = fire_result
             status["fired"] = (warp_id, instruction)
 
             if self._is_memory_instruction(instruction):
                 # Route to Load/Store Unit
-                addresses = self._compute_addresses(instruction, operands)
+                addresses = self._compute_addresses(instruction, per_thread_operands)
                 opcode = OPCODE_MAP.get(instruction.opcode, Opcode.NOP)
 
                 if opcode == Opcode.ST:
-                    # For stores, src2 contains the data to write
-                    store_data = [operands[1] if len(operands) > 1 else 0] * 32
+                    # For stores, src2 (index 1) contains per-thread data to write
+                    store_data = [ops[1] if len(ops) > 1 else 0 for ops in per_thread_operands]
                 else:
                     store_data = None
 
@@ -254,24 +278,29 @@ class PartitionSim:
                     self.scheduler.warps[warp_id].state = WarpState.STALLED_MEM
                     self.total_memory_stalls += 1
             else:
-                # Route to execution unit
-                self.execution_unit.issue(warp_id, instruction, operands)
+                # Route to execution unit with per-thread operands
+                self.execution_unit.issue(warp_id, instruction, per_thread_operands)
 
             self.total_instructions += 1
+            # Track per-opcode counts
+            opcode_str = instruction.opcode
+            self.instruction_counts[opcode_str] = self.instruction_counts.get(opcode_str, 0) + 1
 
         # 4. Advance execution pipeline
         completed = self.execution_unit.tick()
-        for warp_id, dst_reg, result in completed:
-            self.register_file.write(dst_reg, result)
-            completed_list.append((warp_id, dst_reg, result))
+        for warp_id, dst_reg, per_thread_results in completed:
+            # Queue per-thread results for writeback (with bank conflict handling)
+            self.register_file.queue_write_all_threads(dst_reg, per_thread_results)
+            completed_list.append((warp_id, dst_reg, per_thread_results))
 
         # 5. Advance LSU and handle memory completions
         mem_completed = self.load_store_unit.tick()
         for warp_id, dst_reg, data in mem_completed:
-            # Write first thread's data to destination register (simplified)
-            # Full implementation would write per-thread data
-            first_value = data[0] if data else 0
-            self.register_file.write(dst_reg, first_value)
+            # For loads (dst_reg >= 0): queue per-thread data for writeback
+            # For stores (dst_reg == -1): no writeback needed
+            if dst_reg >= 0 and data:
+                # Queue all 32 values for writeback with bank conflict handling
+                self.register_file.queue_write_all_threads(dst_reg, data)
             memory_completed_list.append((warp_id, dst_reg, data))
             # Unstall the warp
             warp = self.scheduler.warps[warp_id]
@@ -284,11 +313,13 @@ class PartitionSim:
         # 6. Update warp scheduler state
         self.scheduler.tick()
 
-        # Check if done (include LSU in busy check)
+        # Check if done (include all pipeline stages and pending writes in busy check)
         self.done = (
             self.scheduler.all_done()
+            and not self.operand_collector.is_busy()
             and not self.execution_unit.is_busy()
             and not self.load_store_unit.is_busy()
+            and not self.register_file.has_pending_writes()
         )
 
         self.cycle += 1
@@ -327,6 +358,7 @@ class PartitionSim:
         return {
             "cycles": self.cycle,
             "instructions": self.total_instructions,
+            "instruction_counts": dict(self.instruction_counts),  # Per-opcode breakdown
             "stalls": self.total_stalls,
             "bank_conflicts": self.total_bank_conflicts,
             "memory_stalls": self.total_memory_stalls,
@@ -388,6 +420,123 @@ def create_gemm_program(
         instructions.append(Instruction(opcode="FFMA", dst=0, src1=1, src2=2, src3=0, latency=4))
 
     return instructions
+
+
+def create_tiled_gemm_program(
+    M: int,
+    N: int,
+    K: int,
+    warp_id: int,
+    warp_size: int = 32,
+) -> list[Instruction]:
+    """
+    Create a tiled GEMM program for a specific warp.
+
+    In parallel GEMM:
+    - Output matrix C is M×N elements
+    - Each thread computes one output element C[i,j]
+    - Each warp (32 threads) computes 32 output elements
+    - This warp computes elements [warp_id*32 : (warp_id+1)*32]
+
+    Thread mapping (row-major):
+        thread_id -> (row, col) where:
+        global_idx = warp_id * 32 + thread_id
+        row = global_idx // N
+        col = global_idx % N
+
+    Computes: C[row, col] = sum(A[row, k] * B[k, col]) for k in 0..K
+
+    Register allocation per thread:
+        R0: accumulator (partial sum)
+        R1: A[row, k] value
+        R2: B[k, col] value
+        R3: row index (computed from thread_id)
+        R4: col index (computed from thread_id)
+        R5: temp for address calculation
+
+    Args:
+        M, N, K: Matrix dimensions
+        warp_id: Which warp this program is for (0, 1, 2, ...)
+        warp_size: Threads per warp (default 32)
+
+    Returns:
+        List of instructions for this warp's GEMM tile.
+    """
+    instructions: list[Instruction] = []
+
+    # Calculate which output elements this warp computes
+    start_idx = warp_id * warp_size
+
+    # If this warp has no work (output is smaller than warp coverage), return empty
+    if start_idx >= M * N:
+        return instructions
+
+    # Initialize accumulator to zero
+    # Each thread's R0 starts at 0
+    instructions.append(Instruction(opcode="MOV", dst=0, src1=0, latency=1))
+
+    # K iterations of the reduction loop
+    # Each thread loads its row of A and column of B
+    for _k in range(K):
+        # Load A[row, k] - each thread loads from its assigned row
+        # Address = base_A + row * K + k (thread computes its own address)
+        instructions.append(Instruction(opcode="LD", dst=1, src1=3, latency=4))
+
+        # Load B[k, col] - each thread loads from its assigned column
+        # Address = base_B + k * N + col
+        instructions.append(Instruction(opcode="LD", dst=2, src1=4, latency=4))
+
+        # FMA: R0 = R1 * R2 + R0
+        instructions.append(Instruction(opcode="FFMA", dst=0, src1=1, src2=2, src3=0, latency=4))
+
+    # Store result to C[row, col]
+    # Address = base_C + row * N + col
+    instructions.append(Instruction(opcode="ST", dst=5, src1=0, latency=4))
+
+    return instructions
+
+
+def get_gemm_warp_count(M: int, N: int, warp_size: int = 32) -> int:
+    """
+    Calculate number of warps needed for M×N GEMM output.
+
+    Args:
+        M, N: Output matrix dimensions
+        warp_size: Threads per warp (default 32)
+
+    Returns:
+        Number of warps needed.
+    """
+    total_elements = M * N
+    return (total_elements + warp_size - 1) // warp_size
+
+
+def get_warp_tile_info(
+    warp_id: int, M: int, N: int, warp_size: int = 32
+) -> tuple[int, int, int, int]:
+    """
+    Get the tile boundaries for a specific warp.
+
+    Args:
+        warp_id: Which warp
+        M, N: Output matrix dimensions
+        warp_size: Threads per warp
+
+    Returns:
+        Tuple of (start_row, start_col, end_row, end_col) for this warp's tile.
+    """
+    start_idx = warp_id * warp_size
+    end_idx = min(start_idx + warp_size, M * N)
+
+    if start_idx >= M * N:
+        return (M, N, M, N)  # Empty tile
+
+    start_row = start_idx // N
+    start_col = start_idx % N
+    end_row = (end_idx - 1) // N
+    end_col = (end_idx - 1) % N
+
+    return (start_row, start_col, end_row, end_col)
 
 
 def create_test_program(num_instructions: int = 10) -> list[Instruction]:

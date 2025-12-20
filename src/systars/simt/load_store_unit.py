@@ -337,9 +337,14 @@ class LoadStoreUnitSim:
                         # No global memory - return zeros for loads
                         req.read_data = [0] * 32
 
-                # Request complete
+                # Request complete - notify for both loads and stores
+                # For loads: (warp_id, dst_reg, data)
+                # For stores: (warp_id, -1, []) - no data to write back
                 if req.is_load:
                     completed.append((req.warp_id, req.dst_reg, req.read_data))
+                else:
+                    # Store completion - use -1 as dst_reg to indicate no writeback
+                    completed.append((req.warp_id, -1, []))
 
                 # Energy accounting
                 if req.address_space == AddressSpace.SHARED:

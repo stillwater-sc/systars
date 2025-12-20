@@ -17,15 +17,34 @@ Usage:
     python 01_animated_simt.py [options]
 
 Options:
-    --warps N       Number of warps to simulate (default: 4)
+    --warps N       Number of warps to simulate (auto-calculated for tiled)
     --instructions  Number of instructions per warp (default: 16)
     --delay MS      Delay between frames in milliseconds (default: 200)
     --fast          Fast mode (no animation delay)
-    --gemm          Use GEMM workload instead of test program
-    --k K           K dimension for GEMM (default: 8)
+    --step          Step mode (press Enter to advance each cycle)
+    --gemm          Use GEMM workload (sequential, same program in all warps)
+    --tiled         Use tiled GEMM (parallel, each warp computes different tile)
+    -m M            GEMM output rows (default: 8)
+    -n N            GEMM output cols (default: 8)
+    --k K           GEMM reduction dimension (default: 4)
+
+Examples:
+    # Basic test program
+    python 01_animated_simt.py --fast
+
+    # Sequential GEMM (4 warps running same program, uses MOV not LD)
+    python 01_animated_simt.py --gemm --k 4 --fast
+
+    # Tiled GEMM: 8x8 output = 64 elements = 2 warps (uses real LD/ST)
+    # Note: --fast-mem reduces memory latency from 200 to 4 cycles for demo
+    python 01_animated_simt.py --tiled -m 8 -n 8 --k 2 --fast --fast-mem
+
+    # Tiled GEMM step mode: 8x4 output = 32 elements = 1 warp
+    python 01_animated_simt.py --tiled -m 8 -n 4 --k 2 --step --fast-mem
 """
 
 import argparse
+import re
 import sys
 import time
 
@@ -33,11 +52,16 @@ import time
 sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
 
 from systars.simt import (
+    CollectorState,
     SIMTConfig,
     SMSim,
+    SMState,
     WarpState,
     create_gemm_program,
     create_test_program,
+    create_tiled_gemm_program,
+    get_gemm_warp_count,
+    get_warp_tile_info,
 )
 
 
@@ -68,6 +92,255 @@ class Colors:
     BG_MAGENTA = "\033[45m"
     BG_CYAN = "\033[46m"
     BG_WHITE = "\033[47m"
+
+    # Bright/intense colors for warp color coding
+    BRIGHT_RED = "\033[91m"
+    BRIGHT_GREEN = "\033[92m"
+    BRIGHT_YELLOW = "\033[93m"
+    BRIGHT_BLUE = "\033[94m"
+    BRIGHT_MAGENTA = "\033[95m"
+    BRIGHT_CYAN = "\033[96m"
+
+    # Warp colors (cycle through these)
+    WARP_COLORS = [
+        "\033[94m",  # Bright blue
+        "\033[92m",  # Bright green
+        "\033[93m",  # Bright yellow
+        "\033[95m",  # Bright magenta
+        "\033[96m",  # Bright cyan
+        "\033[91m",  # Bright red
+        "\033[97m",  # Bright white
+        "\033[33m",  # Yellow
+    ]
+
+
+class GEMMTracker:
+    """
+    Track GEMM computation state for visualization.
+
+    Shows which output matrix elements are being computed by which warps,
+    and flashes when partial sums are updated.
+    """
+
+    def __init__(self, M: int, N: int, K: int, warp_size: int = 32):
+        self.M = M
+        self.N = N
+        self.K = K
+        self.warp_size = warp_size
+
+        # Track partial sum progress per element (how many k iterations done)
+        # partial_sums[row][col] = count of FMAs completed
+        self.partial_sums = [[0] * N for _ in range(M)]
+
+        # Track which elements were updated THIS cycle (for flashing)
+        self.updated_this_cycle = set()  # Set of (row, col) tuples
+
+        # Track which elements have been stored (ST completed)
+        # stored[row][col] = True if result written to memory
+        self.stored = [[False] * N for _ in range(M)]
+
+        # Track pending stores per warp
+        self.pending_stores: set[int] = set()  # Set of warp_ids with pending ST
+
+        # Track which warp owns which element
+        # Element (row, col) -> linear index -> warp_id
+        self.total_elements = M * N
+        self.num_warps = (self.total_elements + warp_size - 1) // warp_size
+
+    def get_warp_for_element(self, row: int, col: int) -> int:
+        """Get which warp owns this output element."""
+        linear_idx = row * self.N + col
+        return linear_idx // self.warp_size
+
+    def get_thread_for_element(self, row: int, col: int) -> int:
+        """Get which thread within the warp computes this element."""
+        linear_idx = row * self.N + col
+        return linear_idx % self.warp_size
+
+    def record_fma_completion(self, warp_id: int, thread_mask: int = 0xFFFFFFFF):
+        """
+        Record that an FMA completed for threads in the given warp.
+
+        This updates the partial sum count for all elements owned by this warp.
+        """
+        base_element = warp_id * self.warp_size
+        for thread_id in range(self.warp_size):
+            if thread_mask & (1 << thread_id):
+                element_idx = base_element + thread_id
+                if element_idx < self.total_elements:
+                    row = element_idx // self.N
+                    col = element_idx % self.N
+                    self.partial_sums[row][col] += 1
+                    self.updated_this_cycle.add((row, col))
+
+    def clear_updates(self):
+        """Clear the updated flags for next cycle."""
+        self.updated_this_cycle.clear()
+
+    def is_element_complete(self, row: int, col: int) -> bool:
+        """Check if element has completed all K iterations."""
+        return self.partial_sums[row][col] >= self.K
+
+    def get_element_progress(self, row: int, col: int) -> float:
+        """Get progress of element as fraction 0.0 to 1.0."""
+        return min(1.0, self.partial_sums[row][col] / self.K)
+
+    def record_store_issued(self, warp_id: int):
+        """Record that a store was issued for this warp."""
+        self.pending_stores.add(warp_id)
+
+    def record_store_complete(self, warp_id: int):
+        """Record that a store completed for this warp."""
+        self.pending_stores.discard(warp_id)
+        # Mark all elements owned by this warp as stored
+        base_element = warp_id * self.warp_size
+        for thread_id in range(self.warp_size):
+            element_idx = base_element + thread_id
+            if element_idx < self.total_elements:
+                row = element_idx // self.N
+                col = element_idx % self.N
+                self.stored[row][col] = True
+
+    def is_element_stored(self, row: int, col: int) -> bool:
+        """Check if element has been stored to memory."""
+        return self.stored[row][col]
+
+    def get_pending_store_count(self) -> int:
+        """Get count of warps with pending stores."""
+        return len(self.pending_stores)
+
+    def is_truly_complete(self) -> bool:
+        """Check if all elements are computed AND stored."""
+        return all(self.stored[r][c] for r in range(self.M) for c in range(self.N))
+
+
+class TimelineLogger:
+    """
+    Log issue and complete events for timeline analysis.
+
+    Creates a detailed log of when each operation is issued and completes,
+    helping identify bubbles and serialization issues.
+    """
+
+    def __init__(self, filename: str = "timeline.log"):
+        self.filename = filename
+        self.events: list[dict] = []
+        self.enabled = False
+
+    def enable(self, filename: str = "timeline.log"):
+        """Enable timeline logging to specified file."""
+        self.filename = filename
+        self.enabled = True
+        self.events = []
+        # Write header
+        with open(self.filename, "w") as f:
+            f.write("cycle,event,partition,warp,opcode,dst,src1,src2,latency,info\n")
+
+    def log_issue(
+        self,
+        cycle: int,
+        partition: int,
+        warp: int,
+        opcode: str,
+        dst: int,
+        src1: int,
+        src2: int,
+        latency: int,
+        info: str = "",
+    ):
+        """Log an instruction issue event."""
+        if not self.enabled:
+            return
+        event = {
+            "cycle": cycle,
+            "event": "ISSUE",
+            "partition": partition,
+            "warp": warp,
+            "opcode": opcode,
+            "dst": dst,
+            "src1": src1,
+            "src2": src2,
+            "latency": latency,
+            "info": info,
+        }
+        self.events.append(event)
+        self._write_event(event)
+
+    def log_complete(
+        self, cycle: int, partition: int, warp: int, opcode: str, dst: int, info: str = ""
+    ):
+        """Log an instruction completion event."""
+        if not self.enabled:
+            return
+        event = {
+            "cycle": cycle,
+            "event": "COMPLETE",
+            "partition": partition,
+            "warp": warp,
+            "opcode": opcode,
+            "dst": dst,
+            "src1": -1,
+            "src2": -1,
+            "latency": 0,
+            "info": info,
+        }
+        self.events.append(event)
+        self._write_event(event)
+
+    def log_stall(self, cycle: int, partition: int, warp: int, reason: str):
+        """Log a stall event."""
+        if not self.enabled:
+            return
+        event = {
+            "cycle": cycle,
+            "event": "STALL",
+            "partition": partition,
+            "warp": warp,
+            "opcode": "",
+            "dst": -1,
+            "src1": -1,
+            "src2": -1,
+            "latency": 0,
+            "info": reason,
+        }
+        self.events.append(event)
+        self._write_event(event)
+
+    def _write_event(self, event: dict):
+        """Append event to log file."""
+        with open(self.filename, "a") as f:
+            f.write(
+                f"{event['cycle']},{event['event']},{event['partition']},"
+                f"{event['warp']},{event['opcode']},{event['dst']},"
+                f"{event['src1']},{event['src2']},{event['latency']},"
+                f'"{event["info"]}"\n'
+            )
+
+    def print_summary(self):
+        """Print summary of logged events."""
+        if not self.events:
+            return
+
+        issues = [e for e in self.events if e["event"] == "ISSUE"]
+        completes = [e for e in self.events if e["event"] == "COMPLETE"]
+        stalls = [e for e in self.events if e["event"] == "STALL"]
+
+        print(f"\nTimeline Summary ({self.filename}):")
+        print(f"  Total events: {len(self.events)}")
+        print(f"  Issues: {len(issues)}")
+        print(f"  Completes: {len(completes)}")
+        print(f"  Stalls: {len(stalls)}")
+
+        # Count by opcode
+        opcode_counts: dict[str, int] = {}
+        for e in issues:
+            op = e["opcode"]
+            opcode_counts[op] = opcode_counts.get(op, 0) + 1
+        print(f"  By opcode: {opcode_counts}")
+
+
+# Global timeline logger
+timeline_logger = TimelineLogger()
 
 
 def clear_screen():
@@ -142,7 +415,135 @@ def format_collector_slot(char: str) -> str:
         return Colors.DIM + "·" + Colors.RESET
 
 
-def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
+def render_gemm_matrix(tracker: GEMMTracker, max_display: int = 16) -> list[str]:
+    """
+    Render the GEMM output matrix showing warp ownership and update flashing.
+
+    Shows element state progression:
+    - Not started: dim warp ID (W0, W1, etc.)
+    - Partial progress: ░░, ▓░ based on FMA progress
+    - Computed (all FFMAs done, ST pending): ▓▓ in yellow
+    - Stored (truly complete): ██ in green
+    - Updating this cycle: bright green flash
+
+    Args:
+        tracker: GEMMTracker with current state
+        max_display: Maximum rows/cols to display (truncate larger matrices)
+
+    Returns:
+        List of lines to display
+    """
+    lines = []
+    M, N, K = tracker.M, tracker.N, tracker.K
+
+    # Calculate display dimensions (truncate if too large)
+    display_rows = min(M, max_display)
+    display_cols = min(N, max_display)
+    truncated_rows = max_display < M
+    truncated_cols = max_display < N
+
+    # Header
+    pending_stores = tracker.get_pending_store_count()
+    status = (
+        "COMPLETE"
+        if tracker.is_truly_complete()
+        else (f"ST pending: {pending_stores}" if pending_stores > 0 else "computing")
+    )
+    header = f"OUTPUT MATRIX C[{M}×{N}] = A×B  [{status}]"
+    lines.append(draw_box(header, 75))
+
+    # Column headers (warp IDs for first row of each column group)
+    col_header = "│     "
+    for col in range(display_cols):
+        warp_id = tracker.get_warp_for_element(0, col)
+        color = Colors.WARP_COLORS[warp_id % len(Colors.WARP_COLORS)]
+        col_header += f"{color}{col:2d}{Colors.RESET} "
+    if truncated_cols:
+        col_header += "··"
+    clean_len = len(re.sub(r"\033\[[0-9;]*m", "", col_header))
+    col_header += " " * max(0, 74 - clean_len) + "│"
+    lines.append(col_header)
+
+    # Matrix rows
+    for row in range(display_rows):
+        row_str = f"│ {row:2d}: "
+        for col in range(display_cols):
+            warp_id = tracker.get_warp_for_element(row, col)
+            progress = tracker.partial_sums[row][col]
+            updated = (row, col) in tracker.updated_this_cycle
+            computed = progress >= K
+            stored = tracker.is_element_stored(row, col)
+
+            # Choose display character and color
+            warp_color = Colors.WARP_COLORS[warp_id % len(Colors.WARP_COLORS)]
+
+            if updated:
+                # Flash bright green on FMA update
+                row_str += f"{Colors.BG_GREEN}{Colors.BLACK}W{warp_id}{Colors.RESET} "
+            elif stored:
+                # Truly complete (stored to memory) - solid green
+                row_str += f"{Colors.GREEN}██{Colors.RESET} "
+            elif computed:
+                # Computed but not stored - yellow/amber to indicate pending ST
+                row_str += f"{Colors.YELLOW}▓▓{Colors.RESET} "
+            elif progress > 0:
+                # Partial progress - show dots based on progress
+                # Use block characters to show fill level
+                fill = int((progress / K) * 2)  # 0, 1, or 2 chars filled
+                if fill >= 2:
+                    row_str += f"{warp_color}▓░{Colors.RESET} "
+                elif fill >= 1:
+                    row_str += f"{warp_color}░▓{Colors.RESET} "
+                else:
+                    row_str += f"{warp_color}░░{Colors.RESET} "
+            else:
+                # Not started - show warp ID dimmed
+                row_str += f"{Colors.DIM}W{warp_id}{Colors.RESET} "
+
+        if truncated_cols:
+            row_str += "··"
+
+        clean_len = len(re.sub(r"\033\[[0-9;]*m", "", row_str))
+        row_str += " " * max(0, 74 - clean_len) + "│"
+        lines.append(row_str)
+
+    if truncated_rows:
+        lines.append("│ ··" + " " * 70 + "│")
+
+    # Progress summary - now shows both computed and stored counts
+    total_ops = M * N * K
+    completed_ops = sum(sum(row) for row in tracker.partial_sums)
+    pct = (completed_ops / total_ops * 100) if total_ops > 0 else 0
+    elements_computed = sum(
+        1 for r in range(M) for c in range(N) if tracker.partial_sums[r][c] >= K
+    )
+    elements_stored = sum(1 for r in range(M) for c in range(N) if tracker.stored[r][c])
+
+    summary = f"│ FMAs: {completed_ops}/{total_ops} ({pct:.1f}%)  "
+    summary += f"Computed: {elements_computed}/{M * N}  "
+    summary += f"{Colors.GREEN}Stored: {elements_stored}/{M * N}{Colors.RESET}"
+    clean_len = len(re.sub(r"\033\[[0-9;]*m", "", summary))
+    summary += " " * max(0, 74 - clean_len) + "│"
+    lines.append(summary)
+
+    # Legend - updated to show computed vs stored distinction
+    legend = "│ "
+    legend += f"{Colors.DIM}W#=idle{Colors.RESET} "
+    legend += "░=partial "
+    legend += f"{Colors.YELLOW}▓▓=computed{Colors.RESET} "
+    legend += f"{Colors.GREEN}██=stored{Colors.RESET} "
+    legend += f"{Colors.BG_GREEN}{Colors.BLACK}W#{Colors.RESET}=updating"
+    clean_len = len(re.sub(r"\033\[[0-9;]*m", "", legend))
+    legend += " " * max(0, 74 - clean_len) + "│"
+    lines.append(legend)
+
+    lines.append(draw_box_end(75))
+    return lines
+
+
+def visualize_sm_state(
+    sm: SMSim, cycle_status: dict, gemm_tracker: GEMMTracker | None = None
+) -> list[str]:
     """
     Generate visualization lines for current SM state.
 
@@ -226,8 +627,11 @@ def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
             bank_line += f"[{format_bank_state(state)}]"
         bank_line += "..."
 
-        # Show conflicts
-        if cycle_status and p_idx < len(cycle_status.get("partitions", [])):
+        # Show pending writes (memory data trickling back) or conflicts
+        pending_writes = sm.partitions[p_idx].register_file.get_pending_write_count()
+        if pending_writes > 0:
+            bank_line += f"  {Colors.YELLOW}Pending: {pending_writes}/32{Colors.RESET}"
+        elif cycle_status and p_idx < len(cycle_status.get("partitions", [])):
             p_status = cycle_status["partitions"][p_idx]
             conflicts = p_status.get("bank_conflicts", [])
             if conflicts:
@@ -242,23 +646,30 @@ def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
     lines.append(draw_box_end(75))
     lines.append("")
 
-    # Operand Collectors section
-    coll_header = f"OPERAND COLLECTORS ({config.collectors_per_partition} per partition)"
+    # Operand Collectors section - show per-thread operand collection progress
+    # Each warp has 32 threads, each thread needs up to 3 source operands
+    # Total: 32 threads × 3 sources = 96 operand slots per collector
+    coll_header = "OPERAND COLLECTORS (32 threads × 3 sources = 96 slots each)"
     lines.append(draw_box(coll_header, 75))
 
-    for p_idx, p_vis in enumerate(vis["partitions"]):
+    for p_idx, _p_vis in enumerate(vis["partitions"]):
+        collector_entries = sm.partitions[p_idx].operand_collector.collectors
+        collector_status = sm.partitions[p_idx].operand_collector.get_status()
+
+        # Show detailed progress for each collector
         collector_line = f"│ P{p_idx}: "
-        for slots, status in zip(p_vis["collectors"], p_vis["collector_status"], strict=True):
-            collector_line += "["
-            for char in slots:
-                collector_line += format_collector_slot(char)
-            collector_line += "] "
-            if status == "FIRE!":
-                collector_line += Colors.GREEN + "FIRE! " + Colors.RESET
-            elif status == "empty":
-                collector_line += Colors.DIM + "empty " + Colors.RESET
+        for i, entry in enumerate(collector_entries):
+            status = collector_status[i]
+            if entry.state == CollectorState.EMPTY:
+                collector_line += Colors.DIM + "[----]" + Colors.RESET + " "
+            elif entry.state == CollectorState.READY:
+                collector_line += Colors.GREEN + f"[W{entry.warp_id}:FIRE]" + Colors.RESET + " "
             else:
-                collector_line += f"{status}   "
+                # Show warp ID and progress (e.g., "W0:32/64" or "W0:16+8/48")
+                progress = status
+                collector_line += (
+                    Colors.YELLOW + f"[W{entry.warp_id}:{progress}]" + Colors.RESET + " "
+                )
 
         # Pad to width
         clean_len = len(re.sub(r"\033\[[0-9;]*m", "", collector_line))
@@ -280,34 +691,89 @@ def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
         alu_detail = p_vis.get("alu_detail", {})
         utilization = alu_detail.get("utilization", 0.0)
         alus = alu_detail.get("alus", [])
+        num_alus = len(alus)
+        busy_count = sum(1 for alu in alus if alu["busy"])
 
-        # First line: ALU IDs and utilization
+        # Compact ALU display: one char per ALU (█=busy, ·=idle)
         alu_line = f"│ P{p_idx}: "
-        for i in range(min(8, len(alus))):
-            alu = alus[i]
+        for alu in alus:
             if alu["busy"]:
-                alu_line += f"{Colors.GREEN}A{i}{Colors.RESET}"
+                alu_line += f"{Colors.GREEN}█{Colors.RESET}"
             else:
-                alu_line += f"{Colors.DIM}A{i}{Colors.RESET}"
-        alu_line += f"  Util:{Colors.CYAN}{utilization:4.0f}%{Colors.RESET}"
+                alu_line += f"{Colors.DIM}·{Colors.RESET}"
 
-        # Show pipeline stages for first 4 ALUs (space constrained)
-        alu_line += " │ "
-        for i in range(min(4, len(alus))):
-            stages = alus[i]["stages"]
-            stage_str = ""
-            for s in stages:
-                if s == "--":
-                    stage_str += f"{Colors.DIM}·{Colors.RESET}"
-                else:
-                    stage_str += f"{Colors.CYAN}█{Colors.RESET}"
-            alu_line += f"{stage_str} "
+        # Show busy count and utilization
+        alu_line += f" {busy_count:2d}/{num_alus} "
+        alu_line += f"Util:{Colors.CYAN}{utilization:3.0f}%{Colors.RESET}"
 
         # Pad to width
         clean_len = len(re.sub(r"\033\[[0-9;]*m", "", alu_line))
         padding = 74 - clean_len
         alu_line += " " * max(0, padding) + "│"
         lines.append(alu_line)
+
+    lines.append(draw_box_end(75))
+    lines.append("")
+
+    # Memory System section - show LSU activity, pending requests, coalescing
+    lines.append(draw_box("MEMORY SYSTEM (LSU → Coalescer → Cache → DRAM)", 75))
+
+    for p_idx in range(len(sm.partitions)):
+        partition = sm.partitions[p_idx]
+        lsu_vis = partition.load_store_unit.get_visualization()
+        pending_reqs = lsu_vis["requests"]
+
+        # Build memory line showing pending requests
+        mem_line = f"│ P{p_idx}: "
+
+        if not pending_reqs:
+            mem_line += f"{Colors.DIM}No pending memory requests{Colors.RESET}"
+        else:
+            # Show each pending request compactly
+            req_strs = []
+            for req in pending_reqs[:4]:  # Show max 4 requests
+                warp = req["warp_id"]
+                op = "LD" if req["is_load"] else "ST"
+                space = req["space"][:3].upper()  # GLO or SHA
+                cycles = req["cycles_remaining"]
+
+                # Color based on how long it's been waiting
+                if cycles > 100:
+                    color = Colors.RED
+                elif cycles > 50:
+                    color = Colors.YELLOW
+                else:
+                    color = Colors.CYAN
+
+                req_strs.append(f"{color}W{warp}:{op}.{space}({cycles}){Colors.RESET}")
+
+            mem_line += " ".join(req_strs)
+            if len(pending_reqs) > 4:
+                mem_line += f" +{len(pending_reqs) - 4} more"
+
+        clean_len = len(re.sub(r"\033\[[0-9;]*m", "", mem_line))
+        mem_line += " " * max(0, 74 - clean_len) + "│"
+        lines.append(mem_line)
+
+    # Summary line with coalescing efficiency
+    total_pending = sum(
+        len(p.load_store_unit.get_visualization()["requests"]) for p in sm.partitions
+    )
+    total_loads = sum(p.load_store_unit.total_loads for p in sm.partitions)
+    total_stores = sum(p.load_store_unit.total_stores for p in sm.partitions)
+
+    summary = f"│ Pending: {total_pending}  Loads: {total_loads}  Stores: {total_stores}"
+
+    # Get coalescing stats from partition 0 (main partition)
+    if sm.partitions:
+        coal_stats = sm.partitions[0].load_store_unit.coalescer.get_statistics()
+        if coal_stats["total_analyses"] > 0:
+            efficiency = coal_stats["avg_efficiency"] * 100
+            summary += f"  Coalesce: {efficiency:.0f}%"
+
+    clean_len = len(re.sub(r"\033\[[0-9;]*m", "", summary))
+    summary += " " * max(0, 74 - clean_len) + "│"
+    lines.append(summary)
 
     lines.append(draw_box_end(75))
     lines.append("")
@@ -343,7 +809,41 @@ def visualize_sm_state(sm: SMSim, cycle_status: dict) -> list[str]:
     energy_line2 += " " * max(0, padding) + "│"
     lines.append(energy_line2)
 
+    # Instruction mix line - aggregate per-opcode counts from all partitions
+    all_counts: dict[str, int] = {}
+    for p in sm.partitions:
+        for opcode, count in p.instruction_counts.items():
+            all_counts[opcode] = all_counts.get(opcode, 0) + count
+
+    if all_counts:
+        # Sort by count descending, show top opcodes
+        sorted_ops = sorted(all_counts.items(), key=lambda x: -x[1])
+        instr_line = "│ Instr Mix: "
+        for idx, (opcode, count) in enumerate(sorted_ops):
+            if idx >= 5:  # Show max 5 opcodes
+                remaining = sum(c for _, c in sorted_ops[5:])
+                if remaining > 0:
+                    instr_line += f"+{remaining} other "
+                break
+            # Color code by type
+            if opcode in ("FFMA", "FADD", "FMUL", "FSUB"):
+                color = Colors.GREEN  # FP ops
+            elif opcode in ("LD", "ST"):
+                color = Colors.CYAN  # Memory ops
+            else:
+                color = Colors.YELLOW  # Other ALU
+            instr_line += f"{color}{opcode}:{count}{Colors.RESET} "
+
+        clean_len = len(re.sub(r"\033\[[0-9;]*m", "", instr_line))
+        instr_line += " " * max(0, 74 - clean_len) + "│"
+        lines.append(instr_line)
+
     lines.append(draw_box_end(75))
+
+    # GEMM Matrix visualization (if tracker provided)
+    if gemm_tracker is not None:
+        lines.append("")
+        lines.extend(render_gemm_matrix(gemm_tracker))
 
     return lines
 
@@ -352,6 +852,8 @@ def run_animation(
     sm: SMSim,
     delay_ms: int = 200,
     max_cycles: int = 1000,
+    step_mode: bool = False,
+    gemm_tracker: GEMMTracker | None = None,
 ):
     """
     Run animated visualization of SM execution.
@@ -360,6 +862,8 @@ def run_animation(
         sm: Streaming Multiprocessor simulation
         delay_ms: Delay between frames in milliseconds
         max_cycles: Maximum cycles to run
+        step_mode: If True, wait for Enter key between each cycle
+        gemm_tracker: Optional GEMM tracker for output matrix visualization
     """
 
     clear_screen()
@@ -372,27 +876,102 @@ def run_animation(
         f"{sm.config.cores_per_partition} cores = {sm.config.total_cores} cores"
     )
     print(f"Register File: {sm.config.total_registers} registers ({sm.config.register_file_kb} KB)")
+    if gemm_tracker:
+        print(
+            f"GEMM: C[{gemm_tracker.M}×{gemm_tracker.N}] = "
+            f"A[{gemm_tracker.M}×{gemm_tracker.K}] @ B[{gemm_tracker.K}×{gemm_tracker.N}]"
+        )
     print()
     print("Legend: R=Ready E=Executing W=RAW-Stall B=Bank-Stall D=Done")
     print("        ██=Read ▓▓=Write XX=Conflict ░░=Idle")
     print()
-    print("Press Ctrl+C to stop")
+    if step_mode:
+        print("Step mode: Press Enter to advance, 'q' to quit, 'r' to run continuously")
+    else:
+        print("Press Ctrl+C to stop")
     print()
-    time.sleep(1)
+    if not step_mode:
+        time.sleep(1)
 
     try:
+        run_continuous = False
         while not sm.done and sm.cycle < max_cycles:
             clear_screen()
 
+            # Clear GEMM tracker updates from previous cycle
+            if gemm_tracker:
+                gemm_tracker.clear_updates()
+
             # Execute one cycle
             cycle_status = sm.step()
+            current_cycle = cycle_status.get("cycle", sm.cycle)
+
+            # Log timeline events and update GEMM tracker
+            for p_idx, p_status in enumerate(cycle_status.get("partitions", [])):
+                # Log issued instructions (from partition's issued_this_cycle if available)
+                issued = p_status.get("issued", None)
+                if issued:
+                    warp_id, instr = issued
+                    if timeline_logger.enabled:
+                        timeline_logger.log_issue(
+                            current_cycle,
+                            p_idx,
+                            warp_id,
+                            instr.opcode,
+                            instr.dst,
+                            instr.src1,
+                            instr.src2,
+                            instr.latency,
+                            "",
+                        )
+                    # Track store issues for GEMM
+                    if gemm_tracker and instr.opcode == "ST":
+                        gemm_tracker.record_store_issued(warp_id)
+
+                # Log ALU completions
+                completed = p_status.get("completed", [])
+                for warp_id, dst_reg, _results in completed:
+                    if timeline_logger.enabled:
+                        timeline_logger.log_complete(
+                            current_cycle, p_idx, warp_id, "ALU", dst_reg, ""
+                        )
+                    # Update GEMM tracker
+                    if gemm_tracker:
+                        gemm_tracker.record_fma_completion(warp_id)
+
+                # Log memory completions
+                mem_completed = p_status.get("memory_completed", [])
+                for warp_id, dst_reg, _data in mem_completed:
+                    if timeline_logger.enabled:
+                        op_type = "LD" if dst_reg >= 0 else "ST"
+                        timeline_logger.log_complete(
+                            current_cycle, p_idx, warp_id, op_type, dst_reg, ""
+                        )
+                    # Track store completions for GEMM
+                    if gemm_tracker and dst_reg == -1:
+                        gemm_tracker.record_store_complete(warp_id)
 
             # Generate and display visualization
-            lines = visualize_sm_state(sm, cycle_status)
+            lines = visualize_sm_state(sm, cycle_status, gemm_tracker)
             for line in lines:
                 print(line)
 
-            if delay_ms > 0:
+            if step_mode and not run_continuous:
+                print()
+                print(
+                    Colors.DIM + "[Enter]=step  [r]=run  [q]=quit" + Colors.RESET,
+                    end="",
+                    flush=True,
+                )
+                try:
+                    user_input = input().strip().lower()
+                    if user_input == "q":
+                        break
+                    elif user_input == "r":
+                        run_continuous = True
+                except EOFError:
+                    break
+            elif delay_ms > 0:
                 time.sleep(delay_ms / 1000.0)
 
     except KeyboardInterrupt:
@@ -422,6 +1001,46 @@ def run_animation(
             f"{format_energy(p_stats['energy_pj'])}"
         )
 
+    # Per-opcode instruction counts
+    print()
+    print("Instruction Mix:")
+    for i, p_stats in enumerate(stats["partition_stats"]):
+        counts = p_stats.get("instruction_counts", {})
+        if counts:
+            count_str = " ".join(
+                f"{op}:{cnt}" for op, cnt in sorted(counts.items(), key=lambda x: -x[1])
+            )
+            print(f"  P{i}: {count_str}")
+
+    # Timeline summary
+    if timeline_logger.enabled:
+        timeline_logger.print_summary()
+
+
+def print_gemm_tile_mapping(M: int, N: int, num_warps: int, warp_size: int = 32):
+    """Print a visual representation of how warps map to output tiles."""
+    print(f"\nGEMM Tile Mapping: C[{M}×{N}] = A[{M}×K] @ B[K×{N}]")
+    print(f"Total output elements: {M * N}")
+    print(f"Elements per warp: {warp_size} (one per thread)")
+    print(f"Warps needed: {num_warps}")
+    print()
+
+    # Create a grid showing which warp computes which elements
+    print("Output matrix C with warp assignments:")
+    print("  ", end="")
+    for col in range(N):
+        print(f"{col:3}", end="")
+    print()
+
+    for row in range(M):
+        print(f"{row:2} ", end="")
+        for col in range(N):
+            idx = row * N + col
+            warp_id = idx // warp_size
+            print(f" W{warp_id}", end="")
+        print()
+    print()
+
 
 def main():
     """Main entry point."""
@@ -431,8 +1050,8 @@ def main():
     parser.add_argument(
         "--warps",
         type=int,
-        default=4,
-        help="Number of warps to simulate (default: 4)",
+        default=None,
+        help="Number of warps (auto-calculated for tiled GEMM)",
     )
     parser.add_argument(
         "--instructions",
@@ -452,40 +1071,135 @@ def main():
         help="Fast mode (no animation delay)",
     )
     parser.add_argument(
+        "--step",
+        action="store_true",
+        help="Step mode (press Enter to advance each cycle)",
+    )
+    parser.add_argument(
         "--gemm",
         action="store_true",
-        help="Use GEMM workload instead of test program",
+        help="Use GEMM workload (sequential, same program in all warps)",
+    )
+    parser.add_argument(
+        "--tiled",
+        action="store_true",
+        help="Use tiled GEMM (parallel, each warp computes different output tile)",
+    )
+    parser.add_argument(
+        "--m",
+        type=int,
+        default=8,
+        help="M dimension for GEMM output rows (default: 8)",
+    )
+    parser.add_argument(
+        "--n",
+        type=int,
+        default=8,
+        help="N dimension for GEMM output cols (default: 8)",
     )
     parser.add_argument(
         "--k",
         type=int,
-        default=8,
-        help="K dimension for GEMM (default: 8)",
+        default=4,
+        help="K dimension for GEMM reduction (default: 4)",
+    )
+    parser.add_argument(
+        "--fast-mem",
+        action="store_true",
+        help="Use fast memory latencies for demo (4 cycles instead of 200)",
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=1000,
+        help="Maximum cycles to run before stopping (default: 1000)",
+    )
+    parser.add_argument(
+        "--timeline",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Write timeline log to FILE (CSV format for analysis)",
     )
 
     args = parser.parse_args()
 
-    # Create SM
+    # Create SM with optional fast memory latencies
     config = SIMTConfig()
+    if args.fast_mem:
+        # Reduce latencies for demo purposes (near-instant memory)
+        config.l1_miss_latency = 1  # Instead of 200
+        config.shared_mem_latency = 1  # Instead of 4
+        print("Using fast memory latencies for demo (1 cycle)")
     sm = SMSim(config)
 
-    # Create program
-    if args.gemm:
+    # Enable timeline logging if requested
+    if args.timeline:
+        timeline_logger.enable(args.timeline)
+        print(f"Timeline logging enabled: {args.timeline}")
+
+    # GEMM tracker for visualization (only for tiled mode)
+    gemm_tracker = None
+
+    # Determine workload and warp count
+    if args.tiled:
+        # Tiled GEMM: each warp computes different output elements
+        M, N, K = args.m, args.n, args.k
+        num_warps = get_gemm_warp_count(M, N)
+
+        # Limit to max warps per partition for demo
+        max_warps = config.max_warps_per_partition
+        if num_warps > max_warps:
+            print(f"Warning: {M}×{N} output needs {num_warps} warps, limiting to {max_warps}")
+            num_warps = max_warps
+
+        # Create GEMM tracker for visualization
+        gemm_tracker = GEMMTracker(M, N, K, config.warp_size)
+
+        print_gemm_tile_mapping(M, N, num_warps)
+
+        # Load different tiled programs into each warp
+        for warp_id in range(num_warps):
+            program = create_tiled_gemm_program(M, N, K, warp_id)
+            # Load into partition 0
+            sm.partitions[0].load_program(warp_id, program)
+            tile_info = get_warp_tile_info(warp_id, M, N)
+            print(
+                f"  Warp {warp_id}: rows {tile_info[0]}-{tile_info[2]}, "
+                f"cols {tile_info[1]}-{tile_info[3]} "
+                f"({len(program)} instrs)"
+            )
+
+        sm.partitions[0].activate_warps(num_warps)
+        # Set SM state to EXECUTE (normally done by sm.activate_warps)
+        sm.state = SMState.EXECUTE
+        print(f"\nRunning tiled GEMM: C[{M}×{N}] = A[{M}×{K}] @ B[{K}×{N}]")
+
+    elif args.gemm:
+        # Original sequential GEMM (same program in all warps)
+        num_warps = args.warps if args.warps else 4
         program = create_gemm_program(16, 16, args.k)
-        print(f"Running GEMM with K={args.k} ({len(program)} instructions per warp)")
+        print(f"Running sequential GEMM with K={args.k} ({len(program)} instructions per warp)")
+        sm.load_uniform_program(program, num_warps)
+        sm.activate_warps(num_warps)
+
     else:
+        # Test program
+        num_warps = args.warps if args.warps else 4
         program = create_test_program(args.instructions)
         print(f"Running test program ({len(program)} instructions per warp)")
-
-    # Load program into warps
-    sm.load_uniform_program(program, args.warps)
-
-    # Activate warps
-    sm.activate_warps(args.warps)
+        sm.load_uniform_program(program, num_warps)
+        sm.activate_warps(num_warps)
 
     # Run animation
     delay = 0 if args.fast else args.delay
-    run_animation(sm, delay_ms=delay)
+    run_animation(
+        sm,
+        delay_ms=delay,
+        max_cycles=args.max_cycles,
+        step_mode=args.step,
+        gemm_tracker=gemm_tracker,
+    )
 
 
 if __name__ == "__main__":

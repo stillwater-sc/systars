@@ -125,3 +125,32 @@ The animation shows:
       ├── Execution Unit
       └── Load/Store Unit → Memory Coalescer → Shared/Global Memory
 ```
+
+## Changes Made
+
+1. Timeline logging for issue/complete events (examples/simt/01_animated_simt.py)
+
+- Added TimelineLogger class that writes CSV format logs with columns: cycle,event,partition,warp,opcode,dst,src1,src2,latency,info
+- Added --timeline FILE command line option to enable logging
+- Timeline logs capture: ISSUE events when instructions are dispatched, COMPLETE events when ALU/LD/ST finish
+
+2. Fixed matrix to distinguish computed vs stored elements
+
+- Updated GEMMTracker with record_store_issued() and record_store_complete() methods
+- Matrix now shows 4 distinct states:
+  - W# (dim) = not started
+  - ░░ / ▓░ = partial progress (some FFMAs done)
+  - ▓▓ (yellow) = computed but ST pending
+  - ██ (green) = truly complete (stored to memory)
+- Header shows status: [computing], [ST pending: N], or [COMPLETE]
+- Summary line shows both "Computed: X/Y" and "Stored: X/Y"
+
+Example usage:
+
+```bash
+  # Run with timeline logging and see store completion tracking
+  python examples/simt/01_animated_simt.py --tiled --m 8 --n 4 --k 2 --fast --fast-mem --timeline timeline.csv
+
+  # Analyze timeline to find bubbles
+  cat timeline.csv
+```

@@ -126,19 +126,27 @@ class TestRegisterFileSim(unittest.TestCase):
         assert conflict_banks == []
 
     def test_bank_conflict_detection(self):
-        """Test bank conflict detection."""
+        """Test bank conflict detection.
+
+        In the per-thread model, bank conflicts occur when multiple threads
+        access the same bank. For register R0 with 16 banks and 32 threads:
+        - Thread 0 accesses bank (0 + 0) % 16 = 0
+        - Thread 16 accesses bank (0 + 16) % 16 = 0
+        So reading R0 for all 32 threads causes 16 bank conflicts.
+        """
         config = SIMTConfig()
         rf = RegisterFileSim(config)
 
-        # Registers 0 and 16 are in the same bank (0)
-        rf.write(0, 100)
-        rf.write(16, 200)
+        # Initialize R0 for all threads
+        for t in range(32):
+            rf.write_thread(0, t, 100 + t)
 
-        # Reading both should detect conflict
+        # Reading R0 for all threads should detect bank conflicts
+        # (32 threads, 16 banks = 2 threads per bank = 16 conflicts)
         rf.reset_cycle()
-        data, conflict, conflict_banks = rf.read([0, 16])
-        assert conflict
-        assert 0 in conflict_banks
+        data, num_conflicts, conflict_banks = rf.read_all_threads(0)
+        assert num_conflicts == 16  # 32 threads / 16 banks - 1 per bank
+        assert len(conflict_banks) == 16  # All banks have conflicts
 
     def test_no_conflict_different_banks(self):
         """Test no conflict with different banks."""
@@ -245,64 +253,92 @@ class TestOperandCollectorSim(unittest.TestCase):
         assert collector.collectors[collector_id].state == CollectorState.COLLECTING
 
     def test_two_phase_collection(self):
-        """Test two-phase operand collection (PENDING -> READING -> READY)."""
+        """Test two-phase operand collection (PENDING -> READING -> READY).
+
+        In SIMT, each warp has 32 threads and each thread needs operands.
+        We check thread 0's operands as representative.
+        """
         config = SIMTConfig()
         oc = OperandCollectorSim(config)
         rf = RegisterFileSim(config)
 
-        # Write test values
-        rf.write(1, 100)
-        rf.write(2, 200)
+        # Write test values for all threads
+        for t in range(32):
+            rf.write_thread(1, t, 100 + t)
+            rf.write_thread(2, t, 200 + t)
 
         # Allocate collector
         instr = Instruction(opcode="IADD", dst=0, src1=1, src2=2)
         collector_id = oc.allocate(warp_id=0, instruction=instr)
 
-        # Check operands are PENDING
+        # Check operands are PENDING for all threads
+        # thread_operands[thread_id][src_idx] - check thread 0
         entry = oc.collectors[collector_id]
-        assert entry.operands[0].state == OperandState.PENDING
-        assert entry.operands[1].state == OperandState.PENDING
+        assert entry.thread_operands[0][0].state == OperandState.PENDING  # src1
+        assert entry.thread_operands[0][1].state == OperandState.PENDING  # src2
 
-        # First collect cycle: PENDING -> READING
+        # First collect cycle: some threads go PENDING -> READING
+        # Due to bank conflicts, only one thread per bank can read each cycle
         rf.reset_cycle()
-        oc.collect_operands(rf.read)
-        assert entry.operands[0].state == OperandState.READING
-        assert entry.operands[1].state == OperandState.READING
-        assert entry.state == CollectorState.COLLECTING
+        oc.collect_operands(rf)
+        # At least some operands should be READING (first thread per bank)
+        reading_count = entry.reading_count()
+        assert reading_count > 0 or entry.is_ready()
+        assert entry.state == CollectorState.COLLECTING or entry.state == CollectorState.READY
 
-        # Second collect cycle: READING -> READY
-        rf.reset_cycle()
-        oc.collect_operands(rf.read)
-        assert entry.operands[0].state == OperandState.READY
-        assert entry.operands[1].state == OperandState.READY
+        # Continue collecting until all operands are ready
+        max_cycles = 100  # Guard against infinite loop
+        cycles = 0
+        while entry.state != CollectorState.READY and cycles < max_cycles:
+            rf.reset_cycle()
+            oc.collect_operands(rf)
+            cycles += 1
+
+        # All operands for all threads should be READY now
         assert entry.state == CollectorState.READY
+        assert entry.thread_operands[0][0].state == OperandState.READY  # src1
+        assert entry.thread_operands[0][1].state == OperandState.READY  # src2
 
     def test_fire_ready_collector(self):
-        """Test firing a ready collector."""
+        """Test firing a ready collector.
+
+        In SIMT, all 32 threads must have their operands collected before firing.
+        This takes multiple cycles due to bank conflicts.
+        """
         config = SIMTConfig()
         oc = OperandCollectorSim(config)
         rf = RegisterFileSim(config)
 
-        rf.write(1, 100)
-        rf.write(2, 200)
+        # Write test values for all threads
+        for t in range(32):
+            rf.write_thread(1, t, 100 + t)
+            rf.write_thread(2, t, 200 + t)
 
         instr = Instruction(opcode="IADD", dst=0, src1=1, src2=2)
-        oc.allocate(warp_id=0, instruction=instr)
+        collector_id = oc.allocate(warp_id=0, instruction=instr)
+        entry = oc.collectors[collector_id]
 
-        # Collect operands (2 cycles)
-        rf.reset_cycle()
-        oc.collect_operands(rf.read)
-        rf.reset_cycle()
-        oc.collect_operands(rf.read)
+        # Collect operands for all 32 threads - takes multiple cycles due to bank conflicts
+        max_cycles = 100
+        cycles = 0
+        while entry.state != CollectorState.READY and cycles < max_cycles:
+            rf.reset_cycle()
+            oc.collect_operands(rf)
+            cycles += 1
 
-        # Fire
+        assert entry.state == CollectorState.READY
+
+        # Fire - returns per-thread operands
         result = oc.fire()
         assert result is not None
-        warp_id, fired_instr, operands = result
+        warp_id, fired_instr, per_thread_operands = result
         assert warp_id == 0
         assert fired_instr == instr
-        assert operands[0] == 100
-        assert operands[1] == 200
+        # per_thread_operands[thread_id][src_idx]
+        assert per_thread_operands[0][0] == 100  # Thread 0, src1
+        assert per_thread_operands[0][1] == 200  # Thread 0, src2
+        assert per_thread_operands[5][0] == 105  # Thread 5, src1
+        assert per_thread_operands[5][1] == 205  # Thread 5, src2
 
 
 class TestALUPipeline(unittest.TestCase):
@@ -369,54 +405,74 @@ class TestExecutionUnitSim(unittest.TestCase):
         eu = ExecutionUnitSim(config)
 
         instr = Instruction(opcode="IADD", dst=0, src1=1, src2=2)
-        result = eu.issue(warp_id=0, instruction=instr, operands=[10, 20, 0])
+        # Per-thread operands: each thread gets [10, 20, 0]
+        per_thread_operands = [[10, 20, 0] for _ in range(32)]
+        result = eu.issue(warp_id=0, instruction=instr, per_thread_operands=per_thread_operands)
 
         assert result is True
         assert eu.is_busy()
         assert eu.total_operations == 1
 
     def test_iadd_computation(self):
-        """Test IADD computation."""
+        """Test IADD computation with per-thread operands.
+
+        In SIMT, a warp instruction executes on all 32 ALUs simultaneously.
+        Each thread can have different operands, producing different results.
+        """
         config = SIMTConfig()
         eu = ExecutionUnitSim(config)
 
         instr = Instruction(opcode="IADD", dst=0, src1=1, src2=2)
-        eu.issue(warp_id=0, instruction=instr, operands=[10, 20, 0])
+        # Give each thread different operands: thread T gets [T*10, T*3, 0]
+        per_thread_operands = [[t * 10, t * 3, 0] for t in range(32)]
+        eu.issue(warp_id=0, instruction=instr, per_thread_operands=per_thread_operands)
 
-        # Drain pipeline
+        # Drain pipeline - returns (warp_id, dst_reg, per_thread_results)
         completed = eu.drain()
-        assert len(completed) == 1
-        warp_id, dst, result = completed[0]
+        assert len(completed) == 1  # One warp operation with 32 results
+        warp_id, dst, per_thread_results = completed[0]
         assert warp_id == 0
         assert dst == 0
-        assert result == 30  # 10 + 20
+        # Check per-thread results: thread T = T*10 + T*3 = T*13
+        assert per_thread_results[0] == 0  # Thread 0: 0 + 0 = 0
+        assert per_thread_results[1] == 13  # Thread 1: 10 + 3 = 13
+        assert per_thread_results[5] == 65  # Thread 5: 50 + 15 = 65
 
     def test_fma_computation(self):
-        """Test FMA computation."""
+        """Test FMA computation with per-thread operands.
+
+        In SIMT, a warp instruction executes on all 32 ALUs simultaneously.
+        """
         config = SIMTConfig()
         eu = ExecutionUnitSim(config)
 
         instr = Instruction(opcode="FFMA", dst=0, src1=1, src2=2, src3=3)
-        eu.issue(warp_id=0, instruction=instr, operands=[3, 4, 5])
+        # All threads compute same: 3 * 4 + 5 = 17
+        per_thread_operands = [[3, 4, 5] for _ in range(32)]
+        eu.issue(warp_id=0, instruction=instr, per_thread_operands=per_thread_operands)
 
         completed = eu.drain()
-        assert len(completed) == 1
-        warp_id, dst, result = completed[0]
-        assert result == 17  # 3 * 4 + 5
+        assert len(completed) == 1  # One warp operation
+        warp_id, dst, per_thread_results = completed[0]
+        assert per_thread_results[0] == 17  # 3 * 4 + 5
 
     def test_multiple_alu_utilization(self):
-        """Test multiple ALUs being utilized."""
+        """Test all ALUs are utilized for SIMT execution.
+
+        In SIMT, a single warp instruction uses ALL 32 ALUs simultaneously
+        (one per thread in the warp).
+        """
         config = SIMTConfig()
         eu = ExecutionUnitSim(config)
 
-        # Issue 8 instructions (one per ALU)
-        for i in range(8):
-            instr = Instruction(opcode="IADD", dst=i, src1=1, src2=2)
-            eu.issue(warp_id=i, instruction=instr, operands=[i, 1, 0])
+        # Issue one warp instruction - uses all 32 ALUs
+        instr = Instruction(opcode="IADD", dst=0, src1=1, src2=2)
+        per_thread_operands = [[10, 1, 0] for _ in range(32)]
+        eu.issue(warp_id=0, instruction=instr, per_thread_operands=per_thread_operands)
 
-        # All 8 ALUs should be busy
+        # All 32 ALUs should be busy (SIMT execution)
         busy_count = sum(1 for alu in eu.alus if alu.is_busy())
-        assert busy_count == 8
+        assert busy_count == config.cores_per_partition  # 32
 
     def test_utilization_reporting(self):
         """Test ALU utilization reporting."""
@@ -425,7 +481,8 @@ class TestExecutionUnitSim(unittest.TestCase):
 
         # Issue one instruction
         instr = Instruction(opcode="IADD", dst=0, src1=1, src2=2)
-        eu.issue(warp_id=0, instruction=instr, operands=[10, 20, 0])
+        per_thread_operands = [[10, 20, 0] for _ in range(32)]
+        eu.issue(warp_id=0, instruction=instr, per_thread_operands=per_thread_operands)
 
         # One stage of one ALU is busy out of 8*4=32 stages
         utilization = eu.get_utilization()

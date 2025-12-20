@@ -444,76 +444,93 @@ class ExecutionUnitSim:
         self,
         warp_id: int,
         instruction: Instruction,
-        operands: list[int],
+        per_thread_operands: list[list[int]],
     ) -> bool:
         """
         Issue instruction to execution pipeline.
 
+        In SIMT, a warp instruction executes all 32 threads simultaneously
+        on all 32 ALUs in a single cycle. This method issues the instruction
+        to ALL ALUs at once (true SIMT execution).
+
         Args:
             warp_id: Warp issuing the instruction
             instruction: Instruction to execute
-            operands: Source operand values [src1, src2, src3]
+            per_thread_operands: Per-thread source operand values
+                                 per_thread_operands[thread_id][src_idx]
 
         Returns:
-            True if instruction was accepted.
+            True if instruction was accepted (all ALUs available).
         """
         opcode = OPCODE_MAP.get(instruction.opcode, Opcode.NOP)
         latency = OPCODE_LATENCY.get(opcode, 1)
 
-        # Compute result
-        result = self._compute(
-            opcode,
-            operands[0] if len(operands) > 0 else 0,
-            operands[1] if len(operands) > 1 else 0,
-            operands[2] if len(operands) > 2 else 0,
-        )
+        # Check if all ALUs can accept (SIMT requires all threads execute together)
+        if not all(alu.can_accept() for alu in self.alus):
+            return False
 
-        # Find available ALU (round-robin)
-        for _ in range(self.num_alus):
-            alu = self.alus[self.next_alu]
-            self.next_alu = (self.next_alu + 1) % self.num_alus
+        # Issue to ALL 32 ALUs simultaneously (SIMT execution)
+        # Each ALU computes its thread's result using per-thread operands
+        for thread_id, alu in enumerate(self.alus):
+            if thread_id < len(per_thread_operands):
+                thread_ops = per_thread_operands[thread_id]
+                result = self._compute(
+                    opcode,
+                    thread_ops[0] if len(thread_ops) > 0 else 0,
+                    thread_ops[1] if len(thread_ops) > 1 else 0,
+                    thread_ops[2] if len(thread_ops) > 2 else 0,
+                )
+            else:
+                result = 0
+            alu.issue(warp_id, opcode, instruction.dst, result, latency)
 
-            if alu.can_accept():
-                alu.issue(warp_id, opcode, instruction.dst, result, latency)
+        # Update statistics (count as one warp operation, but 32 thread ops for energy)
+        self.total_operations += 1
+        if opcode in (
+            Opcode.IADD,
+            Opcode.ISUB,
+            Opcode.IAND,
+            Opcode.IOR,
+            Opcode.IXOR,
+            Opcode.ISHL,
+            Opcode.ISHR,
+            Opcode.MOV,
+        ):
+            self.total_alu_ops += self.num_alus  # 32 thread operations
+            self.total_energy_pj += self.config.alu_energy_pj * self.num_alus
+        elif opcode == Opcode.IMUL:
+            self.total_alu_ops += self.num_alus
+            self.total_energy_pj += self.config.mul_energy_pj * self.num_alus
+        elif opcode in (Opcode.FADD, Opcode.FSUB, Opcode.FMUL, Opcode.FFMA):
+            self.total_fma_ops += self.num_alus
+            self.total_energy_pj += self.config.fma_energy_pj * self.num_alus
 
-                # Update statistics
-                self.total_operations += 1
-                if opcode in (
-                    Opcode.IADD,
-                    Opcode.ISUB,
-                    Opcode.IAND,
-                    Opcode.IOR,
-                    Opcode.IXOR,
-                    Opcode.ISHL,
-                    Opcode.ISHR,
-                    Opcode.MOV,
-                ):
-                    self.total_alu_ops += 1
-                    self.total_energy_pj += self.config.alu_energy_pj
-                elif opcode == Opcode.IMUL:
-                    self.total_alu_ops += 1
-                    self.total_energy_pj += self.config.mul_energy_pj
-                elif opcode in (Opcode.FADD, Opcode.FSUB, Opcode.FMUL, Opcode.FFMA):
-                    self.total_fma_ops += 1
-                    self.total_energy_pj += self.config.fma_energy_pj
+        return True
 
-                return True
-
-        return False
-
-    def tick(self) -> list[tuple[int, int, int]]:
+    def tick(self) -> list[tuple[int, int, list[int]]]:
         """
         Advance all ALU pipelines one cycle.
 
         Returns:
-            List of completed operations as (warp_id, dst_reg, result).
+            List of completed operations as (warp_id, dst_reg, per_thread_results).
+            per_thread_results is a list of 32 values, one per thread.
         """
-        completed = []
+        # Collect results from all ALUs
+        per_thread_results: dict[tuple[int, int], list[int]] = {}
 
-        for alu in self.alus:
+        for thread_id, alu in enumerate(self.alus):
             result = alu.tick()
             if result is not None:
-                completed.append(result)
+                warp_id, dst_reg, thread_result = result
+                key = (warp_id, dst_reg)
+                if key not in per_thread_results:
+                    per_thread_results[key] = [0] * len(self.alus)
+                per_thread_results[key][thread_id] = thread_result
+
+        # Return completed warp operations with all 32 results
+        completed = []
+        for (warp_id, dst_reg), results in per_thread_results.items():
+            completed.append((warp_id, dst_reg, results))
 
         return completed
 
@@ -560,9 +577,9 @@ class ExecutionUnitSim:
             ],
         }
 
-    def drain(self) -> list[tuple[int, int, int]]:
+    def drain(self) -> list[tuple[int, int, list[int]]]:
         """Drain all remaining operations from all ALU pipelines."""
-        all_completed = []
+        all_completed: list[tuple[int, int, list[int]]] = []
         while self.is_busy():
             completed = self.tick()
             all_completed.extend(completed)
