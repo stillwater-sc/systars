@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### SIMT Visualization Enhancements (2025-12-20)
+
+- **Timeline Logging** (`examples/simt/01_animated_simt.py`): Pipeline event tracing
+  - `TimelineLogger` class for CSV-format event capture
+  - Logs ISSUE, COMPLETE, and STALL events with cycle-accurate timing
+  - `--timeline FILE` command line option to enable logging
+  - Summary statistics printed at end of simulation
+
+- **Store Completion Tracking**: Distinguish computed vs stored elements
+  - `GEMMTracker` now tracks pending stores per warp
+  - Matrix header shows status: `[computing]`, `[ST pending: N]`, or `[COMPLETE]`
+  - Summary shows both "Computed: X/Y" and "Stored: X/Y" counts
+
+- **Updated Matrix Visualization**: Clear visual state progression
+  - `W#` (dim) = not started
+  - `░░` / `▓░` = partial progress (some FFMAs done)
+  - `▓▓` (yellow) = computed but ST pending
+  - `██` (green) = truly complete (stored to memory)
+
 #### ISA-Level Matmul Instruction (2025-12-18)
 
 - **Matmul ISA Instruction** (`src/systars/isa/matmul.py`): High-level tiled matrix multiply
