@@ -1,0 +1,5805 @@
+{
+  "traceEvents": [
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "name": "Warp 7"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "name": "Warp 6"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "name": "Warp 5"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "name": "Warp 4"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "name": "Warp 3"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "name": "Warp 2"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "name": "Warp 1"
+      }
+    },
+    {
+      "name": "thread_name",
+      "ph": "M",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "name": "Warp 0"
+      }
+    },
+    {
+      "name": "process_name",
+      "ph": "M",
+      "pid": 0,
+      "args": {
+        "name": "Partition 0 (LSU max_pending=2)"
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 5000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 6000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 7000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 8000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 9000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 10000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 11000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 12000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 8000,
+      "dur": 201000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 9000,
+      "dur": 201000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10000,
+      "dur": 399000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11000,
+      "dur": 399000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 12000,
+      "dur": 597000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13000,
+      "dur": 597000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 15000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 210000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 211000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 1019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 1020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 410000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 411000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 1219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 1220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 610000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 611000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 1419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 1420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 810000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 811000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 1619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 1620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1014000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1015000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 1819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 1820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1018000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1019000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1214000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1215000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 2219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 2220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1218000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1219000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1414000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1415000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 2619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 2620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1418000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1419000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1614000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1615000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 3019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 3020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1618000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 1619000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 2010000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 2011000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 2410000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 2411000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 2810000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 2811000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 3210000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 3211000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 3410000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 3411000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 4219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 4220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 3610000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 3611000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 4419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 4420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 3810000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 3811000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 4619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 4620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4010000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4011000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 4819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 4820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4214000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4215000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 5019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 5020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4218000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4219000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4414000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4415000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 5419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 5420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4418000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4419000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4614000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4615000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 5819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 5820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4618000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4619000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4814000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4815000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 6219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 6220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4818000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 4819000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 5210000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 5211000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 5610000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 5611000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 6010000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 6011000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 6410000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 6411000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 6610000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 6611000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 7419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 7420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 6810000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 6811000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 7619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 7620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7010000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7011000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 7819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 7820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7210000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7211000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 8019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 8020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7414000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7415000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 8219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 8220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7418000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7419000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7614000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7615000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 8619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 8620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7618000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7619000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7814000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7815000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 9019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 9020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7818000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 7819000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 8014000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 8015000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 9419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 9420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 8018000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 8019000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 8410000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 8411000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 8810000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 8811000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 9210000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 9211000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 9610000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 9611000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 9810000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 9811000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 10619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 10620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10010000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10011000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 10819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 10820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10210000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10211000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 11019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 11020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10410000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10411000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 11219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 11220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10614000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10615000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 11419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 11420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10618000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10619000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10814000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10815000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 11819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 11820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10818000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 10819000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11014000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11015000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 12219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 12220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11018000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11019000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11214000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11215000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 12619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 12620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11218000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11219000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11610000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 11611000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 12010000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 12011000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 12410000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 12411000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 12810000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 12811000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13010000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13011000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 13819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 13820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13210000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13211000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 14019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 14020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13410000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13411000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 14219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 14220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13610000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13611000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 14419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 14420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13814000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13815000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 14619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 14620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13818000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 13819000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14014000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14015000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 15019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 15020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14018000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14019000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14214000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14215000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 15419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 15420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14218000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14219000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14414000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14415000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 15819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 15820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14418000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14419000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14810000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 14811000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 15210000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 15211000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 15610000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 15611000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 16010000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 16011000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 16210000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 16211000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 17019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 17020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 16410000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 16411000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 17219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 17220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 16610000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 16611000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 17419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 17420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 16810000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 16811000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 17619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 17620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17014000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17015000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 17819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 17820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17018000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17019000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17214000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17215000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 18219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 18220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17218000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17219000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17414000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17415000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 18619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 18620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17418000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17419000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17614000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17615000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 19019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 19020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17618000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 17619000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 18010000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 18011000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 18410000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 18411000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 18810000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 18811000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 19210000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 19211000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 19410000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 19411000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 20219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 20220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 19610000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 19611000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 20419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 20420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 19810000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 19811000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 20619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 20620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20010000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20011000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 20819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 20820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20214000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20215000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 21019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 21020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20218000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20219000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20414000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20415000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 21419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 21420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20418000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20419000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20614000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20615000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 21819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 21820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20618000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20619000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20814000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20815000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 22219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 22220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20818000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 20819000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 21210000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 21211000,
+      "dur": 1399000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 21610000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 21611000,
+      "dur": 1199000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 22010000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 22011000,
+      "dur": 999000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 22410000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 22411000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 22610000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 22611000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 23419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 23420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 22810000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 22811000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 23619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 23620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23010000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23011000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 23819000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 23820000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23210000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23211000,
+      "dur": 799000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 24019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 24020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23414000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23415000,
+      "dur": 795000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 24219000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 24220000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23418000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23419000,
+      "dur": 991000,
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23614000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23615000,
+      "dur": 995000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 24619000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 24620000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23618000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23619000,
+      "dur": 1191000,
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23814000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23815000,
+      "dur": 1195000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 25019000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 25020000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23818000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 23819000,
+      "dur": 1391000,
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 24014000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 24015000,
+      "dur": 1395000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 1,
+        "src1": 3,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 25419000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "ALU_complete",
+      "cat": "compute",
+      "ph": "i",
+      "ts": 25420000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 0,
+        "info": ""
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 24018000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "LD",
+      "cat": "memory",
+      "ph": "X",
+      "ts": 24019000,
+      "dur": 1591000,
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": 2,
+        "src1": 4,
+        "src2": null,
+        "latency": 4
+      }
+    },
+    {
+      "name": "ST_complete",
+      "cat": "memory",
+      "ph": "i",
+      "ts": 25809000,
+      "s": "t",
+      "pid": 0,
+      "tid": 0,
+      "args": {
+        "dst": -1,
+        "info": ""
+      }
+    },
+    {
+      "name": "ST_complete",
+      "cat": "memory",
+      "ph": "i",
+      "ts": 25810000,
+      "s": "t",
+      "pid": 0,
+      "tid": 1,
+      "args": {
+        "dst": -1,
+        "info": ""
+      }
+    },
+    {
+      "name": "ST_complete",
+      "cat": "memory",
+      "ph": "i",
+      "ts": 26009000,
+      "s": "t",
+      "pid": 0,
+      "tid": 2,
+      "args": {
+        "dst": -1,
+        "info": ""
+      }
+    },
+    {
+      "name": "ST_complete",
+      "cat": "memory",
+      "ph": "i",
+      "ts": 26010000,
+      "s": "t",
+      "pid": 0,
+      "tid": 3,
+      "args": {
+        "dst": -1,
+        "info": ""
+      }
+    },
+    {
+      "name": "ST_complete",
+      "cat": "memory",
+      "ph": "i",
+      "ts": 26209000,
+      "s": "t",
+      "pid": 0,
+      "tid": 4,
+      "args": {
+        "dst": -1,
+        "info": ""
+      }
+    },
+    {
+      "name": "ST_complete",
+      "cat": "memory",
+      "ph": "i",
+      "ts": 26210000,
+      "s": "t",
+      "pid": 0,
+      "tid": 5,
+      "args": {
+        "dst": -1,
+        "info": ""
+      }
+    },
+    {
+      "name": "ST_complete",
+      "cat": "memory",
+      "ph": "i",
+      "ts": 26409000,
+      "s": "t",
+      "pid": 0,
+      "tid": 6,
+      "args": {
+        "dst": -1,
+        "info": ""
+      }
+    },
+    {
+      "name": "ST_complete",
+      "cat": "memory",
+      "ph": "i",
+      "ts": 26410000,
+      "s": "t",
+      "pid": 0,
+      "tid": 7,
+      "args": {
+        "dst": -1,
+        "info": ""
+      }
+    }
+  ],
+  "displayTimeUnit": "ns",
+  "metadata": {
+    "description": "SIMT v1 Simulation (per-partition LSU, max_pending=2)",
+    "note": "This version has the LSU queue overflow bug - watch for DROPPED events",
+    "time_scaling": "1 cycle = 1 µs (1000x stretched for visibility)",
+    "real_timing": "At 1 GHz, 1 cycle = 1 ns. Divide displayed times by 1000 for real values.",
+    "example": "200 µs displayed = 200 cycles = 200 ns real (at 1 GHz)"
+  },
+  "stackFrames": {}
+}

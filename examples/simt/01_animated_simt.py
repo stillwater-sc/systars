@@ -377,20 +377,24 @@ class TimelineLogger:
             category = "compute"
 
         # Chrome Trace event format
-        # ts/dur in microseconds - treat cycles as microseconds for readability
+        # ts/dur in microseconds - treat 1 cycle = 1 ns (realistic for ~1 GHz GPU)
+        # Chrome Trace uses µs, so we keep cycles as-is (1 cycle = 1 µs for display)
+        # This makes 200-cycle memory latency display as 200 µs = 0.2 ms
+        # Real HBM3: ~100 ns, GDDR6: ~150-200 ns at ~1 GHz clock
         trace_event = {
             "name": opcode,
             "cat": category,
             "ph": "X",  # Complete event (has duration)
-            "ts": issue_cycle * 1000,  # microseconds (cycle * 1000 for ns precision)
-            "dur": max(1, duration) * 1000,  # duration in microseconds
+            "ts": float(issue_cycle),  # microseconds (1 cycle = 1 µs for readability)
+            "dur": float(max(1, duration)),  # duration in microseconds
             "pid": issue_event["partition"],  # Partition as process
             "tid": issue_event["warp"],  # Warp as thread
             "args": {
                 "dst": issue_event["dst"],
                 "src1": issue_event["src1"],
                 "src2": issue_event["src2"],
-                "latency": issue_event["latency"],
+                "latency_cycles": issue_event["latency"],
+                "duration_cycles": duration,
             },
         }
         self.trace_events.append(trace_event)
@@ -403,7 +407,7 @@ class TimelineLogger:
             "name": f"{opcode}_complete",
             "cat": "memory" if opcode in ("LD", "ST") else "compute",
             "ph": "i",  # Instant event
-            "ts": cycle * 1000,
+            "ts": float(cycle),  # 1 cycle = 1 µs
             "s": "t",  # Scope: thread
             "pid": partition,
             "tid": warp,
@@ -417,7 +421,7 @@ class TimelineLogger:
             "name": "STALL",
             "cat": "stall",
             "ph": "i",  # Instant event
-            "ts": cycle * 1000,
+            "ts": float(cycle),  # 1 cycle = 1 µs
             "s": "t",  # Scope: thread
             "pid": partition,
             "tid": warp,
@@ -442,6 +446,9 @@ class TimelineLogger:
             "displayTimeUnit": "ns",
             "metadata": {
                 "description": "SIMT Streaming Multiprocessor Simulation",
+                "time_scaling": "1 cycle = 1 µs (1000x stretched for visibility)",
+                "real_timing": "At 1 GHz, 1 cycle = 1 ns. Divide displayed times by 1000 for real values.",
+                "example": "200 µs displayed = 200 cycles = 200 ns real (at 1 GHz)",
             },
             # Process and thread names for better visualization
             "stackFrames": {},
