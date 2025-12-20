@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### SM-Level LSU with MSHR Tracking (2025-12-20)
+
+- **SM-Level Load/Store Unit** (`src/systars/simt/sm_lsu.py`): Restructured from per-partition LSUs to single SM-level LSU
+  - Single MIO queue (16 entries) shared by all 4 partitions
+  - 64 MSHRs tracking cache lines at 128B granularity
+  - Primary/secondary miss optimization: multiple warps share same MSHR for same cache line
+  - 1 IPC processing bandwidth to LSU pipe
+  - Shared memory bypass (no MSHR tracking needed)
+  - Statistics: `total_primary_misses`, `total_secondary_misses`, `total_mio_queue_full_stalls`
+
+- **MSHR Data Structures**:
+  - `MSHREntry`: Tracks cache line address, state, waiters, cycles remaining
+  - `MSHRWaiter`: Partition ID, warp ID, thread mask, destination register, thread offsets
+  - `MIOQueueEntry`: Queued memory request with partition/warp info, addresses, data
+
+- **Config Parameters** (`src/systars/simt/config.py`):
+  - `num_mshrs: int = 64` - Number of Miss Status Holding Registers per SM
+  - `mio_queue_depth: int = 16` - Depth of MIO queue
+  - `lsu_issue_bandwidth: int = 1` - Requests processed per cycle
+
+- **Architecture Benefits**:
+  - 64 MSHRs vs previous 8 outstanding requests (4 partitions × 2 pending)
+  - Secondary miss optimization reduces redundant memory traffic
+  - Cross-partition visibility for better load balancing
+  - Matches NVIDIA's proven SM architecture
+
 #### SIMT Visualization Enhancements (2025-12-20)
 
 - **Timeline Logging** (`examples/simt/01_animated_simt.py`): Pipeline event tracing
@@ -27,6 +53,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `░░` / `▓░` = partial progress (some FFMAs done)
   - `▓▓` (yellow) = computed but ST pending
   - `██` (green) = truly complete (stored to memory)
+
+### Fixed
+
+#### Multi-Partition Warp Distribution (2025-12-20)
+
+- **Warp Distribution Bug**: Fixed tiled GEMM loading all warps into partition 0 only
+  - Now distributes warps across all 4 partitions (P0-P3)
+  - 32×32 GEMM now uses all 128 ALU cores instead of just 32
+  - Added global warp ID calculation for proper GEMM tracking across partitions
+
+#### LSU Queue Overflow Bug (2025-12-20)
+
+- **Memory Instruction Drops**: Fixed critical bug where LD/ST instructions were silently dropped
+  - When LSU queue was full (max_pending=2), `issue()` returned False and instruction was lost
+  - Warps continued executing with garbage register data, causing incorrect results
+  - Fix: Added `pending_memory_requests` buffer to retry rejected instructions on subsequent cycles
+  - Warps now properly stall until their memory request is accepted by LSU
+  - Added `total_lsu_rejections` statistic to track queue-full events
 
 #### ISA-Level Matmul Instruction (2025-12-18)
 

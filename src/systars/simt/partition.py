@@ -46,18 +46,19 @@ Architecture:
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from amaranth import Module, unsigned
 from amaranth.lib.wiring import Component, In, Out
 
 from .config import SIMTConfig
 from .execution_unit import OPCODE_MAP, ExecutionUnitSim, Opcode
-from .load_store_unit import LoadStoreUnitSim
 from .operand_collector import OperandCollectorSim
 from .register_file import RegisterFileSim
-from .shared_memory import SharedMemorySim
 from .warp_scheduler import Instruction, WarpSchedulerSim, WarpState
+
+if TYPE_CHECKING:
+    from .sm_lsu import SMLevelLSUSim
 
 
 class Partition(Component):
@@ -144,15 +145,21 @@ class PartitionSim:
     total_stalls: int = 0
     total_bank_conflicts: int = 0
     total_memory_stalls: int = 0
+    total_mio_queue_full: int = 0  # Count of MIO queue-full rejections
     instruction_counts: dict = field(default_factory=dict)  # Per-opcode counts
+
+    # Pending memory requests (when MIO queue is full)
+    # Each entry: (warp_id, instruction, addresses, store_data)
+    pending_memory_requests: list = field(default_factory=list)
 
     # Components (initialized in __post_init__, not passed to __init__)
     scheduler: WarpSchedulerSim = field(init=False)  # type: ignore[assignment]
     register_file: RegisterFileSim = field(init=False)  # type: ignore[assignment]
     operand_collector: OperandCollectorSim = field(init=False)  # type: ignore[assignment]
     execution_unit: ExecutionUnitSim = field(init=False)  # type: ignore[assignment]
-    shared_memory: SharedMemorySim = field(init=False)  # type: ignore[assignment]
-    load_store_unit: LoadStoreUnitSim = field(init=False)  # type: ignore[assignment]
+
+    # SM-level LSU reference (set by SM controller, not created here)
+    sm_lsu: "SMLevelLSUSim | None" = None
 
     def __post_init__(self) -> None:
         """Initialize all components."""
@@ -160,10 +167,6 @@ class PartitionSim:
         self.register_file = RegisterFileSim(self.config, self.partition_id)
         self.operand_collector = OperandCollectorSim(self.config, self.partition_id)
         self.execution_unit = ExecutionUnitSim(self.config, self.partition_id)
-        self.shared_memory = SharedMemorySim(self.config)
-        self.load_store_unit = LoadStoreUnitSim(self.config, self.partition_id)
-        # Connect LSU to shared memory
-        self.load_store_unit.shared_memory = self.shared_memory
 
     def load_program(self, warp_id: int, instructions: list[Instruction]) -> None:
         """Load program into a warp."""
@@ -225,9 +228,11 @@ class PartitionSim:
             "warp_states": self.scheduler.get_warp_states(),
         }
 
-        # Reset register file and shared memory for new cycle
+        # Reset register file for new cycle
         self.register_file.reset_cycle()
-        self.shared_memory.reset_cycle()
+        # Reset shared memory if SM-level LSU is attached (for standalone partition tests)
+        if self.sm_lsu is not None and self.sm_lsu.shared_memory is not None:
+            self.sm_lsu.shared_memory.reset_cycle()
 
         # 0. Process pending register file writes (bank-conflicted)
         # This drains writes that couldn't complete last cycle
@@ -255,14 +260,28 @@ class PartitionSim:
             conflicts_list.extend(conflicts)
             self.total_bank_conflicts += len(conflicts)
 
-        # 3. Fire ready instructions to execution unit or LSU
+        # 3a. Try to issue any pending memory requests first (from MIO queue-full rejections)
+        if self.pending_memory_requests and self.sm_lsu is not None:
+            pending = self.pending_memory_requests[0]
+            warp_id, instruction, addresses, store_data = pending
+            if self.sm_lsu.submit(self.partition_id, warp_id, instruction, addresses, store_data):
+                # Successfully issued pending request
+                self.pending_memory_requests.pop(0)
+                self.scheduler.warps[warp_id].state = WarpState.STALLED_MEM
+                self.total_memory_stalls += 1
+                self.total_instructions += 1
+                opcode_str = instruction.opcode
+                self.instruction_counts[opcode_str] = self.instruction_counts.get(opcode_str, 0) + 1
+            # If still rejected, leave in queue and try again next cycle
+
+        # 3b. Fire ready instructions to execution unit or SM-level LSU
         fire_result = self.operand_collector.fire()
         if fire_result:
             warp_id, instruction, per_thread_operands = fire_result
             status["fired"] = (warp_id, instruction)
 
             if self._is_memory_instruction(instruction):
-                # Route to Load/Store Unit
+                # Route to SM-level Load/Store Unit
                 addresses = self._compute_addresses(instruction, per_thread_operands)
                 opcode = OPCODE_MAP.get(instruction.opcode, Opcode.NOP)
 
@@ -272,19 +291,32 @@ class PartitionSim:
                 else:
                     store_data = None
 
-                # Issue to LSU
-                if self.load_store_unit.issue(warp_id, instruction, addresses, store_data):
+                # Submit to SM-level LSU
+                if self.sm_lsu is not None and self.sm_lsu.submit(
+                    self.partition_id, warp_id, instruction, addresses, store_data
+                ):
                     # Mark warp as stalled on memory
                     self.scheduler.warps[warp_id].state = WarpState.STALLED_MEM
                     self.total_memory_stalls += 1
+                    self.total_instructions += 1
+                    opcode_str = instruction.opcode
+                    self.instruction_counts[opcode_str] = (
+                        self.instruction_counts.get(opcode_str, 0) + 1
+                    )
+                else:
+                    # MIO queue full - buffer request and stall warp
+                    self.pending_memory_requests.append(
+                        (warp_id, instruction, addresses, store_data)
+                    )
+                    # Stall the warp until the memory request can be issued
+                    self.scheduler.warps[warp_id].state = WarpState.STALLED_MEM
+                    self.total_mio_queue_full += 1
             else:
                 # Route to execution unit with per-thread operands
                 self.execution_unit.issue(warp_id, instruction, per_thread_operands)
-
-            self.total_instructions += 1
-            # Track per-opcode counts
-            opcode_str = instruction.opcode
-            self.instruction_counts[opcode_str] = self.instruction_counts.get(opcode_str, 0) + 1
+                self.total_instructions += 1
+                opcode_str = instruction.opcode
+                self.instruction_counts[opcode_str] = self.instruction_counts.get(opcode_str, 0) + 1
 
         # 4. Advance execution pipeline
         completed = self.execution_unit.tick()
@@ -293,33 +325,36 @@ class PartitionSim:
             self.register_file.queue_write_all_threads(dst_reg, per_thread_results)
             completed_list.append((warp_id, dst_reg, per_thread_results))
 
-        # 5. Advance LSU and handle memory completions
-        mem_completed = self.load_store_unit.tick()
-        for warp_id, dst_reg, data in mem_completed:
-            # For loads (dst_reg >= 0): queue per-thread data for writeback
-            # For stores (dst_reg == -1): no writeback needed
-            if dst_reg >= 0 and data:
-                # Queue all 32 values for writeback with bank conflict handling
-                self.register_file.queue_write_all_threads(dst_reg, data)
-            memory_completed_list.append((warp_id, dst_reg, data))
-            # Unstall the warp
-            warp = self.scheduler.warps[warp_id]
-            if warp.state == WarpState.STALLED_MEM:
-                if warp.has_more_instructions():
-                    warp.state = WarpState.READY
-                else:
-                    warp.state = WarpState.DONE
+        # 5. Handle memory completions from SM-level LSU
+        # Note: SM controller calls sm_lsu.tick() once per cycle
+        if self.sm_lsu is not None:
+            mem_completed = self.sm_lsu.get_completions(self.partition_id)
+            for warp_id, dst_reg, data in mem_completed:
+                # For loads (dst_reg >= 0): queue per-thread data for writeback
+                # For stores (dst_reg == -1): no writeback needed
+                if dst_reg >= 0 and data:
+                    # Queue all 32 values for writeback with bank conflict handling
+                    self.register_file.queue_write_all_threads(dst_reg, data)
+                memory_completed_list.append((warp_id, dst_reg, data))
+                # Unstall the warp
+                warp = self.scheduler.warps[warp_id]
+                if warp.state == WarpState.STALLED_MEM:
+                    if warp.has_more_instructions():
+                        warp.state = WarpState.READY
+                    else:
+                        warp.state = WarpState.DONE
 
         # 6. Update warp scheduler state
         self.scheduler.tick()
 
-        # Check if done (include all pipeline stages and pending writes in busy check)
+        # Check if done (include all pipeline stages, pending writes, and pending memory reqs)
+        # Note: SM controller checks sm_lsu.is_busy() at SM level
         self.done = (
             self.scheduler.all_done()
             and not self.operand_collector.is_busy()
             and not self.execution_unit.is_busy()
-            and not self.load_store_unit.is_busy()
             and not self.register_file.has_pending_writes()
+            and not self.pending_memory_requests
         )
 
         self.cycle += 1
@@ -340,14 +375,13 @@ class PartitionSim:
         return self.cycle
 
     def get_energy_pj(self) -> float:
-        """Get total energy consumed in pJ."""
+        """Get total energy consumed in pJ (compute only, memory via SM-level LSU)."""
         return (
             self.scheduler.total_energy_pj
             + self.register_file.total_energy_pj
             + self.operand_collector.total_energy_pj
             + self.execution_unit.total_energy_pj
-            + self.shared_memory.total_energy_pj
-            + self.load_store_unit.total_energy_pj
+            # Memory energy tracked at SM-level LSU
             # Add instruction fetch energy
             + self.total_instructions * self.config.instruction_fetch_energy_pj
             + self.total_instructions * self.config.instruction_decode_energy_pj
@@ -362,10 +396,10 @@ class PartitionSim:
             "stalls": self.total_stalls,
             "bank_conflicts": self.total_bank_conflicts,
             "memory_stalls": self.total_memory_stalls,
+            "mio_queue_full": self.total_mio_queue_full,  # MIO queue-full rejections
             "energy_pj": self.get_energy_pj(),
             "ipc": self.total_instructions / max(1, self.cycle),
-            "lsu_stats": self.load_store_unit.get_statistics(),
-            "shared_memory_stats": self.shared_memory.get_statistics(),
+            # LSU stats available via SM controller
         }
 
     def get_visualization(self) -> dict[str, Any]:
@@ -377,8 +411,7 @@ class PartitionSim:
             "collector_status": self.operand_collector.get_status(),
             "pipeline": self.execution_unit.get_visualization(),
             "alu_detail": self.execution_unit.get_detailed_visualization(),
-            "shared_memory": self.shared_memory.get_visualization(),
-            "lsu": self.load_store_unit.get_visualization(),
+            # LSU visualization available via SM controller
         }
 
 

@@ -12,10 +12,10 @@ from systars.simt import (
     AddressSpace,
     GlobalMemorySim,
     Instruction,
-    LoadStoreUnitSim,
     MemoryCoalescerSim,
     SharedMemorySim,
     SIMTConfig,
+    SMLevelLSUSim,
     SMSim,
 )
 
@@ -172,13 +172,13 @@ class TestMemoryCoalescer:
         assert result.is_fully_coalesced
 
 
-class TestLoadStoreUnit:
-    """Tests for LoadStoreUnitSim."""
+class TestSMLevelLSU:
+    """Tests for SMLevelLSUSim."""
 
     def test_address_space_decode(self):
         """Test address space decoding."""
         config = SIMTConfig()
-        lsu = LoadStoreUnitSim(config)
+        lsu = SMLevelLSUSim(config)
 
         # Global memory: [31:30] = 00
         assert lsu._decode_address_space(0x0000_0000) == AddressSpace.GLOBAL
@@ -192,11 +192,13 @@ class TestLoadStoreUnit:
         assert lsu._decode_address_space(0x8000_0000) == AddressSpace.CONSTANT
 
     def test_shared_memory_access(self):
-        """Test shared memory access through LSU."""
+        """Test shared memory access through SM-level LSU."""
         config = SIMTConfig()
-        lsu = LoadStoreUnitSim(config)
+        lsu = SMLevelLSUSim(config)
         smem = SharedMemorySim(config)
+        gmem = GlobalMemorySim(config)
         lsu.shared_memory = smem
+        lsu.global_memory = gmem
 
         # Write data to shared memory
         smem.write(0, 42)
@@ -207,11 +209,12 @@ class TestLoadStoreUnit:
 
         # Issue load from shared memory base (0x4000_0000)
         addresses = [0x4000_0000 + i * 4 for i in range(32)]
-        assert lsu.issue(0, instr, addresses)
+        assert lsu.submit(0, 0, instr, addresses)  # partition_id=0, warp_id=0
 
         # Advance cycles until completion
-        for _ in range(config.shared_mem_latency + 1):
-            completed = lsu.tick()
+        for _ in range(config.shared_mem_latency + 2):
+            lsu.tick()
+            completed = lsu.get_completions(0)  # partition_id=0
             if completed:
                 warp_id, dst_reg, data = completed[0]
                 assert warp_id == 0
@@ -219,6 +222,24 @@ class TestLoadStoreUnit:
                 assert data[0] == 42
                 assert data[1] == 100
                 break
+
+    def test_mio_queue_capacity(self):
+        """Test MIO queue accept/reject when full."""
+        config = SIMTConfig()
+        lsu = SMLevelLSUSim(config)
+        gmem = GlobalMemorySim(config)
+        lsu.global_memory = gmem
+
+        # Fill the MIO queue (16 entries by default)
+        for i in range(config.mio_queue_depth):
+            instr = Instruction(opcode="LD", dst=1, src1=0)
+            addresses = [i * 128 + j * 4 for j in range(32)]
+            assert lsu.submit(0, i, instr, addresses), f"Should accept request {i}"
+
+        # Queue should now be full - next request rejected
+        instr = Instruction(opcode="LD", dst=1, src1=0)
+        addresses = [0x10000 + j * 4 for j in range(32)]
+        assert not lsu.submit(0, 16, instr, addresses), "Should reject when queue full"
 
 
 class TestSMSimMemory:
@@ -236,15 +257,17 @@ class TestSMSimMemory:
         assert sm.shared_memory is not None
         assert isinstance(sm.shared_memory, SharedMemorySim)
 
-    def test_partitions_share_memory(self):
-        """Test that all partitions share the same memory."""
+    def test_partitions_share_sm_lsu(self):
+        """Test that all partitions share the SM-level LSU."""
         sm = SMSim()
 
-        # All partitions should reference the same shared memory
+        # All partitions should reference the same SM-level LSU
         for partition in sm.partitions:
-            assert partition.shared_memory is sm.shared_memory
-            assert partition.load_store_unit.shared_memory is sm.shared_memory
-            assert partition.load_store_unit.global_memory is sm.global_memory
+            assert partition.sm_lsu is sm.sm_lsu
+
+        # SM-level LSU should have shared memory and global memory attached
+        assert sm.sm_lsu.shared_memory is sm.shared_memory
+        assert sm.sm_lsu.global_memory is sm.global_memory
 
     def test_global_memory_persistence(self):
         """Test that global memory data persists across partition accesses."""

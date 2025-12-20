@@ -907,16 +907,20 @@ def run_animation(
             current_cycle = cycle_status.get("cycle", sm.cycle)
 
             # Log timeline events and update GEMM tracker
+            # Helper to compute global warp ID from partition + local warp
+            warps_per_part = sm.config.max_warps_per_partition
+
             for p_idx, p_status in enumerate(cycle_status.get("partitions", [])):
                 # Log issued instructions (from partition's issued_this_cycle if available)
                 issued = p_status.get("issued", None)
                 if issued:
-                    warp_id, instr = issued
+                    local_warp_id, instr = issued
+                    global_warp_id = p_idx * warps_per_part + local_warp_id
                     if timeline_logger.enabled:
                         timeline_logger.log_issue(
                             current_cycle,
                             p_idx,
-                            warp_id,
+                            local_warp_id,
                             instr.opcode,
                             instr.dst,
                             instr.src1,
@@ -924,32 +928,34 @@ def run_animation(
                             instr.latency,
                             "",
                         )
-                    # Track store issues for GEMM
+                    # Track store issues for GEMM (use global warp ID)
                     if gemm_tracker and instr.opcode == "ST":
-                        gemm_tracker.record_store_issued(warp_id)
+                        gemm_tracker.record_store_issued(global_warp_id)
 
                 # Log ALU completions
                 completed = p_status.get("completed", [])
-                for warp_id, dst_reg, _results in completed:
+                for local_warp_id, dst_reg, _results in completed:
+                    global_warp_id = p_idx * warps_per_part + local_warp_id
                     if timeline_logger.enabled:
                         timeline_logger.log_complete(
-                            current_cycle, p_idx, warp_id, "ALU", dst_reg, ""
+                            current_cycle, p_idx, local_warp_id, "ALU", dst_reg, ""
                         )
-                    # Update GEMM tracker
+                    # Update GEMM tracker (use global warp ID)
                     if gemm_tracker:
-                        gemm_tracker.record_fma_completion(warp_id)
+                        gemm_tracker.record_fma_completion(global_warp_id)
 
                 # Log memory completions
                 mem_completed = p_status.get("memory_completed", [])
-                for warp_id, dst_reg, _data in mem_completed:
+                for local_warp_id, dst_reg, _data in mem_completed:
+                    global_warp_id = p_idx * warps_per_part + local_warp_id
                     if timeline_logger.enabled:
                         op_type = "LD" if dst_reg >= 0 else "ST"
                         timeline_logger.log_complete(
-                            current_cycle, p_idx, warp_id, op_type, dst_reg, ""
+                            current_cycle, p_idx, local_warp_id, op_type, dst_reg, ""
                         )
-                    # Track store completions for GEMM
+                    # Track store completions for GEMM (use global warp ID)
                     if gemm_tracker and dst_reg == -1:
-                        gemm_tracker.record_store_complete(warp_id)
+                        gemm_tracker.record_store_complete(global_warp_id)
 
             # Generate and display visualization
             lines = visualize_sm_state(sm, cycle_status, gemm_tracker)
@@ -1147,33 +1153,57 @@ def main():
         M, N, K = args.m, args.n, args.k
         num_warps = get_gemm_warp_count(M, N)
 
-        # Limit to max warps per partition for demo
-        max_warps = config.max_warps_per_partition
-        if num_warps > max_warps:
-            print(f"Warning: {M}×{N} output needs {num_warps} warps, limiting to {max_warps}")
-            num_warps = max_warps
+        # Calculate max warps across all partitions
+        warps_per_partition = config.max_warps_per_partition
+        num_partitions = config.num_partitions
+        max_total_warps = warps_per_partition * num_partitions
+
+        if num_warps > max_total_warps:
+            print(
+                f"Warning: {M}×{N} output needs {num_warps} warps, "
+                f"limiting to {max_total_warps} ({num_partitions} partitions × "
+                f"{warps_per_partition} warps)"
+            )
+            num_warps = max_total_warps
 
         # Create GEMM tracker for visualization
         gemm_tracker = GEMMTracker(M, N, K, config.warp_size)
 
         print_gemm_tile_mapping(M, N, num_warps)
 
-        # Load different tiled programs into each warp
-        for warp_id in range(num_warps):
-            program = create_tiled_gemm_program(M, N, K, warp_id)
-            # Load into partition 0
-            sm.partitions[0].load_program(warp_id, program)
-            tile_info = get_warp_tile_info(warp_id, M, N)
+        # Distribute warps across partitions for parallel execution
+        # warp_id 0-7 → P0, 8-15 → P1, 16-23 → P2, 24-31 → P3
+        partition_warp_counts = [0] * num_partitions
+
+        for global_warp_id in range(num_warps):
+            partition_id = global_warp_id // warps_per_partition
+            local_warp_id = global_warp_id % warps_per_partition
+
+            program = create_tiled_gemm_program(M, N, K, global_warp_id)
+            sm.partitions[partition_id].load_program(local_warp_id, program)
+            partition_warp_counts[partition_id] += 1
+
+            tile_info = get_warp_tile_info(global_warp_id, M, N)
             print(
-                f"  Warp {warp_id}: rows {tile_info[0]}-{tile_info[2]}, "
-                f"cols {tile_info[1]}-{tile_info[3]} "
+                f"  P{partition_id}:W{local_warp_id} (global {global_warp_id}): "
+                f"rows {tile_info[0]}-{tile_info[2]}, cols {tile_info[1]}-{tile_info[3]} "
                 f"({len(program)} instrs)"
             )
 
-        sm.partitions[0].activate_warps(num_warps)
-        # Set SM state to EXECUTE (normally done by sm.activate_warps)
+        # Activate warps in each partition that has work
+        for p_id, warp_count in enumerate(partition_warp_counts):
+            if warp_count > 0:
+                sm.partitions[p_id].activate_warps(warp_count)
+
+        # Set SM state to EXECUTE
         sm.state = SMState.EXECUTE
-        print(f"\nRunning tiled GEMM: C[{M}×{N}] = A[{M}×{K}] @ B[{K}×{N}]")
+        partitions_used = sum(1 for c in partition_warp_counts if c > 0)
+        total_cores = partitions_used * config.cores_per_partition
+        print(
+            f"\nRunning tiled GEMM: C[{M}×{N}] = A[{M}×{K}] @ B[{K}×{N}]"
+            f"\n  Using {partitions_used} partitions, {num_warps} warps, "
+            f"{total_cores} ALU cores"
+        )
 
     elif args.gemm:
         # Original sequential GEMM (same program in all warps)

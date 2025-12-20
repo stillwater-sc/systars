@@ -154,3 +154,227 @@ Example usage:
   # Analyze timeline to find bubbles
   cat timeline.csv
 ```
+
+## Partitions are underutilized
+
+The tiled GEMM now distributes warps across all partitions:
+
+Summary of changes:
+
+  1. Warp distribution logic - warps are now assigned to partitions:
+    - Global warp 0-7 → P0, 8-15 → P1, 16-23 → P2, 24-31 → P3
+  2. Global warp ID calculation - animation loop now computes global_warp_id = p_idx * warps_per_partition + local_warp_id for proper GEMM tracking
+  3. Partition activation - each partition with work is activated independently
+
+Results:
+
+  | GEMM Size | Output Elements | Warps | Partitions | ALU Cores |
+  |-----------|-----------------|-------|------------|-----------|
+  | 16×16     | 256             | 8     | 1          | 32        |
+  | 32×16     | 512             | 16    | 2          | 64        |
+  | 32×32     | 1024            | 32    | 4          | 128       |
+
+  The output now shows partition assignments:
+  P0:W0 (global 0): rows 0-0, cols 0-31 (8 instrs)
+  ...
+  P3:W7 (global 31): rows 31-31, cols 0-31 (8 instrs)
+
+  Running tiled GEMM: C[32×32] = A[32×2] @ B[2×32]
+    Using 4 partitions, 32 warps, 128 ALU cores
+
+## Coalescing Memory Requests
+
+The coalescer is only for GLOBAL memory, not shared memory. Here's the architecture:
+
+```text
+  LSU → Address Decode (bits [31:30])
+            │
+            ├─→ SHARED [01]: Direct to Shared Memory SRAM
+            │                (no coalescing, 4-cycle latency)
+            │
+            └─→ GLOBAL [00]: Coalescer → L1 Cache → DRAM
+                             (coalesces 32 addresses into 128B transactions)
+```
+
+From the code (lines 238-254):
+
+```python
+  if addr_space == AddressSpace.SHARED:
+      latency = self.config.shared_mem_latency  # No coalescing
+  elif addr_space == AddressSpace.GLOBAL:
+      # Analyze coalescing for global memory accesses
+      coalesce_result = self.coalescer.analyze(stripped_addresses, thread_mask)
+      num_transactions = coalesce_result.num_transactions
+      # Latency scales with number of transactions
+      latency = self.config.l1_miss_latency * num_transactions
+```
+
+Your display shows "Coalesce: 100%" - meaning all 32 threads' addresses fell into the same 128-byte segment, resulting in 1 transaction instead of 32. This is optimal coalescing.
+
+When coalescing is poor (e.g., strided access), you'd see multiple transactions and higher latency. For example, if each thread accesses a different cache line, you get 32 transactions = 32× the latency.
+
+## Timeline Analysis
+
+W0 and W3 are the slowest to complete, why?
+
+The key issue is memory starvation causing W0 and W3 to be massively delayed.
+
+Timeline Analysis:
+
+  | Warp  | First LD Issue | First LD Complete | ST Issue       | ST Complete |
+  |-------|----------------|-------------------|----------------|-------------|
+  | W0    | Cycle 8        | Cycle 209         | Cycle 1227     | Cycle 1429  |
+  | W1    | Cycle 9        | Cycle 210         | Cycle 433      | -           |
+  | W2    | Cycle 10       | ~Cycle 14         | Cycle 300      | -           |
+  | W3    | Cycle 11       | Cycle 410         | Cycle 2253     | Cycle 2455  |
+  | W4    | Cycle 12       | Cycle 411         | Cycle 468      | -           |
+  | W5-W7 | Cycles 13-15   | quickly           | Cycles 301-303 | -           |
+
+Root Cause:
+
+  1. W0 and W1 issued LDs first (cycles 8-9), went into STALLED_MEM
+  2. Scheduler moved to W2-W7 which kept issuing instructions
+  3. LSU has max 2 pending requests - W0/W1's requests got queued
+  4. W2-W7 monopolized the memory path - their requests completed quickly
+  5. W0's first LD took 201 cycles (209-8) due to 200-cycle latency + queue delay
+  6. W3 was worst - ST at cycle 2253, complete at 2455
+
+The pattern shows:
+
+```
+  W2-W7: Issue LD → (fast) → FFMA → ST → Done by cycle ~300
+  W0, W3: Issue LD → (200 cycle wait) → (queue behind others) → ST at cycles 1227, 2253
+```
+
+This is why your earlier screenshot showed W0 (rows 0-1) and W3 (rows 6-7) completing last - they were starved by the other warps.
+
+This is a realistic GPU scheduling issue - memory-bound warps can get starved when the LSU queue is limited and other warps keep issuing new requests.
+
+## LSU Queue bug
+
+Bug Fix: LSU Queue Overflow (Critical)
+
+Root Cause: When the LSU queue was full (max_pending=2), load_store_unit.issue() returned False, but the instruction was silently dropped. Warps continued executing with garbage register data.
+
+Fix in src/systars/simt/partition.py:
+
+  1. Added pending_memory_requests buffer to store rejected memory instructions
+  2. Each cycle, pending requests are retried before handling new fires
+  3. Warps properly stall until their memory request is accepted
+  4. Added total_lsu_rejections statistic to track queue-full events
+
+Verification:
+
+- All 56 SIMT unit tests pass
+- 16×16 GEMM with K=2 now completes all 64 instructions (32 LDs, 16 FFMAs, 8 MOVs, 8 STs)
+- Each of the 8 warps has exactly 4 LD completions (previously W2-W7 had 0 completions)
+- Works with both fast-mem (4 cycles) and default (200 cycles) latency
+
+Files Updated:
+
+- src/systars/simt/partition.py - Bug fix implementation
+- CHANGELOG.md - Added entry for the fix
+- docs/sessions/2025-12-20-simt-visualization-enhancements.md - Updated session log
+
+## LSU Redesign
+
+The LSU is currently at the partition level. Looking at the architecture:
+
+```text
+  SM Controller
+  ├── Partition 0
+  │   ├── Scheduler (8 warps)
+  │   ├── Register File
+  │   ├── Operand Collectors
+  │   ├── Execution Units (ALUs)
+  │   └── LSU (max_pending=2) ← HERE, per partition
+  ├── Partition 1 (same structure)
+  ├── Partition 2
+  ├── Partition 3
+  ├── Shared Memory (48KB, shared across partitions)
+  └── Global Memory Interface
+```
+
+The design of the LSU with  max_pending=2 is woefully inadequate. With 8 warps per partition and 200-cycle memory latency, we need much deeper queuing to hide latency. The math:
+
+  | Metric                 | Value                                    |
+  |------------------------|------------------------------------------|
+  | Memory latency         | 200 cycles                               |
+  | Warps per partition    | 8                                        |
+  | Current max_pending    | 2                                        |
+  | Theoretical throughput | 2 requests / 200 cycles = 0.01 req/cycle |
+  | Required for 8 warps   | 8 warps × 1 LD = 8 outstanding           |
+
+Real GPU comparison (NVIDIA):
+
+- LSU is per-SM (not per-partition), shared across all 4 sub-cores
+- 32+ MSHR (Miss Status Holding Registers) for outstanding requests
+- L1 cache has separate request queues
+- Memory controller handles coalescing and request batching
+
+Architectural options:
+
+  1. Increase per-partition queue: max_pending=8 (one per warp)
+  2. Move LSU to SM level: Single LSU shared by all partitions with deeper queue (16-32)
+  3. Add MSHR-style tracking: Separate miss handling from request queuing
+
+## What does NVIDIA do?
+
+NVIDIA aggregates the LSU at the SM level, the question is why?
+
+### Key Architecture Findings
+
+Unified L1/Shared Memory Subsystem
+
+  Since Volta (2017), NVIDIA combines L1 cache and shared memory into a single 128KB SRAM block per SM that serves all 4 partitions. This unified design:
+
+- Enables dynamic partitioning between cache and shared memory per workload
+- Provides a single coalescing point for all memory requests
+- Simplifies coherence (write-through to L2 avoids complex L1 coherence)
+
+LSU Bottleneck by Design
+
+  From the <https://forums.developer.nvidia.com/t/how-does-the-lsu-load-store-unit-execute-load-store-instructions-in-the-ampere-architecture/273699>:
+  "Each cycle the warp scheduler can issue an instruction to the LSU/MIO instruction queue. Each cycle the MIO unit can issue 1 instruction to the LSU pipe. This limits the issue rate from 4 IPC per SM to 1 IPC per SM."
+
+  So despite 4 warp schedulers issuing in parallel, memory operations serialize through a single MIO queue - this is intentional.
+
+MSHR-Based Latency Hiding
+
+  The key to hiding memory latency isn't LSU queue depth but MSHRs (Miss Status Holding Registers):
+
+- Research shows ~6 MSHRs per warp, ~64 total per SM
+- MSHRs track outstanding cache misses, not instruction queue depth
+- <https://www2.eecs.berkeley.edu/Pubs/TechRpts/2016/EECS-2016-143.pdf> shows a "cusp behavior" where optimal warp count depends on arithmetic intensity
+
+Why Shared LSU Makes Sense
+
+  | Design Choice           | Rationale                                                                                     |
+  |-------------------------|-----------------------------------------------------------------------------------------------|
+  | Single coalescing point | All 32 threads × 4 partitions = 128 addresses can be coalesced into minimal 128B transactions |
+  | Unified tag stage       | L1TEX can resolve 4 sets × 4 sectors per cycle efficiently                                    |
+  | MSHR sharing            | Primary/secondary miss tracking reduces redundant DRAM requests                               |
+  | Bandwidth matching      | L1 bandwidth (128B/cycle) matches single LSU throughput                                       |
+  | Area efficiency         | One complex address generation unit vs four simpler ones                                      |
+
+Current Systars Gap
+
+  Our current design (max_pending=2 per partition) is fundamentally wrong because:
+
+  1. No MSHR tracking - we track pending instructions, not pending cache lines
+  2. No coalescing benefit - per-partition LSU can't merge cross-partition requests
+  3. Queue too shallow - need tracking proportional to (memory_latency / issue_rate)
+
+Design Options to Consider
+
+  1. Move LSU to SM level with single MIO queue feeding into L1TEX-style unified cache
+  2. Add MSHR tracking separate from instruction queue (track cache lines, not warps)
+  3. Increase outstanding request limit based on max_outstanding_requests: int = 16 in config
+
+Sources:
+
+- <https://forums.developer.nvidia.com/t/how-does-the-lsu-load-store-unit-execute-load-store-instructions-in-the-ampere-architecture/273699>
+- <https://www.rastergrid.com/blog/gpu-tech/2021/01/understanding-gpu-caches/>
+- <https://modal.com/gpu-glossary/device-hardware/load-store-unit>
+- <https://www2.eecs.berkeley.edu/Pubs/TechRpts/2016/EECS-2016-143.pdf>
+- <https://web.engr.oregonstate.edu/~chenliz/publications/2019_ICS_Dynamcially%20Linked%20MSHRs.pdf>

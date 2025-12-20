@@ -37,6 +37,7 @@ from .config import SIMTConfig
 from .global_memory import GlobalMemorySim
 from .partition import PartitionSim, create_gemm_program
 from .shared_memory import SharedMemorySim
+from .sm_lsu import SMLevelLSUSim
 from .warp_scheduler import Instruction
 
 
@@ -121,6 +122,9 @@ class SMSim:
     # Global memory (DRAM)
     global_memory: GlobalMemorySim = field(init=False)  # type: ignore[assignment]
 
+    # SM-level Load/Store Unit (shared by all partitions)
+    sm_lsu: SMLevelLSUSim = field(init=False)  # type: ignore[assignment]
+
     # Barrier unit
     barrier_unit: BarrierUnitSim = field(init=False)  # type: ignore[assignment]
 
@@ -142,18 +146,20 @@ class SMSim:
         # Global memory (DRAM)
         self.global_memory = GlobalMemorySim(self.config)
 
+        # SM-level Load/Store Unit
+        self.sm_lsu = SMLevelLSUSim(self.config)
+        self.sm_lsu.shared_memory = self.shared_memory
+        self.sm_lsu.global_memory = self.global_memory
+
         # Barrier unit
         self.barrier_unit = BarrierUnitSim(self.config)
 
-        # Create partitions and connect to SM-wide resources
+        # Create partitions and connect to SM-level LSU
         self.partitions = []
         for i in range(self.config.num_partitions):
             partition = PartitionSim(self.config, partition_id=i)
-            # Connect partition's LSU to SM-wide shared memory and global memory
-            partition.load_store_unit.shared_memory = self.shared_memory
-            partition.load_store_unit.global_memory = self.global_memory
-            # Also update partition's shared memory reference
-            partition.shared_memory = self.shared_memory
+            # Connect partition to SM-level LSU
+            partition.sm_lsu = self.sm_lsu
             self.partitions.append(partition)
 
     def load_program(
@@ -212,6 +218,9 @@ class SMSim:
             return status
 
         if self.state == SMState.EXECUTE:
+            # Tick SM-level LSU first (processes memory requests from all partitions)
+            self.sm_lsu.tick()
+
             # Step all partitions
             all_done = True
             for partition in self.partitions:
@@ -220,7 +229,8 @@ class SMSim:
                 if not partition.done:
                     all_done = False
 
-            if all_done:
+            # Check if all partitions done AND SM-level LSU is idle
+            if all_done and not self.sm_lsu.is_busy():
                 self.state = SMState.COMPLETE
                 self.done = True
 
@@ -247,8 +257,10 @@ class SMSim:
         return self.cycle
 
     def get_energy_pj(self) -> float:
-        """Get total energy consumed in pJ."""
-        return sum(p.get_energy_pj() for p in self.partitions)
+        """Get total energy consumed in pJ (compute + memory)."""
+        partition_energy = sum(p.get_energy_pj() for p in self.partitions)
+        lsu_energy = self.sm_lsu.total_energy_pj
+        return partition_energy + lsu_energy
 
     def get_statistics(self) -> dict:
         """Get execution statistics."""
@@ -260,6 +272,7 @@ class SMSim:
             "energy_pj": self.get_energy_pj(),
             "ipc": self.total_instructions / max(1, self.cycle),
             "partition_stats": [p.get_statistics() for p in self.partitions],
+            "sm_lsu_stats": self.sm_lsu.get_statistics(),
         }
 
     def get_visualization(self) -> dict:
@@ -268,6 +281,7 @@ class SMSim:
             "cycle": self.cycle,
             "state": self.state.name,
             "partitions": [p.get_visualization() for p in self.partitions],
+            "sm_lsu": self.sm_lsu.get_visualization(),
             "energy_pj": self.get_energy_pj(),
             "total_instructions": self.total_instructions,
             "total_stalls": self.total_stalls,

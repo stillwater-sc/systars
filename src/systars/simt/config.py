@@ -132,6 +132,20 @@ class SIMTConfig:
     """Maximum in-flight memory requests per SM."""
 
     # =========================================================================
+    # SM-Level LSU Configuration
+    # =========================================================================
+    # Based on NVIDIA architecture: single MIO queue per SM with MSHR tracking
+
+    num_mshrs: int = 64
+    """Number of Miss Status Holding Registers per SM."""
+
+    mio_queue_depth: int = 16
+    """Depth of MIO queue (memory requests from all partitions)."""
+
+    lsu_issue_bandwidth: int = 1
+    """Memory requests processed per cycle (1 IPC to LSU pipe)."""
+
+    # =========================================================================
     # Address Space Configuration
     # =========================================================================
     # 32-bit address layout:

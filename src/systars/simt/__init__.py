@@ -43,7 +43,7 @@ from .energy_model import (
 )
 from .execution_unit import OPCODE_LATENCY, OPCODE_MAP, ExecutionUnitSim, Opcode
 from .global_memory import GlobalMemorySim
-from .load_store_unit import AddressSpace, LoadStoreUnitSim
+from .load_store_unit import AddressSpace
 from .memory_coalescer import CoalescingResult, MemoryCoalescerSim, analyze_access_pattern
 from .operand_collector import CollectorState, OperandCollectorSim, OperandState
 from .partition import (
@@ -57,6 +57,7 @@ from .partition import (
 from .register_file import BankState, RegisterFileSim
 from .shared_memory import SharedMemoryBankState, SharedMemorySim
 from .sm_controller import SMSim, SMState, run_gemm_simulation
+from .sm_lsu import MIOQueueEntry, MSHREntry, MSHRState, MSHRWaiter, SMLevelLSUSim
 from .warp_scheduler import Instruction, SchedulingPolicy, WarpSchedulerSim, WarpState
 
 __all__ = [
@@ -110,8 +111,13 @@ __all__ = [
     "SharedMemorySim",
     "SharedMemoryBankState",
     # Load/Store Unit
-    "LoadStoreUnitSim",
     "AddressSpace",
+    # SM-Level LSU
+    "SMLevelLSUSim",
+    "MSHREntry",
+    "MSHRState",
+    "MSHRWaiter",
+    "MIOQueueEntry",
     # Global Memory
     "GlobalMemorySim",
     # Memory Coalescer
