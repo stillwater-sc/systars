@@ -1,13 +1,14 @@
 """
 SIMT (Single Instruction Multiple Thread) implementations.
 
-This package provides multiple SIMT/SIMD architecture implementations for
-comparing energy efficiency against systolic arrays.
+This package provides SIMT architecture implementations for comparing
+energy efficiency against systolic arrays.
 
 Architectures:
 - **nv**: NVIDIA Streaming Multiprocessor (SM) - warp-based SIMT
 - **amd**: AMD RDNA/CDNA Workgroup Processor (WGP) - wave-based SIMT [future]
-- **maspar**: MasPar MP-1/MP-2 SIMD array - classic SIMD [future]
+
+For classic SIMD (lock-step, no divergence), see systars.simd.
 
 Usage (backward compatible - defaults to NVIDIA):
     from systars.simt import SIMTConfig, SMSim
@@ -21,15 +22,14 @@ Usage (backward compatible - defaults to NVIDIA):
 Explicit architecture selection:
     from systars.simt.nv import SMSim, SIMTConfig
     from systars.simt.amd import WGPSim  # future
-    from systars.simt.maspar import PEArraySim  # future
 
 Architecture Comparison:
-    | Aspect          | NVIDIA SM       | AMD WGP        | MasPar MP-1/2  |
-    |-----------------|-----------------|----------------|----------------|
-    | Model           | SIMT (warp)     | SIMT (wave)    | Pure SIMD      |
-    | Width           | 32 threads      | 32/64 threads  | 4096+ PEs      |
-    | Divergence      | Yes             | Yes            | No (lock-step) |
-    | Local Memory    | Shared (48KB)   | LDS (64KB)     | PE RAM (16KB)  |
+    | Aspect          | NVIDIA SM       | AMD WGP        |
+    |-----------------|-----------------|----------------|
+    | Model           | SIMT (warp)     | SIMT (wave)    |
+    | Width           | 32 threads      | 32/64 threads  |
+    | Divergence      | Predication     | Predication    |
+    | Local Memory    | Shared (48KB)   | LDS (64KB)     |
 """
 
 # Re-export NVIDIA implementation for backward compatibility
