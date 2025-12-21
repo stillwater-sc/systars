@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### MasPar MP-2 SIMD Implementation (2025-12-21)
+
+- **SIMD Package** (`src/systars/simd/`): New package for classic SIMD architectures
+  - Distinct from SIMT (no divergence handling, pure lock-step execution)
+  - MasPar MP-1/MP-2 as first implementation
+
+- **MasPar Simulator** (`src/systars/simd/maspar/`): Complete MP-2 SIMD array processor
+  - `MasParConfig`: Hardware configuration (64x64 array, 64 registers/PE, 64KB local memory)
+  - `PE`: Processing Element with 32-bit ALU, registers, local memory
+  - `PEArray`: 2D mesh with 8-neighbor XNET connectivity (toroidal wrap-around)
+  - `ACU`: Array Control Unit for instruction fetch/decode/broadcast
+  - `MasParSim`: Top-level simulator with GEMM and Conv2D support
+
+- **Instruction Set** (`src/systars/simd/maspar/instruction.py`): 40+ opcodes
+  - Integer ALU: IADD, ISUB, IMUL, IAND, IOR, IXOR, ISHL, ISHR, IMOV
+  - Floating-point: FADD, FSUB, FMUL, FFMA
+  - Memory: LD, ST, LDI (load immediate)
+  - XNET: 8 directions (N, S, E, W, NE, NW, SE, SW)
+  - Router: ROUTE_SEND, ROUTE_RECV
+  - Control: SETMASK, CLRMASK (PE masking)
+  - Reduction: REDUCE_SUM, REDUCE_MAX, REDUCE_MIN
+  - Comparison: ICMP_EQ/NE/LT/LE/GT/GE
+
+- **Matrix Multiplication (GEMM)**: Cannon's algorithm implementation
+  - Pre-skewed data distribution for parallel execution
+  - XNET shifts: A west, B north each iteration
+  - Performance: 4x4 GEMM in 29 cycles (16 instructions)
+
+- **2D Convolution (Conv2D)**: 3x3 kernel support
+  - Leverages XNET 8-neighbor mesh for efficient gather
+  - 36 instructions: 9 LDI + 8 XNET + 1 init + 18 MAC
+  - Kernels: identity, box, edge, sharpen, sobel_x, sobel_y
+
+- **Animation Examples** (`examples/simd/maspar/`):
+  - `01_animated_maspar.py`: GEMM visualization with Cannon's algorithm
+  - `02_animated_conv2d.py`: Conv2D visualization with kernel selection
+
+- **Pre-defined Configurations**:
+  - `DEFAULT_MASPAR_CONFIG`: 64x64 MP-2
+  - `SMALL_MASPAR_CONFIG`: 4x4 for testing
+  - `MEDIUM_MASPAR_CONFIG`: 16x16
+  - `LARGE_MASPAR_CONFIG`: 128x128
+  - `MP1_CONFIG`: 64x64 with 4-bit ALU (8 cycles for 32-bit ops)
+
 #### SM-Level LSU with MSHR Tracking (2025-12-20)
 
 - **SM-Level Load/Store Unit** (`src/systars/simt/sm_lsu.py`): Restructured from per-partition LSUs to single SM-level LSU

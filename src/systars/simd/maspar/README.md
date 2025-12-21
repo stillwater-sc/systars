@@ -34,3 +34,55 @@ Usage:
   cycles = sim.run_gemm(A, B)
   C = sim.extract_result(rows=4, cols=4)
 ```
+
+## Matmul Example
+
+The animation shows:
+
+  1. 4×4 PE Array executing Cannon's algorithm for matrix multiplication
+  2. Each cycle displays:
+    - Current instruction (IMUL, IADD, XNET_E, XNET_S)
+    - Stall cycles for multi-cycle operations (IMUL takes 4 cycles)
+    - Register A (blue), B (magenta), and C (accumulator, green when matching expected)
+  3. XNET shifts: A shifts west, B shifts north with toroidal wrap-around
+  4. Final statistics: 28 cycles, 16 instructions (4 iterations × 4 instructions each)
+
+You can run it interactively with:
+
+```bash
+  python examples/simd/maspar/01_animated_maspar.py --step   # Step through manually
+  python examples/simd/maspar/01_animated_maspar.py          # 500ms delay animation
+  python examples/simd/maspar/01_animated_maspar.py --m 8    # 8×8 array
+```
+
+## Conv2D Example
+
+The Conv2D implementation is complete. Here's a summary:
+
+Added to maspar_sim.py:
+
+- load_conv2d_data(image, kernel) - Load image and 3x3 kernel
+- create_conv2d_program() - Generate convolution instructions:
+    a. Load 9 kernel weights via LDI (9 instructions)
+    b. Gather 8 neighbors via XNET (8 instructions)
+    c. Initialize output to zero (1 instruction)
+    d. 9 multiply-accumulate operations (18 instructions)
+- run_conv2d(image, kernel) - Execute complete convolution
+- extract_conv2d_result() - Get output from PE registers
+
+New animation script: examples/simd/maspar/02_animated_conv2d.py
+
+- Supports multiple kernels: identity, box, edge, sharpen, sobel_x, sobel_y
+- Shows XNET neighbor gathering and MAC accumulation
+- Verifies results against reference implementation
+
+Usage:
+
+```bash
+  python examples/simd/maspar/02_animated_conv2d.py                    # 8x8 edge detection
+  python examples/simd/maspar/02_animated_conv2d.py --kernel box       # Box blur
+  python examples/simd/maspar/02_animated_conv2d.py --kernel sharpen   # Sharpen
+  python examples/simd/maspar/02_animated_conv2d.py --size 16          # 16x16 image
+```
+
+Performance: 36 instructions, 63 cycles (due to 4-cycle IMUL latency) for any image size - the beauty of SIMD parallelism!
