@@ -104,6 +104,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### SIMT Package Reorganization (2025-12-20)
+
+- **Multi-Architecture Structure**: Reorganized `src/systars/simt/` to support multiple architectures
+  - `simt/nv/`: NVIDIA Streaming Multiprocessor (current implementation)
+  - `simt/nv_v1/`: Legacy NVIDIA SM with per-partition LSU bug
+  - `simt/amd/`: AMD RDNA/CDNA placeholder (NotImplementedError)
+  - `simt/maspar/`: MasPar MP-1/MP-2 placeholder (NotImplementedError)
+
+- **Backward Compatibility Layer** (`src/systars/simt/__init__.py`):
+  - Re-exports all NVIDIA symbols for existing code: `from systars.simt import SMSim`
+  - Explicit architecture selection now possible: `from systars.simt.nv import SMSim`
+
+- **Common Protocols** (`src/systars/simt/base.py`):
+  - `ProcessorSim`: Protocol for top-level processor simulation
+  - `MemorySubsystem`: Protocol for memory read/write operations
+  - `SIMTConfigBase`: Abstract base for architecture configurations
+
+- **Round-Robin Warp Distribution Fix**:
+  - Changed from sequential fill (P0=8, P1=8, P2=2, P3=0 for 18 warps)
+  - To balanced round-robin (P0=5, P1=5, P2=4, P3=4 for 18 warps)
+  - Fixed in both `sm_controller.py` and `examples/simt/01_animated_simt.py`
+
 #### CI Improvements (2025-12-18)
 
 - **Unit Tests CI**: Added OSS CAD Suite (Yosys) to unit tests job for full Verilog generation test coverage
