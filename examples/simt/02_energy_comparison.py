@@ -35,10 +35,10 @@ import sys
 # Add parent directory to path for imports
 sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
 
-from systars.simt import SIMTConfig
-from systars.simt.energy_model import (
+from systars.simt import (
     Conv2DWorkload,
     GEMMWorkload,
+    SIMTConfig,
     compare_architectures,
     estimate_simt_energy,
     estimate_stencil_energy,

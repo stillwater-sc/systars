@@ -9,20 +9,20 @@ import unittest
 from amaranth.sim import Simulator, Tick
 
 from systars.simt import SIMTConfig
-from systars.simt.execution_unit import (
+from systars.simt.nv.execution_unit import (
     ALUPipeline,
     ExecutionUnit,
     ExecutionUnitSim,
     Opcode,
 )
-from systars.simt.operand_collector import (
+from systars.simt.nv.operand_collector import (
     CollectorState,
     OperandCollectorSim,
     OperandState,
 )
-from systars.simt.partition import PartitionSim, create_gemm_program, create_test_program
-from systars.simt.register_file import RegisterFileBank, RegisterFileSim
-from systars.simt.warp_scheduler import Instruction, WarpSchedulerSim, WarpState
+from systars.simt.nv.partition import PartitionSim, create_gemm_program, create_test_program
+from systars.simt.nv.register_file import RegisterFileBank, RegisterFileSim
+from systars.simt.nv.warp_scheduler import Instruction, WarpSchedulerSim, WarpState
 
 
 class TestSIMTConfig(unittest.TestCase):
