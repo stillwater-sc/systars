@@ -15,11 +15,12 @@ Architecture:
     │                                                                  │
     │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────┐│
     │  │ PARTITION 0 │  │ PARTITION 1 │  │ PARTITION 2 │  │PARTITION││
-    │  │  Warps 0-7  │  │  Warps 8-15 │  │ Warps 16-23 │  │   3     ││
-    │  │  8 Cores    │  │  8 Cores    │  │  8 Cores    │  │ Warps   ││
-    │  │  16K Regs   │  │  16K Regs   │  │  16K Regs   │  │ 24-31   ││
+    │  │  8 Warps    │  │  8 Warps    │  │  8 Warps    │  │   3     ││
+    │  │  8 Cores    │  │  8 Cores    │  │  8 Cores    │  │ 8 Warps ││
+    │  │  16K Regs   │  │  16K Regs   │  │  16K Regs   │  │ 8 Cores ││
     │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────┘│
     │                                                                  │
+    │  Round-robin warp distribution: W0→P0, W1→P1, W2→P2, W3→P3, ... │
     │  Total: 32 Cores, 64K Registers, 32 Concurrent Warps            │
     │                                                                  │
     └─────────────────────────────────────────────────────────────────┘
@@ -177,25 +178,44 @@ class SMSim:
         instructions: list[Instruction],
         num_warps: int = 8,
     ) -> None:
-        """Load the same program into multiple warps across partitions."""
+        """Load the same program into multiple warps across partitions.
+
+        Uses round-robin distribution across partitions (NVIDIA-style):
+        - Warp 0 → P0, Warp 1 → P1, Warp 2 → P2, Warp 3 → P3
+        - Warp 4 → P0, Warp 5 → P1, ...
+
+        This balances load across partitions for better parallelism.
+        """
+        num_partitions = self.config.num_partitions
         warps_per_partition = self.config.max_warps_per_partition
 
         for i in range(num_warps):
-            partition_id = i // warps_per_partition
-            local_warp_id = i % warps_per_partition
+            # Round-robin distribution across partitions
+            partition_id = i % num_partitions
+            local_warp_id = i // num_partitions
 
-            if partition_id < len(self.partitions):
+            if partition_id < len(self.partitions) and local_warp_id < warps_per_partition:
                 self.partitions[partition_id].load_program(local_warp_id, instructions)
 
     def activate_warps(self, num_warps: int) -> None:
-        """Activate warps for execution."""
+        """Activate warps for execution.
+
+        Uses round-robin distribution (NVIDIA-style) to balance warps across partitions.
+        For example, 18 warps across 4 partitions: P0=5, P1=5, P2=4, P3=4
+        """
+        num_partitions = self.config.num_partitions
         warps_per_partition = self.config.max_warps_per_partition
 
+        # Round-robin distribution: first (num_warps % num_partitions) partitions
+        # get one extra warp
+        base_warps = num_warps // num_partitions
+        extra_warps = num_warps % num_partitions
+
         for i, partition in enumerate(self.partitions):
-            warps_for_this_partition = min(
-                warps_per_partition,
-                max(0, num_warps - i * warps_per_partition),
-            )
+            # First 'extra_warps' partitions get base_warps + 1
+            warps_for_this_partition = base_warps + (1 if i < extra_warps else 0)
+            # Respect max warps per partition limit
+            warps_for_this_partition = min(warps_for_this_partition, warps_per_partition)
             partition.activate_warps(warps_for_this_partition)
 
         self.state = SMState.EXECUTE

@@ -594,7 +594,9 @@ def format_collector_slot(char: str) -> str:
         return Colors.DIM + "·" + Colors.RESET
 
 
-def render_gemm_matrix(tracker: GEMMTracker, max_display: int = 16) -> list[str]:
+def render_gemm_matrix(
+    tracker: GEMMTracker, max_display: int | None = None, box_width: int | None = None
+) -> list[str]:
     """
     Render the GEMM output matrix showing warp ownership and update flashing.
 
@@ -607,7 +609,8 @@ def render_gemm_matrix(tracker: GEMMTracker, max_display: int = 16) -> list[str]
 
     Args:
         tracker: GEMMTracker with current state
-        max_display: Maximum rows/cols to display (truncate larger matrices)
+        max_display: Maximum rows/cols to display. If None, show full matrix.
+        box_width: Box width to use. If None, calculate from content.
 
     Returns:
         List of lines to display
@@ -615,11 +618,21 @@ def render_gemm_matrix(tracker: GEMMTracker, max_display: int = 16) -> list[str]
     lines = []
     M, N, K = tracker.M, tracker.N, tracker.K
 
-    # Calculate display dimensions (truncate if too large)
+    # Display the full matrix - let the box grow to fit
+    # If this causes wrapping, user can widen their terminal
+    if max_display is None:
+        max_display = max(M, N)  # Show full matrix
+
     display_rows = min(M, max_display)
     display_cols = min(N, max_display)
-    truncated_rows = max_display < M
-    truncated_cols = max_display < N
+    truncated_rows = display_rows < M
+    truncated_cols = display_cols < N
+
+    # Calculate box width based on actual content if not provided
+    # "│ XX: " (6) + cols*3 + optional "·· " (3) + padding + "│" (1)
+    if box_width is None:
+        content_width = 6 + display_cols * 3 + (3 if truncated_cols else 0)
+        box_width = content_width + 2  # Just enough for content
 
     # Header
     pending_stores = tracker.get_pending_store_count()
@@ -629,7 +642,7 @@ def render_gemm_matrix(tracker: GEMMTracker, max_display: int = 16) -> list[str]
         else (f"ST pending: {pending_stores}" if pending_stores > 0 else "computing")
     )
     header = f"OUTPUT MATRIX C[{M}×{N}] = A×B  [{status}]"
-    lines.append(draw_box(header, 75))
+    lines.append(draw_box(header, box_width))
 
     # Column headers (warp IDs for first row of each column group)
     col_header = "│     "
@@ -640,7 +653,7 @@ def render_gemm_matrix(tracker: GEMMTracker, max_display: int = 16) -> list[str]
     if truncated_cols:
         col_header += "··"
     clean_len = len(re.sub(r"\033\[[0-9;]*m", "", col_header))
-    col_header += " " * max(0, 74 - clean_len) + "│"
+    col_header += " " * max(0, box_width - 1 - clean_len) + "│"
     lines.append(col_header)
 
     # Matrix rows
@@ -658,7 +671,7 @@ def render_gemm_matrix(tracker: GEMMTracker, max_display: int = 16) -> list[str]
 
             if updated:
                 # Flash bright green on FMA update
-                row_str += f"{Colors.BG_GREEN}{Colors.BLACK}W{warp_id}{Colors.RESET} "
+                row_str += f"{Colors.BG_GREEN}{Colors.BLACK}{warp_id:2d}{Colors.RESET} "
             elif stored:
                 # Truly complete (stored to memory) - solid green
                 row_str += f"{Colors.GREEN}██{Colors.RESET} "
@@ -677,17 +690,17 @@ def render_gemm_matrix(tracker: GEMMTracker, max_display: int = 16) -> list[str]
                     row_str += f"{warp_color}░░{Colors.RESET} "
             else:
                 # Not started - show warp ID dimmed
-                row_str += f"{Colors.DIM}W{warp_id}{Colors.RESET} "
+                row_str += f"{Colors.DIM}{warp_id:2d}{Colors.RESET} "
 
         if truncated_cols:
             row_str += "··"
 
         clean_len = len(re.sub(r"\033\[[0-9;]*m", "", row_str))
-        row_str += " " * max(0, 74 - clean_len) + "│"
+        row_str += " " * max(0, box_width - 1 - clean_len) + "│"
         lines.append(row_str)
 
     if truncated_rows:
-        lines.append("│ ··" + " " * 70 + "│")
+        lines.append("│ ··" + " " * (box_width - 5) + "│")
 
     # Progress summary - now shows both computed and stored counts
     total_ops = M * N * K
@@ -702,21 +715,21 @@ def render_gemm_matrix(tracker: GEMMTracker, max_display: int = 16) -> list[str]
     summary += f"Computed: {elements_computed}/{M * N}  "
     summary += f"{Colors.GREEN}Stored: {elements_stored}/{M * N}{Colors.RESET}"
     clean_len = len(re.sub(r"\033\[[0-9;]*m", "", summary))
-    summary += " " * max(0, 74 - clean_len) + "│"
+    summary += " " * max(0, box_width - 1 - clean_len) + "│"
     lines.append(summary)
 
     # Legend - updated to show computed vs stored distinction
     legend = "│ "
-    legend += f"{Colors.DIM}W#=idle{Colors.RESET} "
+    legend += f"{Colors.DIM}##=idle(warp#){Colors.RESET} "
     legend += "░=partial "
     legend += f"{Colors.YELLOW}▓▓=computed{Colors.RESET} "
     legend += f"{Colors.GREEN}██=stored{Colors.RESET} "
-    legend += f"{Colors.BG_GREEN}{Colors.BLACK}W#{Colors.RESET}=updating"
+    legend += f"{Colors.BG_GREEN}{Colors.BLACK}##=updating{Colors.RESET}"
     clean_len = len(re.sub(r"\033\[[0-9;]*m", "", legend))
-    legend += " " * max(0, 74 - clean_len) + "│"
+    legend += " " * max(0, box_width - 1 - clean_len) + "│"
     lines.append(legend)
 
-    lines.append(draw_box_end(75))
+    lines.append(draw_box_end(box_width))
     return lines
 
 
@@ -733,6 +746,16 @@ def visualize_sm_state(
     vis = sm.get_visualization()
     config = sm.config
 
+    # Calculate box width based on matrix size (if tracking GEMM)
+    # Each matrix element: 3 chars (2 display + 1 space)
+    # Overhead: "│ XX: " (6) + " │" (2) = 8
+    if gemm_tracker is not None:
+        matrix_width = 6 + max(gemm_tracker.M, gemm_tracker.N) * 3 + 2
+        box_width = max(matrix_width, 75)  # At least 75 for standard content
+    else:
+        box_width = 75
+    content_width = box_width - 1  # For padding calculations
+
     # Header with cycle and energy
     energy_str = format_energy(vis["energy_pj"])
     header = (
@@ -743,7 +766,7 @@ def visualize_sm_state(
         f"Energy: {energy_str}"
     )
     lines.append(Colors.BOLD + header + Colors.RESET)
-    lines.append("═" * 75)
+    lines.append("═" * box_width)
     lines.append("")
 
     # Warp Schedulers section
@@ -751,7 +774,7 @@ def visualize_sm_state(
         f"WARP SCHEDULERS ({config.num_partitions} partitions × "
         f"{config.max_warps_per_partition} warps)"
     )
-    lines.append(draw_box(warp_header, 75))
+    lines.append(draw_box(warp_header, box_width))
 
     for p_idx, p_vis in enumerate(vis["partitions"]):
         warp_line = f"│ P{p_idx}: "
@@ -782,14 +805,12 @@ def visualize_sm_state(
 
         # Pad to width
         # Remove ANSI codes for length calculation
-        import re
-
         clean_len = len(re.sub(r"\033\[[0-9;]*m", "", warp_line))
-        padding = 74 - clean_len
+        padding = content_width - clean_len
         warp_line += " " * max(0, padding) + "│"
         lines.append(warp_line)
 
-    lines.append(draw_box_end(75))
+    lines.append(draw_box_end(box_width))
     lines.append("")
 
     # Register Files section
@@ -798,7 +819,7 @@ def visualize_sm_state(
         f"REGISTER FILES ({total_regs_k}K Registers, "
         f"{config.register_banks_per_partition} Banks per Partition)"
     )
-    lines.append(draw_box(reg_header, 75))
+    lines.append(draw_box(reg_header, box_width))
 
     for p_idx, p_vis in enumerate(vis["partitions"]):
         bank_line = f"│ P{p_idx}: "
@@ -818,18 +839,18 @@ def visualize_sm_state(
 
         # Pad to width
         clean_len = len(re.sub(r"\033\[[0-9;]*m", "", bank_line))
-        padding = 74 - clean_len
+        padding = content_width - clean_len
         bank_line += " " * max(0, padding) + "│"
         lines.append(bank_line)
 
-    lines.append(draw_box_end(75))
+    lines.append(draw_box_end(box_width))
     lines.append("")
 
     # Operand Collectors section - show per-thread operand collection progress
     # Each warp has 32 threads, each thread needs up to 3 source operands
     # Total: 32 threads × 3 sources = 96 operand slots per collector
     coll_header = "OPERAND COLLECTORS (32 threads × 3 sources = 96 slots each)"
-    lines.append(draw_box(coll_header, 75))
+    lines.append(draw_box(coll_header, box_width))
 
     for p_idx, _p_vis in enumerate(vis["partitions"]):
         collector_entries = sm.partitions[p_idx].operand_collector.collectors
@@ -852,11 +873,11 @@ def visualize_sm_state(
 
         # Pad to width
         clean_len = len(re.sub(r"\033\[[0-9;]*m", "", collector_line))
-        padding = 74 - clean_len
+        padding = content_width - clean_len
         collector_line += " " * max(0, padding) + "│"
         lines.append(collector_line)
 
-    lines.append(draw_box_end(75))
+    lines.append(draw_box_end(box_width))
     lines.append("")
 
     # Execution Pipeline section - show ALUs per partition with utilization
@@ -864,7 +885,7 @@ def visualize_sm_state(
         f"ALU CLUSTER ({config.cores_per_partition} ALUs × "
         f"{config.pipeline_stages} stages per partition)"
     )
-    lines.append(draw_box(alu_header, 75))
+    lines.append(draw_box(alu_header, box_width))
 
     for p_idx, p_vis in enumerate(vis["partitions"]):
         alu_detail = p_vis.get("alu_detail", {})
@@ -887,15 +908,15 @@ def visualize_sm_state(
 
         # Pad to width
         clean_len = len(re.sub(r"\033\[[0-9;]*m", "", alu_line))
-        padding = 74 - clean_len
+        padding = content_width - clean_len
         alu_line += " " * max(0, padding) + "│"
         lines.append(alu_line)
 
-    lines.append(draw_box_end(75))
+    lines.append(draw_box_end(box_width))
     lines.append("")
 
     # Memory System section - show SM-level LSU activity and MSHR status
-    lines.append(draw_box("MEMORY SYSTEM (MIO Queue → MSHR → Cache → DRAM)", 75))
+    lines.append(draw_box("MEMORY SYSTEM (MIO Queue → MSHR → Cache → DRAM)", box_width))
 
     # Get SM-level LSU visualization
     lsu_vis = sm.sm_lsu.get_visualization()
@@ -916,7 +937,7 @@ def visualize_sm_state(
         if len(mio_entries) > 6:
             mio_line += f" +{len(mio_entries) - 6}"
     clean_len = len(re.sub(r"\033\[[0-9;]*m", "", mio_line))
-    mio_line += " " * max(0, 74 - clean_len) + "│"
+    mio_line += " " * max(0, content_width - clean_len) + "│"
     lines.append(mio_line)
 
     # Show active MSHRs
@@ -942,7 +963,7 @@ def visualize_sm_state(
         if len(active_mshrs) > 4:
             mshr_line += f" +{len(active_mshrs) - 4}"
     clean_len = len(re.sub(r"\033\[[0-9;]*m", "", mshr_line))
-    mshr_line += " " * max(0, 74 - clean_len) + "│"
+    mshr_line += " " * max(0, content_width - clean_len) + "│"
     lines.append(mshr_line)
 
     # Summary line with LSU statistics
@@ -958,14 +979,14 @@ def visualize_sm_state(
         summary += f" (MSHR hit:{hit_rate:.0f}%)"
 
     clean_len = len(re.sub(r"\033\[[0-9;]*m", "", summary))
-    summary += " " * max(0, 74 - clean_len) + "│"
+    summary += " " * max(0, content_width - clean_len) + "│"
     lines.append(summary)
 
-    lines.append(draw_box_end(75))
+    lines.append(draw_box_end(box_width))
     lines.append("")
 
     # Energy Breakdown section
-    lines.append(draw_box("ENERGY BREAKDOWN", 75))
+    lines.append(draw_box("ENERGY BREAKDOWN", box_width))
 
     total_energy = vis["energy_pj"]
     instr_energy = vis["total_instructions"] * (
@@ -979,7 +1000,7 @@ def visualize_sm_state(
     energy_line += f"Scheduling: {format_energy(sched_energy):>10s} │ "
     energy_line += f"Reg Access: {format_energy(reg_energy):>10s}"
     clean_len = len(re.sub(r"\033\[[0-9;]*m", "", energy_line))
-    padding = 74 - clean_len
+    padding = content_width - clean_len
     energy_line += " " * max(0, padding) + "│"
     lines.append(energy_line)
 
@@ -991,7 +1012,7 @@ def visualize_sm_state(
     efficiency = (alu_energy / max(1, total_energy)) * 100
     energy_line2 += f"Efficiency: {efficiency:.1f}%"
     clean_len = len(re.sub(r"\033\[[0-9;]*m", "", energy_line2))
-    padding = 74 - clean_len
+    padding = content_width - clean_len
     energy_line2 += " " * max(0, padding) + "│"
     lines.append(energy_line2)
 
@@ -1021,15 +1042,15 @@ def visualize_sm_state(
             instr_line += f"{color}{opcode}:{count}{Colors.RESET} "
 
         clean_len = len(re.sub(r"\033\[[0-9;]*m", "", instr_line))
-        instr_line += " " * max(0, 74 - clean_len) + "│"
+        instr_line += " " * max(0, content_width - clean_len) + "│"
         lines.append(instr_line)
 
-    lines.append(draw_box_end(75))
+    lines.append(draw_box_end(box_width))
 
     # GEMM Matrix visualization (if tracker provided)
     if gemm_tracker is not None:
         lines.append("")
-        lines.extend(render_gemm_matrix(gemm_tracker))
+        lines.extend(render_gemm_matrix(gemm_tracker, box_width=box_width))
 
     return lines
 
@@ -1094,14 +1115,15 @@ def run_animation(
 
             # Log timeline events and update GEMM tracker
             # Helper to compute global warp ID from partition + local warp
-            warps_per_part = sm.config.max_warps_per_partition
+            # Round-robin: global_warp = local_warp * num_partitions + partition
+            num_partitions = sm.config.num_partitions
 
             for p_idx, p_status in enumerate(cycle_status.get("partitions", [])):
                 # Log issued instructions (from partition's issued_this_cycle if available)
                 issued = p_status.get("issued", None)
                 if issued:
                     local_warp_id, instr = issued
-                    global_warp_id = p_idx * warps_per_part + local_warp_id
+                    global_warp_id = local_warp_id * num_partitions + p_idx
                     if timeline_logger.enabled:
                         timeline_logger.log_issue(
                             current_cycle,
@@ -1121,7 +1143,7 @@ def run_animation(
                 # Log ALU completions
                 completed = p_status.get("completed", [])
                 for local_warp_id, dst_reg, _results in completed:
-                    global_warp_id = p_idx * warps_per_part + local_warp_id
+                    global_warp_id = local_warp_id * num_partitions + p_idx
                     if timeline_logger.enabled:
                         timeline_logger.log_complete(
                             current_cycle, p_idx, local_warp_id, "ALU", dst_reg, ""
@@ -1133,7 +1155,7 @@ def run_animation(
                 # Log memory completions
                 mem_completed = p_status.get("memory_completed", [])
                 for local_warp_id, dst_reg, _data in mem_completed:
-                    global_warp_id = p_idx * warps_per_part + local_warp_id
+                    global_warp_id = local_warp_id * num_partitions + p_idx
                     if timeline_logger.enabled:
                         op_type = "LD" if dst_reg >= 0 else "ST"
                         timeline_logger.log_complete(
@@ -1298,7 +1320,19 @@ def main():
     parser.add_argument(
         "--fast-mem",
         action="store_true",
-        help="Use fast memory latencies for demo (4 cycles instead of 200)",
+        help="Use fast memory latencies for demo (1 cycle instead of 200)",
+    )
+    parser.add_argument(
+        "--mem-latency",
+        type=int,
+        default=None,
+        help="Memory latency in cycles (default: 200, overrides --fast-mem)",
+    )
+    parser.add_argument(
+        "--warps-per-partition",
+        type=int,
+        default=None,
+        help="Max warps per partition (default: 8, use more to hide memory latency)",
     )
     parser.add_argument(
         "--max-cycles",
@@ -1323,13 +1357,26 @@ def main():
 
     args = parser.parse_args()
 
-    # Create SM with optional fast memory latencies
+    # Create SM with optional config overrides
     config = SIMTConfig()
-    if args.fast_mem:
-        # Reduce latencies for demo purposes (near-instant memory)
-        config.l1_miss_latency = 1  # Instead of 200
-        config.shared_mem_latency = 1  # Instead of 4
+
+    # Memory latency configuration
+    if args.mem_latency is not None:
+        config.l1_miss_latency = args.mem_latency
+        print(f"Using memory latency: {args.mem_latency} cycles")
+    elif args.fast_mem:
+        config.l1_miss_latency = 1
+        config.shared_mem_latency = 1
         print("Using fast memory latencies for demo (1 cycle)")
+
+    # Warps per partition configuration
+    if args.warps_per_partition is not None:
+        config.max_warps_per_partition = args.warps_per_partition
+        config.max_warps_per_sm = config.num_partitions * args.warps_per_partition
+        print(
+            f"Using {args.warps_per_partition} warps per partition ({config.max_warps_per_sm} total)"
+        )
+
     sm = SMSim(config)
 
     # Enable timeline logging if requested
@@ -1364,13 +1411,14 @@ def main():
 
         print_gemm_tile_mapping(M, N, num_warps)
 
-        # Distribute warps across partitions for parallel execution
-        # warp_id 0-7 → P0, 8-15 → P1, 16-23 → P2, 24-31 → P3
+        # Distribute warps across partitions using round-robin (NVIDIA-style)
+        # warp_id 0 → P0, 1 → P1, 2 → P2, 3 → P3, 4 → P0, 5 → P1, ...
         partition_warp_counts = [0] * num_partitions
 
         for global_warp_id in range(num_warps):
-            partition_id = global_warp_id // warps_per_partition
-            local_warp_id = global_warp_id % warps_per_partition
+            # Round-robin distribution across partitions
+            partition_id = global_warp_id % num_partitions
+            local_warp_id = global_warp_id // num_partitions
 
             program = create_tiled_gemm_program(M, N, K, global_warp_id)
             sm.partitions[partition_id].load_program(local_warp_id, program)
