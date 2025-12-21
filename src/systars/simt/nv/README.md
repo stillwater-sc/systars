@@ -1,4 +1,4 @@
-# Single Instruction Multiple Thread
+# Single Instruction Multiple Thread NVIDIA Streaming Processor style micro-architecture
 
 ```bash
   # Basic animation with 4 warps, 200ms delay between frames
@@ -125,6 +125,18 @@ The animation shows:
       ├── Execution Unit
       └── Load/Store Unit → Memory Coalescer → Shared/Global Memory
 ```
+
+## Shared/L1 cache
+
+"Shared memory" in NVIDIA terminology means shared among threads in a thread block, not shared among partitions or SMs. The historical context:
+
+- Shared Memory: Programmer-managed scratchpad (__shared__ in CUDA). All 32 threads in a warp (and all warps in a thread block) can access it.
+    It's "shared" in the sense that threads cooperate through it.
+- L1 Cache: Hardware-managed cache for global memory. Also per-SM.
+
+In modern NVIDIA GPUs (Volta+), these are unified - same physical SRAM with configurable split (e.g., 48KB shared + 16KB L1). So "Shared/L1" refers to this unified structure.
+
+The partitions within an SM all access the same shared memory banks - that's why bank conflicts matter (32 banks, 32 threads per warp).
 
 ## Changes Made
 

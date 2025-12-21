@@ -51,12 +51,21 @@ Examples:
 """
 
 import argparse
+import os
 import re
 import sys
 import time
 
-# Add parent directory to path for imports
+# Add parent directories to path for imports
 sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from common.cli import (
+    add_animation_args,
+    add_gemm_args,
+    add_memory_args,
+    add_timeline_args,
+    get_effective_delay,
+)
 
 from systars.simt.nv_v1 import (
     CollectorState,
@@ -1279,103 +1288,58 @@ def print_gemm_tile_mapping(M: int, N: int, num_warps: int, warp_size: int = 32)
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Animated SIMT Streaming Multiprocessor Visualization"
+        description="Animated SIMT Streaming Multiprocessor Visualization (V1 - Per-Partition LSU)"
     )
-    parser.add_argument(
+
+    # SIMT-specific workload arguments
+    workload_group = parser.add_argument_group("Workload Selection")
+    workload_group.add_argument(
+        "--gemm",
+        action="store_true",
+        help="Use GEMM workload (sequential, same program in all warps)",
+    )
+    workload_group.add_argument(
+        "--tiled",
+        action="store_true",
+        help="Use tiled GEMM (parallel, each warp computes different output tile)",
+    )
+
+    # Common GEMM dimension arguments
+    add_gemm_args(parser)
+
+    # SIMT configuration arguments
+    simt_group = parser.add_argument_group("SIMT Configuration")
+    simt_group.add_argument(
         "--warps",
         type=int,
         default=None,
         help="Number of warps (auto-calculated for tiled GEMM)",
     )
-    parser.add_argument(
+    simt_group.add_argument(
         "--instructions",
         type=int,
         default=16,
         help="Number of instructions per warp (default: 16)",
     )
-    parser.add_argument(
-        "--delay",
-        type=int,
-        default=200,
-        help="Delay between frames in milliseconds (default: 200)",
-    )
-    parser.add_argument(
-        "--fast",
-        action="store_true",
-        help="Fast mode (no animation delay)",
-    )
-    parser.add_argument(
-        "--step",
-        action="store_true",
-        help="Step mode (press Enter to advance each cycle)",
-    )
-    parser.add_argument(
-        "--gemm",
-        action="store_true",
-        help="Use GEMM workload (sequential, same program in all warps)",
-    )
-    parser.add_argument(
-        "--tiled",
-        action="store_true",
-        help="Use tiled GEMM (parallel, each warp computes different output tile)",
-    )
-    parser.add_argument(
-        "--m",
-        type=int,
-        default=8,
-        help="M dimension for GEMM output rows (default: 8)",
-    )
-    parser.add_argument(
-        "--n",
-        type=int,
-        default=8,
-        help="N dimension for GEMM output cols (default: 8)",
-    )
-    parser.add_argument(
-        "--k",
-        type=int,
-        default=4,
-        help="K dimension for GEMM reduction (default: 4)",
-    )
-    parser.add_argument(
-        "--fast-mem",
-        action="store_true",
-        help="Use fast memory latencies for demo (4 cycles instead of 200)",
-    )
-    parser.add_argument(
-        "--max-cycles",
-        type=int,
-        default=1000,
-        help="Maximum cycles to run before stopping (default: 1000)",
-    )
-    parser.add_argument(
-        "--timeline",
-        type=str,
-        default=None,
-        metavar="FILE",
-        help="Write timeline log to FILE",
-    )
-    parser.add_argument(
-        "--timeline-format",
-        type=str,
-        default="chrome",
-        choices=["csv", "chrome"],
-        help="Timeline format: csv (spreadsheet) or chrome (Chrome Trace JSON, default)",
-    )
-    parser.add_argument(
+
+    # V1-specific LSU configuration (demonstrates the bug)
+    lsu_group = parser.add_argument_group("V1 LSU Configuration (Bug Demo)")
+    lsu_group.add_argument(
         "--lsu-queue-depth",
         type=int,
         default=2,
         metavar="N",
         help="LSU max pending requests per partition (default: 2, the buggy value)",
     )
-    parser.add_argument(
-        "--mem-latency",
-        type=int,
-        default=None,
-        metavar="CYCLES",
-        help="Global memory latency in cycles (default: 200, or 1 with --fast-mem)",
-    )
+
+    # Common memory configuration arguments
+    add_memory_args(parser)
+
+    # Common animation control arguments
+    add_animation_args(parser, include_no_color=False, include_movie=False)
+
+    # Common timeline logging arguments
+    add_timeline_args(parser)
 
     args = parser.parse_args()
 
@@ -1482,10 +1446,9 @@ def main():
         sm.activate_warps(num_warps)
 
     # Run animation
-    delay = 0 if args.fast else args.delay
     run_animation(
         sm,
-        delay_ms=delay,
+        delay_ms=get_effective_delay(args),
         max_cycles=args.max_cycles,
         step_mode=args.step,
         gemm_tracker=gemm_tracker,

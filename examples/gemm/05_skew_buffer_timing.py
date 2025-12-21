@@ -47,6 +47,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+# Add parent directory to path for examples.common import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from common.cli import add_animation_args, add_gemm_args, get_effective_delay
+
 
 class Colors:
     RESET = "\033[0m"
@@ -713,7 +717,7 @@ def animate_feeding(
     k_dim: int = 4,
     delay_ms: int = 500,
     use_color: bool = True,
-    no_wait: bool = False,
+    movie_mode: bool = False,
     step: bool = False,
 ):
     """Animate the feeding process showing SRAM reads and skew buffer state."""
@@ -738,14 +742,14 @@ def animate_feeding(
     print("\nExpected C = A @ B:")
     print(A @ B)
 
-    # Only prompt for input if running interactively and no_wait is not set
-    if not no_wait and sys.stdin.isatty():
+    # Prompt before starting (skip in movie mode for term2svg capture)
+    if not movie_mode and sys.stdin.isatty():
         if step:
             print(f"\n{c.DIM}Step mode: Press Enter to advance each cycle...{c.RESET}")
         else:
             print(f"\n{c.DIM}Press Enter to start animation...{c.RESET}")
         input()
-    elif not no_wait:
+    elif not movie_mode:
         print(f"\n{c.DIM}(Non-interactive mode, starting immediately...){c.RESET}")
 
     # Need enough cycles for data to fully propagate through the array
@@ -1076,40 +1080,54 @@ def main():
         description="Skew Buffer and SRAM Timing Visualization",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--size", type=int, default=4, help="Array size N (default: 4)")
-    parser.add_argument("--latency", type=int, default=4, help="SRAM latency cycles (default: 4)")
-    parser.add_argument("--k", type=int, default=None, help="K dimension (default: same as size)")
-    parser.add_argument("--delay", type=int, default=500, help="Animation delay ms (default: 500)")
-    parser.add_argument("--no-color", action="store_true", help="Disable colored output")
-    parser.add_argument("--no-wait", action="store_true", help="Skip interactive prompts")
-    parser.add_argument(
-        "--step", action="store_true", help="Single-step through animation (press Enter to advance)"
+
+    # GEMM dimensions (systolic array requires M=N for square array)
+    add_gemm_args(parser, default_m=4, default_n=4, default_k=4)
+
+    # Skew buffer configuration
+    config_group = parser.add_argument_group("Skew Buffer Configuration")
+    config_group.add_argument(
+        "--latency", type=int, default=4, help="SRAM latency cycles (default: 4)"
     )
-    parser.add_argument("--timing", action="store_true", help="Show timing diagram only")
-    parser.add_argument("--layout", action="store_true", help="Show memory layout only")
-    parser.add_argument("--animate", action="store_true", help="Run animation")
+
+    # Display mode selection
+    mode_group = parser.add_argument_group("Display Mode")
+    mode_group.add_argument("--timing", action="store_true", help="Show timing diagram only")
+    mode_group.add_argument("--layout", action="store_true", help="Show memory layout only")
+    mode_group.add_argument("--animate", action="store_true", help="Run animation")
+
+    # Common animation arguments (--movie skips prompts for term2svg capture)
+    add_animation_args(
+        parser,
+        include_fast=True,
+        include_max_cycles=False,
+        include_movie=True,
+    )
 
     args = parser.parse_args()
 
-    # Default K to size if not specified
-    if args.k is None:
-        args.k = args.size
+    # Systolic array requires square dimensions (M=N)
+    if args.m != args.n:
+        print(f"Error: Systolic array requires M=N (got M={args.m}, N={args.n})")
+        sys.exit(1)
+
+    array_size = args.m  # M=N for square array
+    k_dim = args.k
 
     use_color = not args.no_color
+    delay = get_effective_delay(args)
 
     if args.timing:
-        draw_timing_diagram(args.size, args.latency, args.k, use_color)
+        draw_timing_diagram(array_size, args.latency, k_dim, use_color)
     elif args.layout:
-        draw_memory_layout(args.size, use_color)
+        draw_memory_layout(array_size, use_color)
     elif args.animate:
-        animate_feeding(
-            args.size, args.latency, args.k, args.delay, use_color, args.no_wait, args.step
-        )
+        animate_feeding(array_size, args.latency, k_dim, delay, use_color, args.movie, args.step)
     else:
         # Show all by default
-        draw_memory_layout(args.size, use_color)
+        draw_memory_layout(array_size, use_color)
         print("\n" + "=" * 76 + "\n")
-        draw_timing_diagram(args.size, args.latency, args.k, use_color)
+        draw_timing_diagram(array_size, args.latency, k_dim, use_color)
         print(
             f"\n{Colors.DIM if use_color else ''}Run with --animate for step-by-step animation{Colors.RESET if use_color else ''}"
         )

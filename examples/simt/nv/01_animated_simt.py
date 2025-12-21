@@ -27,6 +27,7 @@ Options:
     -m M            GEMM output rows (default: 8)
     -n N            GEMM output cols (default: 8)
     --k K           GEMM reduction dimension (default: 4)
+    --preload       Preload matrices into shared memory (focus on ALU pipelining)
 
 Examples:
     # Basic test program
@@ -41,15 +42,28 @@ Examples:
 
     # Tiled GEMM step mode: 8x4 output = 32 elements = 1 warp
     python 01_animated_simt.py --tiled -m 8 -n 4 --k 2 --step --fast-mem
+
+    # Preload mode: focus on register fetches and ALU pipelining
+    # Matrices preloaded into shared memory, eliminating memory latency
+    python 01_animated_simt.py --tiled -m 8 -n 4 --k 4 --preload --fast
 """
 
 import argparse
+import os
 import re
 import sys
 import time
 
-# Add parent directory to path for imports
+# Add parent directories to path for imports
 sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from common.cli import (
+    add_animation_args,
+    add_gemm_args,
+    add_memory_args,
+    add_timeline_args,
+    get_effective_delay,
+)
 
 from systars.simt import (
     CollectorState,
@@ -212,6 +226,87 @@ class GEMMTracker:
     def is_truly_complete(self) -> bool:
         """Check if all elements are computed AND stored."""
         return all(self.stored[r][c] for r in range(self.M) for c in range(self.N))
+
+
+def preload_gemm_data(sm: SMSim, M: int, N: int, K: int, num_warps: int) -> None:
+    """
+    Preload matrix data into shared memory for fast access.
+
+    This eliminates memory latency as a bottleneck, allowing observation
+    of pure register fetch and ALU pipelining behavior.
+
+    Memory layout in shared memory (base = 0x4000_0000):
+        A matrix: [0, M*K) - row-major, element = A[row][k]
+        B matrix: [M*K, M*K + K*N) - row-major, element = B[k][col]
+
+    Register initialization per thread:
+        R3: address of A[row, 0] = base + row * K * 4
+        R4: address of B[0, col] = base + M*K*4 + col * 4
+
+    Args:
+        sm: The SM simulation instance
+        M, N, K: Matrix dimensions
+        num_warps: Number of warps being used
+    """
+    config = sm.config
+    shared_base = config.shared_memory_base  # 0x4000_0000
+    warp_size = config.warp_size  # 32
+
+    # Generate some sample matrix data (simple pattern for visualization)
+    # A[i,k] = i + k + 1, B[k,j] = k * N + j + 1
+    a_data = [[i + k + 1 for k in range(K)] for i in range(M)]
+    b_data = [[k * N + j + 1 for j in range(N)] for k in range(K)]
+
+    # Preload A matrix into shared memory
+    a_base = shared_base
+    for i in range(M):
+        for k in range(K):
+            addr = a_base + (i * K + k) * 4
+            sm.shared_memory.write(addr, a_data[i][k])
+
+    # Preload B matrix into shared memory
+    b_base = shared_base + M * K * 4
+    for k in range(K):
+        for j in range(N):
+            addr = b_base + (k * N + j) * 4
+            sm.shared_memory.write(addr, b_data[k][j])
+
+    # Initialize registers per-thread for each warp
+    # R3 = address of A[row, 0] for this thread's row
+    # R4 = address of B[0, col] for this thread's column
+    num_partitions = config.num_partitions
+
+    for global_warp_id in range(num_warps):
+        partition_id = global_warp_id % num_partitions
+        # local_warp_id = global_warp_id // num_partitions
+
+        partition = sm.partitions[partition_id]
+        reg_file = partition.register_file
+
+        for thread_id in range(warp_size):
+            # Calculate which output element this thread computes
+            element_idx = global_warp_id * warp_size + thread_id
+            if element_idx >= M * N:
+                continue  # Thread inactive
+
+            row = element_idx // N
+            col = element_idx % N
+
+            # R3: base address for A[row, 0] (will iterate over k)
+            r3_addr = a_base + row * K * 4
+            reg_file.write_thread(3, thread_id, r3_addr)
+
+            # R4: base address for B[0, col] (will iterate over k)
+            r4_addr = b_base + col * 4
+            reg_file.write_thread(4, thread_id, r4_addr)
+
+            # R5: address for C[row, col] (for ST instruction)
+            # Put C after B in shared memory
+            c_base = b_base + K * N * 4
+            r5_addr = c_base + (row * N + col) * 4
+            reg_file.write_thread(5, thread_id, r5_addr)
+
+    print(f"  Preloaded: A[{M}x{K}] at 0x{a_base:08X}, B[{K}x{N}] at 0x{b_base:08X}")
 
 
 class TimelineLogger:
@@ -746,14 +841,15 @@ def visualize_sm_state(
     vis = sm.get_visualization()
     config = sm.config
 
-    # Calculate box width based on matrix size (if tracking GEMM)
-    # Each matrix element: 3 chars (2 display + 1 space)
-    # Overhead: "│ XX: " (6) + " │" (2) = 8
+    # Calculate box width based on widest content
+    # Operand collectors: "│ P0: " (6) + 8 slots × 10 chars (9 + space) + "│" (1) = 87
+    # Matrix row: "│ XX: " (6) + N elements × 3 chars + "│" (1)
+    operand_collector_width = 6 + 8 * 10 + 1  # 87 chars
     if gemm_tracker is not None:
         matrix_width = 6 + max(gemm_tracker.M, gemm_tracker.N) * 3 + 2
-        box_width = max(matrix_width, 75)  # At least 75 for standard content
+        box_width = max(matrix_width, operand_collector_width, 75)
     else:
-        box_width = 75
+        box_width = max(operand_collector_width, 75)
     content_width = box_width - 1  # For padding calculations
 
     # Header with cycle and energy
@@ -848,28 +944,48 @@ def visualize_sm_state(
 
     # Operand Collectors section - show per-thread operand collection progress
     # Each warp has 32 threads, each thread needs up to 3 source operands
-    # Total: 32 threads × 3 sources = 96 operand slots per collector
-    coll_header = "OPERAND COLLECTORS (32 threads × 3 sources = 96 slots each)"
+    # Fixed 8 slots per partition, each slot 10 chars wide for stability
+    coll_header = "OPERAND COLLECTORS (░=pending ▓=ready █=complete FIRE=dispatch)"
     lines.append(draw_box(coll_header, box_width))
 
     for p_idx, _p_vis in enumerate(vis["partitions"]):
         collector_entries = sm.partitions[p_idx].operand_collector.collectors
         collector_status = sm.partitions[p_idx].operand_collector.get_status()
 
-        # Show detailed progress for each collector
+        # Show fixed-width slots for each collector (9 chars each + 1 space)
         collector_line = f"│ P{p_idx}: "
         for i, entry in enumerate(collector_entries):
             status = collector_status[i]
             if entry.state == CollectorState.EMPTY:
-                collector_line += Colors.DIM + "[----]" + Colors.RESET + " "
+                # Idle slot: [  ---  ] = 9 chars
+                collector_line += Colors.DIM + "[  ---  ]" + Colors.RESET + " "
             elif entry.state == CollectorState.READY:
-                collector_line += Colors.GREEN + f"[W{entry.warp_id}:FIRE]" + Colors.RESET + " "
+                # Ready to fire: [W#:FIRE] = 9 chars (warp id is 1 char, * for 10+)
+                wid = str(entry.warp_id) if entry.warp_id < 10 else "*"
+                collector_line += Colors.GREEN + f"[W{wid}:FIRE]" + Colors.RESET + " "
             else:
-                # Show warp ID and progress (e.g., "W0:32/64" or "W0:16+8/48")
-                progress = status
-                collector_line += (
-                    Colors.YELLOW + f"[W{entry.warp_id}:{progress}]" + Colors.RESET + " "
-                )
+                # Collecting: show progress bar [W#:████] = 9 chars
+                # Parse status like "32/96" or "32+16/96"
+                wid = str(entry.warp_id) if entry.warp_id < 10 else "*"
+                try:
+                    if "+" in status:
+                        parts = status.split("+")
+                        ready = int(parts[0])
+                        rest = parts[1].split("/")
+                        reading = int(rest[0])
+                        total = int(rest[1])
+                    else:
+                        parts = status.split("/")
+                        ready = int(parts[0])
+                        reading = 0
+                        total = int(parts[1]) if len(parts) > 1 else 96
+                    # 4-char progress bar
+                    pct = (ready + reading) / max(total, 1)
+                    filled = int(pct * 4)
+                    bar = "█" * filled + "░" * (4 - filled)
+                    collector_line += Colors.YELLOW + f"[W{wid}:{bar}]" + Colors.RESET + " "
+                except (ValueError, IndexError):
+                    collector_line += Colors.YELLOW + f"[W{wid}:????]" + Colors.RESET + " "
 
         # Pad to width
         clean_len = len(re.sub(r"\033\[[0-9;]*m", "", collector_line))
@@ -1061,6 +1177,7 @@ def run_animation(
     max_cycles: int = 1000,
     step_mode: bool = False,
     gemm_tracker: GEMMTracker | None = None,
+    movie_mode: bool = False,
 ):
     """
     Run animated visualization of SM execution.
@@ -1075,30 +1192,34 @@ def run_animation(
 
     clear_screen()
 
-    print(Colors.BOLD + "NVIDIA-style Streaming Multiprocessor Simulation" + Colors.RESET)
-    print("=" * 75)
-    print()
-    print(
-        f"Configuration: {sm.config.num_partitions} partitions × "
-        f"{sm.config.cores_per_partition} cores = {sm.config.total_cores} cores"
-    )
-    print(f"Register File: {sm.config.total_registers} registers ({sm.config.register_file_kb} KB)")
-    if gemm_tracker:
+    # Header display (suppressed in movie mode for clean term2svg capture)
+    if not movie_mode:
+        print(Colors.BOLD + "NVIDIA-style Streaming Multiprocessor Simulation" + Colors.RESET)
+        print("=" * 75)
+        print()
         print(
-            f"GEMM: C[{gemm_tracker.M}×{gemm_tracker.N}] = "
-            f"A[{gemm_tracker.M}×{gemm_tracker.K}] @ B[{gemm_tracker.K}×{gemm_tracker.N}]"
+            f"Configuration: {sm.config.num_partitions} partitions × "
+            f"{sm.config.cores_per_partition} cores = {sm.config.total_cores} cores"
         )
-    print()
-    print("Legend: R=Ready E=Executing W=RAW-Stall B=Bank-Stall D=Done")
-    print("        ██=Read ▓▓=Write XX=Conflict ░░=Idle")
-    print()
-    if step_mode:
-        print("Step mode: Press Enter to advance, 'q' to quit, 'r' to run continuously")
-    else:
-        print("Press Ctrl+C to stop")
-    print()
-    if not step_mode:
-        time.sleep(1)
+        print(
+            f"Register File: {sm.config.total_registers} registers ({sm.config.register_file_kb} KB)"
+        )
+        if gemm_tracker:
+            print(
+                f"GEMM: C[{gemm_tracker.M}×{gemm_tracker.N}] = "
+                f"A[{gemm_tracker.M}×{gemm_tracker.K}] @ B[{gemm_tracker.K}×{gemm_tracker.N}]"
+            )
+        print()
+        print("Legend: R=Ready E=Executing W=RAW-Stall B=Bank-Stall D=Done")
+        print("        ██=Read ▓▓=Write XX=Conflict ░░=Idle")
+        print()
+        if step_mode:
+            print("Step mode: Press Enter to advance, 'q' to quit, 'r' to run continuously")
+        else:
+            print("Press Ctrl+C to stop")
+        print()
+        if not step_mode:
+            time.sleep(1)
 
     try:
         run_continuous = False
@@ -1191,44 +1312,45 @@ def run_animation(
     except KeyboardInterrupt:
         print("\n\nSimulation stopped by user.")
 
-    # Final statistics
-    print()
-    print(Colors.BOLD + "═" * 75 + Colors.RESET)
-    print(Colors.BOLD + "FINAL STATISTICS" + Colors.RESET)
-    print("═" * 75)
+    # Final statistics (suppressed in movie mode)
+    if not movie_mode:
+        print()
+        print(Colors.BOLD + "═" * 75 + Colors.RESET)
+        print(Colors.BOLD + "FINAL STATISTICS" + Colors.RESET)
+        print("═" * 75)
 
-    stats = sm.get_statistics()
-    print(f"Total Cycles:        {stats['cycles']}")
-    print(f"Total Instructions:  {stats['instructions']}")
-    print(f"IPC:                 {stats['ipc']:.2f}")
-    print(f"Total Stalls:        {stats['stalls']}")
-    print(f"Bank Conflicts:      {stats['bank_conflicts']}")
-    print(f"Total Energy:        {format_energy(stats['energy_pj'])}")
+        stats = sm.get_statistics()
+        print(f"Total Cycles:        {stats['cycles']}")
+        print(f"Total Instructions:  {stats['instructions']}")
+        print(f"IPC:                 {stats['ipc']:.2f}")
+        print(f"Total Stalls:        {stats['stalls']}")
+        print(f"Bank Conflicts:      {stats['bank_conflicts']}")
+        print(f"Total Energy:        {format_energy(stats['energy_pj'])}")
 
-    # Per-partition stats
-    print()
-    print("Per-Partition Statistics:")
-    for i, p_stats in enumerate(stats["partition_stats"]):
-        print(
-            f"  P{i}: {p_stats['instructions']} instrs, "
-            f"{p_stats['stalls']} stalls, "
-            f"{format_energy(p_stats['energy_pj'])}"
-        )
-
-    # Per-opcode instruction counts
-    print()
-    print("Instruction Mix:")
-    for i, p_stats in enumerate(stats["partition_stats"]):
-        counts = p_stats.get("instruction_counts", {})
-        if counts:
-            count_str = " ".join(
-                f"{op}:{cnt}" for op, cnt in sorted(counts.items(), key=lambda x: -x[1])
+        # Per-partition stats
+        print()
+        print("Per-Partition Statistics:")
+        for i, p_stats in enumerate(stats["partition_stats"]):
+            print(
+                f"  P{i}: {p_stats['instructions']} instrs, "
+                f"{p_stats['stalls']} stalls, "
+                f"{format_energy(p_stats['energy_pj'])}"
             )
-            print(f"  P{i}: {count_str}")
 
-    # Timeline summary
-    if timeline_logger.enabled:
-        timeline_logger.print_summary()
+        # Per-opcode instruction counts
+        print()
+        print("Instruction Mix:")
+        for i, p_stats in enumerate(stats["partition_stats"]):
+            counts = p_stats.get("instruction_counts", {})
+            if counts:
+                count_str = " ".join(
+                    f"{op}:{cnt}" for op, cnt in sorted(counts.items(), key=lambda x: -x[1])
+                )
+                print(f"  P{i}: {count_str}")
+
+        # Timeline summary
+        if timeline_logger.enabled:
+            timeline_logger.print_summary()
 
 
 def print_gemm_tile_mapping(M: int, N: int, num_warps: int, warp_size: int = 32):
@@ -1261,99 +1383,57 @@ def main():
     parser = argparse.ArgumentParser(
         description="Animated SIMT Streaming Multiprocessor Visualization"
     )
-    parser.add_argument(
+
+    # SIMT-specific workload arguments
+    workload_group = parser.add_argument_group("Workload Selection")
+    workload_group.add_argument(
+        "--gemm",
+        action="store_true",
+        help="Use GEMM workload (sequential, same program in all warps)",
+    )
+    workload_group.add_argument(
+        "--tiled",
+        action="store_true",
+        help="Use tiled GEMM (parallel, each warp computes different output tile)",
+    )
+    workload_group.add_argument(
+        "--preload",
+        action="store_true",
+        help="Preload matrices into shared memory for fast access (focus on ALU pipelining)",
+    )
+
+    # Common GEMM dimension arguments
+    add_gemm_args(parser)
+
+    # SIMT configuration arguments
+    simt_group = parser.add_argument_group("SIMT Configuration")
+    simt_group.add_argument(
         "--warps",
         type=int,
         default=None,
         help="Number of warps (auto-calculated for tiled GEMM)",
     )
-    parser.add_argument(
+    simt_group.add_argument(
         "--instructions",
         type=int,
         default=16,
         help="Number of instructions per warp (default: 16)",
     )
-    parser.add_argument(
-        "--delay",
-        type=int,
-        default=200,
-        help="Delay between frames in milliseconds (default: 200)",
-    )
-    parser.add_argument(
-        "--fast",
-        action="store_true",
-        help="Fast mode (no animation delay)",
-    )
-    parser.add_argument(
-        "--step",
-        action="store_true",
-        help="Step mode (press Enter to advance each cycle)",
-    )
-    parser.add_argument(
-        "--gemm",
-        action="store_true",
-        help="Use GEMM workload (sequential, same program in all warps)",
-    )
-    parser.add_argument(
-        "--tiled",
-        action="store_true",
-        help="Use tiled GEMM (parallel, each warp computes different output tile)",
-    )
-    parser.add_argument(
-        "--m",
-        type=int,
-        default=8,
-        help="M dimension for GEMM output rows (default: 8)",
-    )
-    parser.add_argument(
-        "--n",
-        type=int,
-        default=8,
-        help="N dimension for GEMM output cols (default: 8)",
-    )
-    parser.add_argument(
-        "--k",
-        type=int,
-        default=4,
-        help="K dimension for GEMM reduction (default: 4)",
-    )
-    parser.add_argument(
-        "--fast-mem",
-        action="store_true",
-        help="Use fast memory latencies for demo (1 cycle instead of 200)",
-    )
-    parser.add_argument(
-        "--mem-latency",
-        type=int,
-        default=None,
-        help="Memory latency in cycles (default: 200, overrides --fast-mem)",
-    )
-    parser.add_argument(
+    simt_group.add_argument(
         "--warps-per-partition",
         type=int,
         default=None,
-        help="Max warps per partition (default: 8, use more to hide memory latency)",
+        help="Max warps per partition (default: 16, use more to hide memory latency)",
     )
-    parser.add_argument(
-        "--max-cycles",
-        type=int,
-        default=1000,
-        help="Maximum cycles to run before stopping (default: 1000)",
-    )
-    parser.add_argument(
-        "--timeline",
-        type=str,
-        default=None,
-        metavar="FILE",
-        help="Write timeline log to FILE",
-    )
-    parser.add_argument(
-        "--timeline-format",
-        type=str,
-        default="chrome",
-        choices=["csv", "chrome"],
-        help="Timeline format: csv (spreadsheet) or chrome (Chrome Trace JSON, default)",
-    )
+
+    # Common memory configuration arguments
+    add_memory_args(parser)
+
+    # Common animation control arguments
+    add_animation_args(parser, include_no_color=False)
+
+    # Common timeline logging arguments
+    add_timeline_args(parser)
 
     args = parser.parse_args()
 
@@ -1363,26 +1443,35 @@ def main():
     # Memory latency configuration
     if args.mem_latency is not None:
         config.l1_miss_latency = args.mem_latency
-        print(f"Using memory latency: {args.mem_latency} cycles")
+        if not args.movie:
+            print(f"Using memory latency: {args.mem_latency} cycles")
+    elif args.preload:
+        # Preload mode: shared memory latency = 1 for observing ALU pipelining
+        config.shared_mem_latency = 1
+        if not args.movie:
+            print("Preload mode: shared memory latency = 1 cycle (focus on ALU pipelining)")
     elif args.fast_mem:
         config.l1_miss_latency = 1
         config.shared_mem_latency = 1
-        print("Using fast memory latencies for demo (1 cycle)")
+        if not args.movie:
+            print("Using fast memory latencies for demo (1 cycle)")
 
     # Warps per partition configuration
     if args.warps_per_partition is not None:
         config.max_warps_per_partition = args.warps_per_partition
         config.max_warps_per_sm = config.num_partitions * args.warps_per_partition
-        print(
-            f"Using {args.warps_per_partition} warps per partition ({config.max_warps_per_sm} total)"
-        )
+        if not args.movie:
+            print(
+                f"Using {args.warps_per_partition} warps per partition ({config.max_warps_per_sm} total)"
+            )
 
     sm = SMSim(config)
 
     # Enable timeline logging if requested
     if args.timeline:
         timeline_logger.enable(args.timeline, fmt=args.timeline_format)
-        print(f"Timeline logging enabled: {args.timeline} (format: {args.timeline_format})")
+        if not args.movie:
+            print(f"Timeline logging enabled: {args.timeline} (format: {args.timeline_format})")
 
     # GEMM tracker for visualization (only for tiled mode)
     gemm_tracker = None
@@ -1399,17 +1488,19 @@ def main():
         max_total_warps = warps_per_partition * num_partitions
 
         if num_warps > max_total_warps:
-            print(
-                f"Warning: {M}×{N} output needs {num_warps} warps, "
-                f"limiting to {max_total_warps} ({num_partitions} partitions × "
-                f"{warps_per_partition} warps)"
-            )
+            if not args.movie:
+                print(
+                    f"Warning: {M}×{N} output needs {num_warps} warps, "
+                    f"limiting to {max_total_warps} ({num_partitions} partitions × "
+                    f"{warps_per_partition} warps)"
+                )
             num_warps = max_total_warps
 
         # Create GEMM tracker for visualization
         gemm_tracker = GEMMTracker(M, N, K, config.warp_size)
 
-        print_gemm_tile_mapping(M, N, num_warps)
+        if not args.movie:
+            print_gemm_tile_mapping(M, N, num_warps)
 
         # Distribute warps across partitions using round-robin (NVIDIA-style)
         # warp_id 0 → P0, 1 → P1, 2 → P2, 3 → P3, 4 → P0, 5 → P1, ...
@@ -1424,12 +1515,13 @@ def main():
             sm.partitions[partition_id].load_program(local_warp_id, program)
             partition_warp_counts[partition_id] += 1
 
-            tile_info = get_warp_tile_info(global_warp_id, M, N)
-            print(
-                f"  P{partition_id}:W{local_warp_id} (global {global_warp_id}): "
-                f"rows {tile_info[0]}-{tile_info[2]}, cols {tile_info[1]}-{tile_info[3]} "
-                f"({len(program)} instrs)"
-            )
+            if not args.movie:
+                tile_info = get_warp_tile_info(global_warp_id, M, N)
+                print(
+                    f"  P{partition_id}:W{local_warp_id} (global {global_warp_id}): "
+                    f"rows {tile_info[0]}-{tile_info[2]}, cols {tile_info[1]}-{tile_info[3]} "
+                    f"({len(program)} instrs)"
+                )
 
         # Activate warps in each partition that has work
         for p_id, warp_count in enumerate(partition_warp_counts):
@@ -1440,17 +1532,23 @@ def main():
         sm.state = SMState.EXECUTE
         partitions_used = sum(1 for c in partition_warp_counts if c > 0)
         total_cores = partitions_used * config.cores_per_partition
-        print(
-            f"\nRunning tiled GEMM: C[{M}×{N}] = A[{M}×{K}] @ B[{K}×{N}]"
-            f"\n  Using {partitions_used} partitions, {num_warps} warps, "
-            f"{total_cores} ALU cores"
-        )
+        if not args.movie:
+            print(
+                f"\nRunning tiled GEMM: C[{M}×{N}] = A[{M}×{K}] @ B[{K}×{N}]"
+                f"\n  Using {partitions_used} partitions, {num_warps} warps, "
+                f"{total_cores} ALU cores"
+            )
+
+        # Preload matrices into shared memory if requested
+        if args.preload:
+            preload_gemm_data(sm, M, N, K, num_warps)
 
     elif args.gemm:
         # Original sequential GEMM (same program in all warps)
         num_warps = args.warps if args.warps else 4
         program = create_gemm_program(16, 16, args.k)
-        print(f"Running sequential GEMM with K={args.k} ({len(program)} instructions per warp)")
+        if not args.movie:
+            print(f"Running sequential GEMM with K={args.k} ({len(program)} instructions per warp)")
         sm.load_uniform_program(program, num_warps)
         sm.activate_warps(num_warps)
 
@@ -1458,18 +1556,19 @@ def main():
         # Test program
         num_warps = args.warps if args.warps else 4
         program = create_test_program(args.instructions)
-        print(f"Running test program ({len(program)} instructions per warp)")
+        if not args.movie:
+            print(f"Running test program ({len(program)} instructions per warp)")
         sm.load_uniform_program(program, num_warps)
         sm.activate_warps(num_warps)
 
     # Run animation
-    delay = 0 if args.fast else args.delay
     run_animation(
         sm,
-        delay_ms=delay,
+        delay_ms=get_effective_delay(args),
         max_cycles=args.max_cycles,
         step_mode=args.step,
         gemm_tracker=gemm_tracker,
+        movie_mode=args.movie,
     )
 
 

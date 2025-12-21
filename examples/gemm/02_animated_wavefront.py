@@ -17,10 +17,13 @@ This visualization shows:
 4. The final result extraction
 
 Usage:
-    python 02_animated_wavefront.py [--size N] [--delay MS] [--no-color]
+    python 02_animated_wavefront.py [--size N] [--delay MS] [--fast] [--step]
 
     --size N     Array size (default: 4)
     --delay MS   Delay between frames in milliseconds (default: 500)
+    --fast       Fast mode (no animation delay)
+    --step       Step mode (press Enter to advance each cycle)
+    --movie      Movie mode for term2svg capture
     --no-color   Disable colored output
 """
 
@@ -28,9 +31,13 @@ import argparse
 import os
 import sys
 import time
+
+# Add parent directory to path for examples.common import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataclasses import dataclass, field
 
 import numpy as np
+from common.cli import add_animation_args, add_gemm_args, get_effective_delay
 
 # =============================================================================
 # ANSI Color Codes for Terminal Output
@@ -149,16 +156,17 @@ class SystolicArraySim:
 
         # Create skewed A queues (one per row)
         # Row i gets i cycles of delay (None values) before its data
+        # Convert to Python int to avoid int8 overflow during MAC
         self.a_queue = []
         for i in range(self.size):
-            row_data = [None] * i + list(A[i, :]) + [None] * (self.size - 1)
+            row_data = [None] * i + [int(x) for x in A[i, :]] + [None] * (self.size - 1)
             self.a_queue.append(row_data)
 
         # Create skewed B queues (one per column)
         # Column j gets j cycles of delay before its data
         self.b_queue = []
         for j in range(self.size):
-            col_data = [None] * j + list(B[:, j]) + [None] * (self.size - 1)
+            col_data = [None] * j + [int(x) for x in B[:, j]] + [None] * (self.size - 1)
             self.b_queue.append(col_data)
 
     def step(self) -> bool:
@@ -441,6 +449,7 @@ def run_animated_demo(
     size: int = 4,
     delay_ms: int = 500,
     use_color: bool = True,
+    movie_mode: bool = False,
 ):
     """
     Run the animated wavefront demonstration.
@@ -449,6 +458,7 @@ def run_animated_demo(
         size: Array size (NxN)
         delay_ms: Milliseconds between animation frames
         use_color: Whether to use colored output
+        movie_mode: If True, skip prompts and setup/summary for term2svg capture
     """
     if not use_color:
         Colors.disable()
@@ -479,12 +489,14 @@ def run_animated_demo(
     sim = SystolicArraySim(size=size)
     sim.setup(A, B)
 
-    print(f"\n{c.BOLD}Press Enter to start animation (Ctrl+C to skip)...{c.RESET}")
-    try:
-        input()
-    except KeyboardInterrupt:
-        print("\nSkipping animation...")
-        return True
+    # Prompt before starting (skip in movie mode for term2svg capture)
+    if not movie_mode:
+        print(f"\n{c.BOLD}Press Enter to start animation (Ctrl+C to skip)...{c.RESET}")
+        try:
+            input()
+        except KeyboardInterrupt:
+            print("\nSkipping animation...")
+            return True
 
     # Animate
     try:
@@ -600,38 +612,33 @@ def main():
         description="Animated Systolic Array Wavefront Demo",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        "--size",
-        type=int,
-        default=4,
-        help="Array size N (creates NxN systolic array, default: 4)",
-    )
-    parser.add_argument(
-        "--delay",
-        type=int,
-        default=500,
-        help="Delay between frames in milliseconds (default: 500)",
-    )
-    parser.add_argument(
-        "--no-color",
-        action="store_true",
-        help="Disable colored output",
-    )
-    parser.add_argument(
-        "--step",
-        action="store_true",
-        help="Run in step-by-step mode instead of animation",
+
+    # GEMM dimensions (systolic array requires M=N for square array)
+    add_gemm_args(parser, default_m=4, default_n=4, default_k=4)
+
+    # Add common animation arguments
+    add_animation_args(
+        parser,
+        include_max_cycles=False,  # This demo doesn't use max_cycles
     )
 
     args = parser.parse_args()
 
+    # Systolic array requires square dimensions (M=N)
+    if args.m != args.n:
+        print(f"Error: Systolic array requires M=N (got M={args.m}, N={args.n})")
+        sys.exit(1)
+
+    array_size = args.m  # M=N for square array
+
     if args.step:
-        run_step_by_step(size=args.size, use_color=not args.no_color)
+        run_step_by_step(size=array_size, use_color=not args.no_color)
     else:
         success = run_animated_demo(
-            size=args.size,
-            delay_ms=args.delay,
+            size=array_size,
+            delay_ms=get_effective_delay(args),
             use_color=not args.no_color,
+            movie_mode=args.movie,
         )
         sys.exit(0 if success else 1)
 

@@ -22,6 +22,26 @@ class SIMTConfig:
     Energy Model:
         All energy values are in picojoules (pJ) at 45nm baseline.
         Scale by (45nm/target_nm)^2 for other process nodes.
+
+    GA100 (A100, CC 8.0):
+    ┌─────────────────────────────────┐
+    │ Partition                       │
+    │  16× FP32 (dedicated)           │
+    │  16× INT32 (dedicated)          │
+    │   8× FP64                       │
+    │   1× Tensor Core                │
+    └─────────────────────────────────┘
+        64 FP32 ops/cycle/SM, 64 INT32 ops/cycle (parallel)
+
+    GA10x (RTX 30xx, CC 8.6):
+    ┌─────────────────────────────────┐
+    │ Partition                       │
+    │  16× FP32 (dedicated)           │
+    │  16× FP32/INT32 (dual-purpose)  │
+    │   2× FP64 (minimal)             │
+    │   1× Tensor Core                │
+    └─────────────────────────────────┘
+       128 FP32 ops/cycle/SM OR 64 FP32 + 64 INT32 (trade-off)
     """
 
     # =========================================================================
@@ -31,17 +51,19 @@ class SIMTConfig:
     num_partitions: int = 4
     """Number of processing partitions (sub-cores) in the SM."""
 
-    cores_per_partition: int = 32
+    # in Ampere A100, 16 Dedicated FP32 cores and 16 dedicated INT32 cores
+    #           RTX30, 16 Dedicated FP32 cores, and 16 dual-purpose FP32/INT32
+    cores_per_partition: int = 16
     """Number of Execution cores per partition)."""
 
     warp_size: int = 32
     """Number of threads per warp (SIMT execution width)."""
 
-    max_warps_per_partition: int = 8
+    max_warps_per_partition: int = 16
     """Maximum concurrent warps per partition."""
 
-    max_warps_per_sm: int = 32
-    """Maximum concurrent warps per SM (4 partitions × 8 warps)."""
+    max_warps_per_sm: int = 64
+    """Maximum concurrent warps per SM (4 partitions × 16 warps)."""
 
     # =========================================================================
     # Register File (per partition)

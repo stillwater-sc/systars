@@ -32,16 +32,16 @@ class TestSIMTConfig(unittest.TestCase):
         """Test default configuration values."""
         config = SIMTConfig()
         assert config.num_partitions == 4
-        assert config.cores_per_partition == 32  # Matches warp size
+        assert config.cores_per_partition == 16  # Ampere: 16 dedicated FP32 per partition
         assert config.warp_size == 32
-        assert config.max_warps_per_partition == 8
+        assert config.max_warps_per_partition == 16
         assert config.registers_per_partition == 16384
         assert config.register_banks_per_partition == 16
 
     def test_derived_properties(self):
         """Test derived configuration properties."""
         config = SIMTConfig()
-        assert config.total_cores == 128  # 4 * 32
+        assert config.total_cores == 64  # 4 * 16
         assert config.total_registers == 65536  # 4 * 16384
         assert config.register_file_kb == 256  # 65536 * 4 / 1024
 

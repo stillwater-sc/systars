@@ -28,6 +28,7 @@ Usage:
     --kernel K       Kernel size K×K (default: 3)
     --cache-line N   Cache line width in pixels (default: 4)
     --delay MS       Delay between frames in ms (default: 300)
+    --fast           Fast mode (no animation delay)
     --step           Single-step mode (press Enter for each cycle)
     --fast-mac       Skip MAC pipeline details (instant dot product)
 """
@@ -40,6 +41,10 @@ import time
 from dataclasses import dataclass, field
 
 import numpy as np
+
+# Add parent directory to path for examples.common import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from common.cli import add_animation_args, get_effective_delay
 
 # =============================================================================
 # ANSI Color Codes for Terminal Output
@@ -1646,6 +1651,7 @@ def run_animated_demo(
     use_color: bool = True,
     fast_mac: bool = False,
     pipelined: bool = False,
+    movie_mode: bool = False,
 ):
     """Run the animated stencil machine demonstration."""
     if not use_color:
@@ -1693,16 +1699,18 @@ def run_animated_demo(
     print(f"  Cache line width: {cache_line_width} pixels")
     print(f"  Cache lines per row: {sim.scratchpad.get_num_cache_lines_per_row()}")
 
-    if step_mode:
-        print(f"\n{c.BOLD}STEP MODE: Press Enter to advance, 'q' to quit, 'r' to run{c.RESET}")
-    else:
-        print(f"\n{c.BOLD}Press Enter to start animation (Ctrl+C to stop)...{c.RESET}")
+    # Prompt before starting (skip in movie mode for term2svg capture)
+    if not movie_mode:
+        if step_mode:
+            print(f"\n{c.BOLD}STEP MODE: Press Enter to advance, 'q' to quit, 'r' to run{c.RESET}")
+        else:
+            print(f"\n{c.BOLD}Press Enter to start animation (Ctrl+C to stop)...{c.RESET}")
 
-    try:
-        input()
-    except KeyboardInterrupt:
-        print("\nSkipping animation...")
-        return True
+        try:
+            input()
+        except KeyboardInterrupt:
+            print("\nSkipping animation...")
+            return True
 
     # Animation loop
     running = not step_mode  # If step mode, start paused
@@ -1780,6 +1788,7 @@ def run_parallel_demo(
     delay_ms: int = 300,
     step_mode: bool = False,
     use_color: bool = True,
+    movie_mode: bool = False,
 ):
     """Run the parallel tile processing demonstration."""
     if not use_color:
@@ -1861,16 +1870,18 @@ def run_parallel_demo(
         print(f"T{t}:[{start}-{end - 1}] ", end="")
     print()
 
-    if step_mode:
-        print(f"\n{c.BOLD}STEP MODE: Press Enter to advance, 'q' to quit, 'r' to run{c.RESET}")
-    else:
-        print(f"\n{c.BOLD}Press Enter to start animation (Ctrl+C to stop)...{c.RESET}")
+    # Prompt before starting (skip in movie mode for term2svg capture)
+    if not movie_mode:
+        if step_mode:
+            print(f"\n{c.BOLD}STEP MODE: Press Enter to advance, 'q' to quit, 'r' to run{c.RESET}")
+        else:
+            print(f"\n{c.BOLD}Press Enter to start animation (Ctrl+C to stop)...{c.RESET}")
 
-    try:
-        input()
-    except KeyboardInterrupt:
-        print("\nSkipping animation...")
-        return True
+        try:
+            input()
+        except KeyboardInterrupt:
+            print("\nSkipping animation...")
+            return True
 
     # Animation loop
     running = not step_mode
@@ -1941,36 +1952,44 @@ def main():
         description="Animated Stencil Machine Demo with Scratchpad",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--width", type=int, default=16, help="Input width (default: 16)")
-    parser.add_argument("--height", type=int, default=8, help="Input height (default: 8)")
-    parser.add_argument("--kernel", type=int, default=3, help="Kernel size K×K (default: 3)")
-    parser.add_argument(
+
+    # Stencil-specific arguments
+    stencil_group = parser.add_argument_group("Stencil Configuration")
+    stencil_group.add_argument("--width", type=int, default=16, help="Input width (default: 16)")
+    stencil_group.add_argument("--height", type=int, default=8, help="Input height (default: 8)")
+    stencil_group.add_argument("--kernel", type=int, default=3, help="Kernel size K×K (default: 3)")
+    stencil_group.add_argument(
         "--cache-line", type=int, default=4, help="Cache line width in pixels (default: 4)"
     )
-    parser.add_argument("--filters", type=int, default=2, help="Number of filters P_c (default: 2)")
-    parser.add_argument(
-        "--delay", type=int, default=300, help="Delay between frames in ms (default: 300)"
+    stencil_group.add_argument(
+        "--filters", type=int, default=2, help="Number of filters P_c (default: 2)"
     )
-    parser.add_argument(
-        "--step", action="store_true", help="Single-step mode (press Enter for each cycle)"
-    )
-    parser.add_argument("--no-color", action="store_true", help="Disable colored output")
-    parser.add_argument(
-        "--fast-mac", action="store_true", help="Skip MAC pipeline details (instant dot product)"
-    )
-    parser.add_argument(
-        "--pipelined",
-        action="store_true",
-        help="Use pipelined MAC with II=1 (high throughput mode)",
-    )
-    parser.add_argument(
+    stencil_group.add_argument(
         "--tiles",
         type=int,
         default=0,
         help="Number of parallel tile processors (0=single engine mode)",
     )
 
+    # MAC configuration
+    mac_group = parser.add_argument_group("MAC Configuration")
+    mac_group.add_argument(
+        "--fast-mac", action="store_true", help="Skip MAC pipeline details (instant dot product)"
+    )
+    mac_group.add_argument(
+        "--pipelined",
+        action="store_true",
+        help="Use pipelined MAC with II=1 (high throughput mode)",
+    )
+
+    # Common animation arguments
+    add_animation_args(
+        parser,
+        include_max_cycles=False,
+    )
+
     args = parser.parse_args()
+    delay = get_effective_delay(args)
 
     # If tiles specified, run parallel demo
     if args.tiles > 0:
@@ -1980,9 +1999,10 @@ def main():
             kernel_size=args.kernel,
             num_filters=args.filters,
             num_tiles=args.tiles,
-            delay_ms=args.delay,
+            delay_ms=delay,
             step_mode=args.step,
             use_color=not args.no_color,
+            movie_mode=args.movie,
         )
         sys.exit(0 if success else 1)
 
@@ -1992,11 +2012,12 @@ def main():
         kernel_size=args.kernel,
         cache_line_width=args.cache_line,
         num_filters=args.filters,
-        delay_ms=args.delay,
+        delay_ms=delay,
         step_mode=args.step,
         use_color=not args.no_color,
         fast_mac=args.fast_mac,
         pipelined=args.pipelined,
+        movie_mode=args.movie,
     )
     sys.exit(0 if success else 1)
 

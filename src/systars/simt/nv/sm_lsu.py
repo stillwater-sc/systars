@@ -149,6 +149,8 @@ class SMLevelLSUSim:
     cycle: int = 0
 
     # Statistics
+    total_loads: int = 0
+    total_stores: int = 0
     total_primary_misses: int = 0
     total_secondary_misses: int = 0
     total_mshr_full_stalls: int = 0
@@ -320,6 +322,7 @@ class SMLevelLSUSim:
             self.completion_queues[entry.partition_id].append(
                 (entry.warp_id, entry.instruction.dst or 0, read_data)
             )
+            self.total_loads += 1
             # Track energy
             self.total_energy_pj += self.config.shared_mem_access_energy_pj
             if conflicts > 0:
@@ -334,6 +337,7 @@ class SMLevelLSUSim:
             )
             # Queue store completion
             self.completion_queues[entry.partition_id].append((entry.warp_id, -1, []))
+            self.total_stores += 1
             self.total_energy_pj += self.config.shared_mem_access_energy_pj
 
         self.total_shared_accesses += 1
@@ -468,6 +472,7 @@ class SMLevelLSUSim:
             # Queue store completions for all waiters
             for waiter in mshr.waiters:
                 self.completion_queues[waiter.partition_id].append((waiter.warp_id, -1, []))
+                self.total_stores += 1
         else:
             # For loads, read cache line from memory
             cache_line_data = self._read_cache_line(mshr.cache_line_addr)
@@ -493,6 +498,7 @@ class SMLevelLSUSim:
                 self.completion_queues[waiter.partition_id].append(
                     (waiter.warp_id, waiter.dst_reg, result_data)
                 )
+                self.total_loads += 1
 
         # Free MSHR
         mshr.state = MSHRState.INVALID
@@ -518,6 +524,8 @@ class SMLevelLSUSim:
         """Get LSU statistics."""
         active_mshrs = sum(1 for m in self.mshrs if m.state != MSHRState.INVALID)
         return {
+            "total_loads": self.total_loads,
+            "total_stores": self.total_stores,
             "total_primary_misses": self.total_primary_misses,
             "total_secondary_misses": self.total_secondary_misses,
             "secondary_miss_rate": (
