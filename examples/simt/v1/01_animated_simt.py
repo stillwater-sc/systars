@@ -58,7 +58,7 @@ import time
 # Add parent directory to path for imports
 sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
 
-from systars.simt_v1 import (
+from systars.simt.nv_v1 import (
     CollectorState,
     SIMTConfig,
     SMSim,
