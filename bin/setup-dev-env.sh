@@ -168,6 +168,18 @@ pre-commit install
 success "Pre-commit hooks installed"
 
 # ============================================================================
+# Patch venv activate script to include OSS CAD Suite
+# ============================================================================
+info "Patching venv activation script to include OSS CAD Suite..."
+ACTIVATE_SCRIPT="$PROJECT_ROOT/.venv/bin/activate"
+if ! grep -q "oss-cad-suite" "$ACTIVATE_SCRIPT"; then
+    sed -i 's|PATH="\$VIRTUAL_ENV/"bin":\$PATH"|PATH="$VIRTUAL_ENV/"bin":$PATH"\n# Add OSS CAD Suite to PATH if available\nif [ -d "/opt/oss-cad-suite/bin" ]; then\n    PATH="/opt/oss-cad-suite/bin:$PATH"\nfi|' "$ACTIVATE_SCRIPT"
+    success "Patched activate script"
+else
+    success "Activate script already patched"
+fi
+
+# ============================================================================
 # Verification
 # ============================================================================
 echo ""
