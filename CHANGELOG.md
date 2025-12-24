@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Repository Velocity Report Script (2025-12-23)
+
+- **Velocity Report Generator** (`scripts/repo_velocity.py`): Measures development velocity across multiple repositories
+  - Tracks source code files only: C/C++, Python, Go, Shell, CMake, Verilog/VHDL
+  - Excludes large files (>100k lines) that are likely generated content
+  - Reports: total LOC, commits, lines added/deleted, net change, contribution percentage
+  - Multiple output formats: markdown (default), CSV, JSON
+  - Configurable date range via `--since` and `--until` arguments
+  - Supports both branes-ai and stillwater-sc organization repos
+
+### Fixed
+
+#### OSS-CAD-SUITE PATH in Virtual Environment (2025-12-23)
+
+- **Venv Activation Script**: Fixed missing Yosys/Verilator in PATH after activating .venv
+  - `.venv/bin/activate` now automatically adds `/opt/oss-cad-suite/bin` to PATH
+  - RTL generation (`just gen`) and synthesis checks now work without manual environment sourcing
+
+- **Setup Script Enhancement** (`bin/setup-dev-env.sh`): Auto-patches venv activation
+  - New step patches `.venv/bin/activate` to include OSS-CAD-SUITE path
+  - Idempotent: skips if already patched
+  - Ensures `just ci` works immediately after `source .venv/bin/activate`
+
 #### MasPar MP-2 SIMD Implementation (2025-12-21)
 
 - **SIMD Package** (`src/systars/simd/`): New package for classic SIMD architectures
