@@ -175,7 +175,7 @@ The `examples/` directory contains demonstrations of systolic array operation:
 python examples/gemm/01_simple_matmul.py
 
 # Animated wavefront visualization - terminal animation of systolic data flow
-python examples/gemm/02_animated_wavefront.py --size 4 --delay 500
+python examples/gemm/02_animated_wavefront.py --m 4 --n 4 --k 4 --delay 500
 
 # Generate animated GIF of wavefront propagation
 python examples/gemm/03_wavefront_gif.py
