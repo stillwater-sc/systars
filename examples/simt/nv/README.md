@@ -19,7 +19,7 @@ bank conflicts matter (32 banks, 32 threads per warp).
   - Tiled GEMM with round-robin warp distribution
   - MSHR-based memory coalescing
   - `--preload` mode for observing ALU pipelining without memory latency
-  - `--movie` mode for clean term2svg capture (suppresses setup/summary)
+  - `--movie` mode for clean termtosvg capture (suppresses setup/summary)
 
 - **02_energy_comparison.py**: Energy efficiency comparison
   - SIMT vs Systolic Array vs Stencil Machine
@@ -43,7 +43,7 @@ python examples/simt/nv/01_animated_simt.py --tiled --m 8 --n 4 --k 4 --preload 
 python examples/simt/nv/01_animated_simt.py --tiled --m 8 --n 8 --k 2 --fast --movie
 
 # Create term2svg animation
-term2svg -g 100x50 -c "python examples/simt/nv/01_animated_simt.py --tiled --m 8 --n 8 --k 2 --movie" simt_demo.svg
+termtosvg -g 100x50 -c "python examples/simt/nv/01_animated_simt.py --tiled --m 8 --n 8 --k 2 --movie" simt_demo.svg
 
 # Energy comparison
 python examples/simt/nv/02_energy_comparison.py --size 64 --detailed
