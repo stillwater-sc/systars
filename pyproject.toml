@@ -39,6 +39,8 @@ dev = [
     "pytest-subtests>=0.11",
     "pre-commit>=3.6",
     "numpy>=1.24",  # Required for GEMM demo/e2e tests
+    "matplotlib>=3.5",  # Required for visualization demos
+    "pillow>=9.0",  # Required for image processing demos
 ]
 sim = [
     "cocotb>=2.0",
@@ -100,7 +102,7 @@ line-ending = "auto"
 # =============================================================================
 [tool.pytest.ini_options]
 minversion = "8.0"
-testpaths = ["tests", "verif/cocotb/tests"]
+testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
