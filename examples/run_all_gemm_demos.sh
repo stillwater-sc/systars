@@ -32,6 +32,11 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 BOLD='\033[1m'
 
+# Demo paths are relative to the repository root; run from there no matter
+# where the script is invoked from
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$(dirname "$SCRIPT_DIR")"
+
 # Demo definitions (all use unified --m, --n, --k flags)
 declare -A DEMOS
 DEMOS["wavefront"]="examples/gemm/02_animated_wavefront.py --m 16 --n 16 --k 16"

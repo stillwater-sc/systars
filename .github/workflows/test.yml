@@ -28,6 +28,8 @@ jobs:
       - name: Install OSS CAD Suite (Yosys)
         uses: YosysHQ/setup-oss-cad-suite@v3
         with:
+          # Authenticated release lookup: avoids the shared-runner API rate limit
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           version: "2025-12-12"
 
       - name: Install dependencies
@@ -68,6 +70,8 @@ jobs:
       - name: Install OSS CAD Suite
         uses: YosysHQ/setup-oss-cad-suite@v3
         with:
+          # Authenticated release lookup: avoids the shared-runner API rate limit
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           version: "2025-12-12"
 
       - name: Install project with simulation dependencies

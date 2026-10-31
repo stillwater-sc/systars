@@ -298,6 +298,22 @@ class SystolicConfig:
         assert self.acc_banks > 0, "acc_banks must be positive"
         assert self.sp_capacity_kb > 0, "sp_capacity_kb must be positive"
         assert self.acc_capacity_kb > 0, "acc_capacity_kb must be positive"
+        # Derived row geometry: rows must be whole bytes, and every bank must hold
+        # at least one row (otherwise sp_width_bytes / bank depths are zero)
+        assert self.sp_width % 8 == 0, (
+            f"scratchpad row ({self.sp_width} bits) must be a whole number of bytes"
+        )
+        assert self.acc_width % 8 == 0, (
+            f"accumulator row ({self.acc_width} bits) must be a whole number of bytes"
+        )
+        assert self.sp_bank_entries >= 1, (
+            f"scratchpad of {self.sp_capacity_kb} KiB is too small for {self.sp_banks} "
+            f"banks of {self.sp_width}-bit rows"
+        )
+        assert self.acc_bank_entries >= 1, (
+            f"accumulator of {self.acc_capacity_kb} KiB is too small for {self.acc_banks} "
+            f"banks of {self.acc_width}-bit rows"
+        )
 
 
 # Pre-defined configurations

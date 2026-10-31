@@ -65,8 +65,9 @@ class SystolicTop(Component):
         Status:
             busy: Any controller is busy
             load_busy, store_busy, exec_busy: Individual status
-            completed: A command completed this cycle
+            completed: A command completed this cycle (one of possibly several)
             completed_type: Which controller completed (0=load, 1=store, 2=exec)
+            {load,store,exec}_completed[_id]: Per-controller completions (lossless)
             interrupt: Interrupt request
     """
 
@@ -135,6 +136,15 @@ class SystolicTop(Component):
             "completed": Out(1),
             "completed_type": Out(2),
             "completed_id": Out(8),
+            # Per-controller completions. The controllers run concurrently and
+            # can finish in the same cycle; `completed` above reports only one
+            # of them (load > store > exec), these report every completion.
+            "load_completed": Out(1),
+            "load_completed_id": Out(8),
+            "store_completed": Out(1),
+            "store_completed_id": Out(8),
+            "exec_completed": Out(1),
+            "exec_completed_id": Out(8),
             "interrupt": Out(1),
         }
 
@@ -261,7 +271,8 @@ class SystolicTop(Component):
             store_ctrl.acc_read_data.eq(accumulator.read_data),
             store_ctrl.acc_read_valid.eq(accumulator.read_valid),
             # Activation is applied during store
-            accumulator.read_activation.eq(store_ctrl.cmd_activation),
+            # StoreController applies its latched activation per element
+            accumulator.read_activation.eq(0),
         ]
 
         # =====================================================================
@@ -415,7 +426,18 @@ class SystolicTop(Component):
             self.busy.eq(load_ctrl.busy | store_ctrl.busy | exec_ctrl.busy),
         ]
 
-        # Completion signaling (priority: load > store > exec)
+        # Per-controller completions (lossless)
+        m.d.comb += [
+            self.load_completed.eq(load_ctrl.completed),
+            self.load_completed_id.eq(load_ctrl.completed_id),
+            self.store_completed.eq(store_ctrl.completed),
+            self.store_completed_id.eq(store_ctrl.completed_id),
+            self.exec_completed.eq(exec_ctrl.completed),
+            self.exec_completed_id.eq(exec_ctrl.completed_id),
+        ]
+
+        # Summary completion (priority: load > store > exec). Lossy when two
+        # controllers complete in the same cycle; use the per-controller ports.
         with m.If(load_ctrl.completed):
             m.d.comb += [
                 self.completed.eq(1),

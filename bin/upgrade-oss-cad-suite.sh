@@ -12,8 +12,12 @@
 
 set -euo pipefail
 
-OSS_CAD_SUITE_DIR="/opt/oss-cad-suite"
-GITHUB_REPO="YosysHQ/oss-cad-suite-build"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/oss-cad-suite.sh
+source "${SCRIPT_DIR}/lib/oss-cad-suite.sh"
+
+OSS_CAD_SUITE_DIR="${OSS_CAD_SUITE:-/opt/oss-cad-suite}"
+GITHUB_REPO="$OSS_CAD_SUITE_REPO"
 
 # Colors for output
 RED='\033[0;31m'
@@ -78,10 +82,8 @@ validate_version() {
 
 check_release_exists() {
     local version="$1"
-    local date_compact
-    date_compact=$(echo "$version" | tr -d '-')
-    local tarball="oss-cad-suite-linux-x64-${date_compact}.tgz"
-    local url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${tarball}"
+    local url
+    url="$(oss_cad_suite_url "$version")"
 
     echo "Checking if release $version exists..."
     if curl --output /dev/null --silent --head --fail "$url"; then
@@ -92,54 +94,6 @@ check_release_exists() {
         echo "Check available releases with: $0 --list"
         exit 1
     fi
-}
-
-download_release() {
-    local version="$1"
-    local date_compact
-    date_compact=$(echo "$version" | tr -d '-')
-    local tarball="oss-cad-suite-linux-x64-${date_compact}.tgz"
-    local url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${tarball}"
-    local dest="/tmp/${tarball}"
-
-    echo "" >&2
-    echo "Downloading OSS CAD Suite ${version}..." >&2
-    echo "URL: $url" >&2
-    echo "" >&2
-
-    if command -v wget &> /dev/null; then
-        wget -q --show-progress -O "$dest" "$url"
-    elif command -v curl &> /dev/null; then
-        curl -L --progress-bar -o "$dest" "$url"
-    else
-        echo -e "${RED}Error: Neither wget nor curl found${NC}" >&2
-        exit 1
-    fi
-
-    # Return only the path (to stdout)
-    echo "$dest"
-}
-
-remove_existing() {
-    if [[ -d "$OSS_CAD_SUITE_DIR" ]]; then
-        echo ""
-        echo -e "${YELLOW}Removing existing installation at $OSS_CAD_SUITE_DIR...${NC}"
-        sudo rm -rf "$OSS_CAD_SUITE_DIR"
-        echo "Removed."
-    fi
-}
-
-install_new() {
-    local tarball="$1"
-
-    echo ""
-    echo "Extracting to /opt..."
-    sudo tar -xzf "$tarball" -C /opt
-
-    # Cleanup downloaded tarball
-    rm -f "$tarball"
-
-    echo -e "${GREEN}Extraction complete.${NC}"
 }
 
 verify_installation() {
@@ -167,7 +121,7 @@ verify_installation() {
     echo -e "${GREEN}OSS CAD Suite upgraded successfully!${NC}"
     echo ""
     echo "Make sure your PATH includes:"
-    echo '    export PATH="/opt/oss-cad-suite/bin:$PATH"'
+    echo "    export PATH=\"${OSS_CAD_SUITE_DIR}/bin:\$PATH\""
 }
 
 # Main
@@ -213,14 +167,9 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# Download new version
-TARBALL=$(download_release "$TARGET_VERSION")
-
-# Remove existing installation
-remove_existing
-
-# Install new version
-install_new "$TARBALL"
+# Download, verify and stage the new version; the existing installation is
+# replaced only after the new one is extracted and checked.
+install_oss_cad_suite "$TARGET_VERSION" "$OSS_CAD_SUITE_DIR"
 
 # Verify
 verify_installation

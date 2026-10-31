@@ -91,8 +91,8 @@ At cycle t, PE[i,j] receives:
 
 For the values to "meet" at PE[i,j] at time t:
 
-- A[i,k] enters at cycle k, arrives at column j at cycle k + j
-- B[k,j] enters at cycle k, arrives at row i at cycle k + i
+- A[i,k] enters row i at cycle k + i (row i is skewed by i cycles), and arrives at column j at cycle k + i + j
+- B[k,j] enters column j at cycle k + j (column j is skewed by j cycles), and arrives at row i at cycle k + j + i
 
 Both arrive at PE[i,j] at cycle k + i + j. Since this happens for all k values (0 to N-1), PE[i,j] correctly computes:
 

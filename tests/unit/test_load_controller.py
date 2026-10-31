@@ -343,3 +343,19 @@ class TestLoadControllerVerilogGeneration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestStridedAndTransposeElaboration:
+    """StridedStreamReader / MatrixLoader must elaborate and convert to Verilog."""
+
+    @pytest.mark.parametrize("component", ["StridedStreamReader", "MatrixLoader"])
+    def test_elaborates_to_verilog(self, component):
+        from amaranth.back import verilog
+
+        from systars.controller.load_transpose import MatrixLoader
+        from systars.dma.strided_reader import StridedStreamReader
+
+        cls = {"StridedStreamReader": StridedStreamReader, "MatrixLoader": MatrixLoader}[component]
+        config = SystolicConfig(grid_rows=4, grid_cols=4, dma_buswidth=128)
+        output = verilog.convert(cls(config), name=component)
+        assert f"module {component}" in output

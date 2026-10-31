@@ -44,7 +44,7 @@ class Conv2dCmd(IntEnum):
     """Configuration commands for Conv2D instruction."""
 
     # Input dimensions: batch, height, width, channels_in
-    CONFIG_INPUT_DIMS = 0x01  # data[7:0]=batch, [15:8]=height, [23:16]=width, [31:24]=channels_in
+    CONFIG_INPUT_DIMS = 0x01  # data[7:0]=batch, [23:8]=height, [39:24]=width, [55:40]=channels_in
 
     # Output dimensions: out_height, out_width, channels_out
     CONFIG_OUTPUT_DIMS = 0x02  # data[15:0]=out_height, [31:16]=out_width, [47:32]=channels_out
@@ -161,6 +161,9 @@ class Conv2d(Component):
 
         # Array dimension (assume square for simplicity)
         self.dim = config.grid_rows * config.tile_rows
+        if self.dim & (self.dim - 1):
+            # Tile offsets and counts are computed with shifts by log2(dim)
+            raise ValueError(f"Conv2d requires a power-of-two array dimension, got {self.dim}")
 
         ports = {
             # Configuration interface
@@ -728,6 +731,8 @@ class Conv2d(Component):
             # CALC_TILES: Calculate number of tiles (separate state for timing)
             # -----------------------------------------------------------------
             with m.State("CALC_TILES"):
+                # Still initializing: report INIT so cfg_ready/busy are correct
+                m.d.comb += state.eq(STATE_INIT)
                 # Calculate number of tiles (ceiling division)
                 m.d.sync += [
                     tiles_M.eq((reg_M + dim - 1) >> dim_shift),

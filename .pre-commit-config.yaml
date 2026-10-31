@@ -60,10 +60,12 @@ repos:
   # Local hooks for RTL linting
   - repo: local
     hooks:
-      # Verilator lint for generated Verilog
+      # Verilator lint for committed (hand-written) RTL. Runs when .v/.sv files are
+      # staged and fails on lint errors. It uses the same rules as `just lint-rtl`.
+      # Generated RTL (gen/, gitignored) is linted by `just lint-rtl` and CI.
       - id: verilator-lint
         name: Verilator RTL Lint
-        entry: bash -c 'if command -v verilator &> /dev/null && [ -n "$(find gen -name "*.v" 2>/dev/null)" ]; then verilator --lint-only -Wall --timing gen/*.v 2>&1 || true; else echo "No Verilog files or verilator not found"; fi'
+        entry: bash -c 'if ! command -v verilator >/dev/null 2>&1; then echo "verilator not found; skipping RTL lint (CI runs it)"; exit 0; fi; just lint-rtl-hand'
         language: system
         files: \.(v|sv)$
         pass_filenames: false

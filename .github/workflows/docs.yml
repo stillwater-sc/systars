@@ -10,15 +10,19 @@ on:
   pull_request:
     branches: [main]
 
-# Allow one concurrent deployment
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
+# Least privilege by default; the deploy job requests what it needs
+permissions:
+  contents: read
 
 jobs:
   build:
     name: Build Documentation
     runs-on: ubuntu-latest
+    # Builds are per-ref: a newer push supersedes an older build of the same ref,
+    # but a pull-request build can never cancel a main-branch deployment
+    concurrency:
+      group: docs-build-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +49,10 @@ jobs:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # One deployment at a time; never cancel one that is in progress
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write

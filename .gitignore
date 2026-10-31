@@ -17,6 +17,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+# ...but not the shell helpers sourced by bin/*.sh
+!bin/lib/
 lib64/
 parts/
 sdist/

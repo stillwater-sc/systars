@@ -283,9 +283,10 @@ class ExecuteController(Component):
 
                 # Extract config from cmd_rs1:
                 # [0]: dataflow, [4:1]: shift
+                # (from the value latched at the handshake, not the live port)
                 m.d.sync += [
-                    dataflow_reg.eq(self.cmd_rs1[0]),
-                    shift_reg.eq(self.cmd_rs1[1:6]),
+                    dataflow_reg.eq(a_addr_reg[0]),
+                    shift_reg.eq(a_addr_reg[1:6]),
                 ]
 
                 # Signal completion

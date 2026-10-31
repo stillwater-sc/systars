@@ -448,7 +448,8 @@ class TestStoreControllerVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        config = SystolicConfig(dma_buswidth=128, dma_maxbytes=64)
+        # 4 x 32-bit accumulator row = 128 bits: one row per 128-bit DMA beat
+        config = SystolicConfig(grid_rows=4, grid_cols=4, dma_buswidth=128, dma_maxbytes=64)
         ctrl = StoreController(config)
 
         output = verilog.convert(ctrl, name="StoreController")
@@ -464,3 +465,9 @@ class TestStoreControllerVerilogGeneration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_rejects_rows_wider_than_dma_bus():
+    """A row wider than the DMA bus would be silently truncated: reject the config."""
+    with pytest.raises(ValueError, match="wider than dma_buswidth"):
+        StoreController(SystolicConfig(grid_rows=16, grid_cols=16, dma_buswidth=128))

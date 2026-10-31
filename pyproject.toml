@@ -100,7 +100,9 @@ line-ending = "auto"
 # =============================================================================
 [tool.pytest.ini_options]
 minversion = "8.0"
-testpaths = ["tests", "verif/cocotb/tests"]
+# Unit tests only: cocotb tests need the `sim` extra and run through their own
+# Makefiles (`just test-cocotb`), not plain pytest discovery
+testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

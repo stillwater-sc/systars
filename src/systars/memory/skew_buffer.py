@@ -231,12 +231,9 @@ class SRAMReadScheduler(Component):
 
         total_rows = cfg.grid_rows * cfg.tile_rows
         total_cols = cfg.grid_cols * cfg.tile_cols
-        sram_latency = cfg.spad_read_delay
-
         # State
         STATE_IDLE = 0
         STATE_ISSUE = 1
-        STATE_WAIT = 2
         STATE_OUTPUT = 3
         STATE_DONE = 4
 
@@ -245,7 +242,6 @@ class SRAMReadScheduler(Component):
         # Counters
         k_count = Signal(16)
         k_limit = Signal(16)
-        wait_count = Signal(4)
 
         # Latched addresses
         a_base = Signal(32)
@@ -295,22 +291,16 @@ class SRAMReadScheduler(Component):
                     self.sp_b_read_addr.eq(b_base + k_count),
                 ]
 
-                m.d.sync += wait_count.eq(0)
-                m.next = "WAIT"
-
-            with m.State("WAIT"):
-                m.d.comb += state.eq(STATE_WAIT)
-
-                # Wait for SRAM latency
-                m.d.sync += wait_count.eq(wait_count + 1)
-
-                with m.If(wait_count >= sram_latency - 1):
-                    m.next = "OUTPUT"
+                # Go straight to OUTPUT and wait for the read data there. The
+                # scratchpad's read_valid is a one-cycle pulse `spad_read_delay`
+                # cycles after the request; a fixed-length wait state that
+                # exits after the pulse would miss it and hang.
+                m.next = "OUTPUT"
 
             with m.State("OUTPUT"):
                 m.d.comb += state.eq(STATE_OUTPUT)
 
-                # Data should be valid now
+                # A and B are read with the same latency, so their valids align
                 with m.If(self.sp_a_read_valid & self.sp_b_read_valid):
                     m.d.comb += self.out_valid.eq(1)
 

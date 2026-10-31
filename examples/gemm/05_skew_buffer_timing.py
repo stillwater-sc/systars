@@ -727,8 +727,9 @@ def animate_feeding(
 
     # Create test matrices
     np.random.seed(42)
-    A = np.random.randint(1, 5, size=(size, k_dim), dtype=np.int8)
-    B = np.random.randint(1, 5, size=(k_dim, size), dtype=np.int8)
+    # int32 so neither the PE accumulators nor the expected A @ B wrap
+    A = np.random.randint(1, 5, size=(size, k_dim)).astype(np.int32)
+    B = np.random.randint(1, 5, size=(k_dim, size)).astype(np.int32)
 
     # Initialize feeder
     feeder = SkewedFeeder(size=size, sram_latency=sram_latency, k_dim=k_dim)

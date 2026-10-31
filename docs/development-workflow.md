@@ -162,11 +162,11 @@ class TestMyComponent:
 
     def test_output_scaling(self, dut):
         """Test that output is input << 2."""
-        def testbench():
-            yield dut.input_data.eq(5)
-            yield  # Advance one clock
-            yield  # Let combinational settle
-            result = yield dut.output_data
+
+        async def testbench(ctx):  # Amaranth 0.5 async testbench API
+            ctx.set(dut.input_data, 5)
+            await ctx.tick()  # Advance one clock
+            result = ctx.get(dut.output_data)
             assert result == 20, f"Expected 20, got {result}"
 
         sim = Simulator(dut)
@@ -222,8 +222,9 @@ verif/cocotb/tests/mycomponent/
 └── test_mycomponent.py
 ```
 
-**Makefile:**
+**Makefile** (recipe lines must start with a tab):
 
+<!-- markdownlint-disable MD010 -->
 ```makefile
 # Makefile for MyComponent cocotb tests
 
@@ -254,8 +255,8 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 
 .PHONY: gen-rtl
 gen-rtl:
- @echo "Generating MyComponent Verilog..."
- @cd $(PROJECT_ROOT) && python3 -c "\
+	@echo "Generating MyComponent Verilog..."
+	@cd $(PROJECT_ROOT) && python3 -c "\
 from systars.config import SystolicConfig; \
 from systars.core.example import MyComponent; \
 from amaranth.back import verilog; \
@@ -267,8 +268,9 @@ print('Generated gen/mycomponent.v')"
 
 .PHONY: test-all
 test-all: gen-rtl
- $(MAKE) sim
+	$(MAKE) sim
 ```
+<!-- markdownlint-enable MD010 -->
 
 **Test file:**
 

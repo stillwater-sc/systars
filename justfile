@@ -17,8 +17,13 @@ docs_dir := project_root / "docs"
 # Simulator selection (verilator or icarus)
 sim := env_var_or_default("SIM", "verilator")
 
-# OSS CAD Suite path (override with OSS_CAD_SUITE env var)
+# OSS CAD Suite path (override with OSS_CAD_SUITE env var). Its bin/ is put on
+# PATH for every recipe, so yosys/verilator are found wherever the suite lives.
+# An active virtualenv stays first: the suite bundles its own python3/cocotb,
+# which must not shadow the project's (cocotb tests import kpugen).
 oss_cad_suite := env_var_or_default("OSS_CAD_SUITE", "/opt/oss-cad-suite")
+venv_bin := if env_var_or_default("VIRTUAL_ENV", "") != "" { env_var("VIRTUAL_ENV") / "bin" + ":" } else { "" }
+export PATH := venv_bin + oss_cad_suite / "bin" + ":" + env_var("PATH")
 
 # =============================================================================
 # Environment Setup

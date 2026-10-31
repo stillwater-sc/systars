@@ -162,28 +162,42 @@ class TestLocalAddr:
 
     def test_make_sp_addr(self):
         """Test scratchpad address construction."""
+        la = LocalAddr(SystolicConfig(sp_banks=4))
         # Bank 0, row 0
-        addr = LocalAddr.make_sp_addr(0, 0)
+        addr = la.make_sp_addr(0, 0)
         assert addr & (1 << 31) == 0  # Not accumulator
 
         # Bank 2, row 100
-        addr = LocalAddr.make_sp_addr(2, 100)
+        addr = la.make_sp_addr(2, 100)
         assert addr & (1 << 31) == 0  # Not accumulator
 
         # With read_full_row
-        addr = LocalAddr.make_sp_addr(0, 0, read_full_row=True)
+        addr = la.make_sp_addr(0, 0, read_full_row=True)
         assert addr & (1 << 29) != 0  # read_full_row set
 
     def test_make_acc_addr(self):
         """Test accumulator address construction."""
+        la = LocalAddr(SystolicConfig(acc_banks=2))
         # Bank 0, row 0
-        addr = LocalAddr.make_acc_addr(0, 0)
+        addr = la.make_acc_addr(0, 0)
         assert addr & (1 << 31) != 0  # Is accumulator
 
         # With accumulate flag
-        addr = LocalAddr.make_acc_addr(1, 50, accumulate=True)
+        addr = la.make_acc_addr(1, 50, accumulate=True)
         assert addr & (1 << 31) != 0  # Is accumulator
         assert addr & (1 << 30) != 0  # Accumulate set
+
+    @pytest.mark.parametrize("banks", [2, 4, 8])
+    def test_make_addr_round_trips_through_hardware_layout(self, banks):
+        """Bank is in the low bank_bits, row above it, for every bank and row."""
+        la = LocalAddr(SystolicConfig(sp_banks=banks, acc_banks=banks))
+        bank_bits = (banks - 1).bit_length()
+        for bank in range(banks):
+            for row in (0, 1, 2, 5):
+                for addr in (la.make_sp_addr(bank, row), la.make_acc_addr(bank, row)):
+                    data = addr & ((1 << LocalAddr.DATA_BITS) - 1)
+                    assert data & (banks - 1) == bank
+                    assert data >> bank_bits == row
 
     def test_make_garbage_addr(self):
         """Test garbage address construction."""

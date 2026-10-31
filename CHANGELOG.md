@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### Bugs found reviewing the kpugen port (2026-10-31)
+
+These were found in code review of branes-ai/embodied-ai-soc-generator#1, which ports this
+repository's systolic stack. Each RTL fix has a test that fails on the previous code.
+
+- **Accumulator**: accumulate writes were lost when `accumulate` dropped after the request cycle
+  (as `ExecuteController` drives it). Writes are now always pipelined, with a transparent
+  read-modify-write read. Accumulate adds each element separately (no carries between packed
+  elements), and activations apply per element (`memory/activation.py`)
+- **Store/top**: activation was applied twice (store ReLU + accumulator read activation driven
+  from the live command port) and to the whole packed row. It is now applied once, per element,
+  from the latched command. Load/Store reject rows wider than `dma_buswidth` (were silently
+  truncated)
+- **SystolicTop**: per-controller completion ports; the summary `completed` drops simultaneous
+  completions
+- **ExecuteController**: CONFIG decodes the latched `rs1`, not the live port
+- **DescriptorEngine**: transfers ended at half their length; multi-burst (> 256 beats) and
+  zero-length transfers
+- **StridedStreamReader / MatrixLoader**: could not elaborate (Python `if` on a `Signal`), packed
+  elements at a 32-bit stride, and `MatrixLoader.busy` was never driven
+- **SRAMReadScheduler**: missed the one-cycle `read_valid` pulse and hung
+- **LocalAddr**: `make_sp_addr`/`make_acc_addr` used the bank value's bit length as the row shift;
+  now instance methods using the configured bank bits
+- **SystolicConfig** validates row/bank geometry; **Matmul/Conv2d** reject non-power-of-two dims;
+  Conv2d no longer reports IDLE in `CALC_TILES`; `CONFIG_INPUT_DIMS` comment corrected
+- **Examples**: int8 wraparound (03-06), scratchpad overlap in 01 for size > 16, `--step` crash
+  in 02, workload-scaled cycle limit in conv 01, `run_all_gemm_demos.sh` runs from any directory
+- **Scripts/CI**: OSS CAD Suite installs through a private temp dir, with archive verification and
+  a staged replace (`bin/lib/oss-cad-suite.sh`); `$OSS_CAD_SUITE` honoured and on PATH for just
+  recipes (after the venv); non-root `just` install; docs deploy concurrency and permissions;
+  authenticated `setup-oss-cad-suite`; the Verilator pre-commit hook fails on errors; pytest
+  discovery no longer collects cocotb tests
+- **Tests**: PE tests now assert their results; new tests for accumulator row semantics,
+  descriptor-engine transfers, the read scheduler, LocalAddr layout, and reader elaboration
+
+### Known issues
+
+- The execute path cannot yet compute a GEMM end to end (B operand never read in `SystolicTop`,
+  COMPUTE result capture, Matmul/ExecuteController command encoding, ISA bank encoding, Conv2d
+  addressing, array skew). This is tracked in a separate issue.
+
 ### Added
 
 #### Repository Velocity Report Script (2025-12-23)

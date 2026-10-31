@@ -86,13 +86,13 @@ class SystolicArraySim:
         # Skewed A queues (row i delayed by i cycles)
         self.a_queue = []
         for i in range(self.size):
-            row_data = [None] * i + list(A[i, :]) + [None] * (self.size - 1)
+            row_data = [None] * i + [int(x) for x in A[i, :]] + [None] * (self.size - 1)
             self.a_queue.append(row_data)
 
         # Skewed B queues (col j delayed by j cycles)
         self.b_queue = []
         for j in range(self.size):
-            col_data = [None] * j + list(B[:, j]) + [None] * (self.size - 1)
+            col_data = [None] * j + [int(x) for x in B[:, j]] + [None] * (self.size - 1)
             self.b_queue.append(col_data)
 
     def step(self) -> bool:
