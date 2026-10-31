@@ -18,6 +18,7 @@ from amaranth import Module, Signal, signed
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
+from ..memory.activation import activate_row
 from ..util.commands import DmaOpcode
 
 
@@ -68,6 +69,14 @@ class StoreController(Component):
         self.config = config
         buswidth = config.dma_buswidth
         acc_width = config.acc_width
+        if acc_width > buswidth:
+            # One accumulator row is sent per DMA beat; a wider row would be
+            # silently truncated to its low dma_buswidth bits
+            raise ValueError(
+                f"StoreController: accumulator row ({acc_width} bits = {config.grid_cols * config.tile_cols}"
+                f" x {config.acc_bits}) is wider than dma_buswidth ({buswidth}); "
+                f"set dma_buswidth >= {acc_width}"
+            )
 
         super().__init__(
             {
@@ -187,15 +196,17 @@ class StoreController(Component):
             with m.Case(STATE_WAIT_VALID):  # noqa: SIM117
                 # Wait for accumulator read valid
                 with m.If(self.acc_read_valid):  # noqa: SIM117
-                    # Buffer the data (apply activation if needed)
-                    with m.If(activation_reg == 1):
-                        # ReLU: max(0, x)
-                        with m.If(self.acc_read_data >= 0):
-                            m.d.sync += data_buffer.eq(self.acc_read_data)
-                        with m.Else():
-                            m.d.sync += data_buffer.eq(0)
-                    with m.Else():
-                        m.d.sync += data_buffer.eq(self.acc_read_data)
+                    # Buffer the data, applying the latched activation to each
+                    # acc_bits element of the row (the accumulator's own read
+                    # activation is disabled by SystolicTop, so this is the only one)
+                    m.d.sync += data_buffer.eq(
+                        activate_row(
+                            self.acc_read_data,
+                            activation_reg,
+                            cfg.acc_bits,
+                            cfg.acc_width // cfg.acc_bits,
+                        )
+                    )
 
                     m.d.sync += data_valid_buffer.eq(1)
                     m.d.sync += state.eq(STATE_SEND_DATA)

@@ -22,9 +22,10 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# OSS CAD Suite version
+# OSS CAD Suite version and shared installer
 OSS_CAD_SUITE_VERSION="2025-12-12"
-OSS_CAD_SUITE_DATE=$(echo "$OSS_CAD_SUITE_VERSION" | tr -d '-')
+# shellcheck source=lib/oss-cad-suite.sh
+source "${SCRIPT_DIR}/lib/oss-cad-suite.sh"
 
 # Logging functions
 info() { echo -e "${BLUE}[INFO]${NC} $*"; }
@@ -105,30 +106,33 @@ if has_cmd just; then
     success "Just already installed: $(just --version)"
 else
     info "Installing Just task runner..."
-    curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
-    success "Just installed: $(just --version)"
+    if sudo apt-get install -y just >/dev/null 2>&1; then
+        success "Just installed from apt: $(just --version)"
+    else
+        # Not packaged on this release: use the official installer, downloaded
+        # to a private file (not piped into a shell), into a user-writable dir.
+        JUST_BIN_DIR="${HOME}/.local/bin"
+        mkdir -p "$JUST_BIN_DIR"
+        just_installer="$(mktemp)"
+        curl --proto '=https' --tlsv1.2 -sSf -o "$just_installer" https://just.systems/install.sh
+        bash "$just_installer" --to "$JUST_BIN_DIR"
+        rm -f "$just_installer"
+        export PATH="${JUST_BIN_DIR}:$PATH"
+        success "Just installed into ${JUST_BIN_DIR}: $(just --version)"
+        warn "Make sure ${JUST_BIN_DIR} is on your PATH in new shells"
+    fi
 fi
 
 # ============================================================================
 # OSS CAD Suite (Verilator, GHDL, Yosys)
 # ============================================================================
-OSS_CAD_SUITE_PATH="/opt/oss-cad-suite"
+OSS_CAD_SUITE_PATH="${OSS_CAD_SUITE:-/opt/oss-cad-suite}"
 
 if [[ -d "$OSS_CAD_SUITE_PATH" ]]; then
     success "OSS CAD Suite already installed at $OSS_CAD_SUITE_PATH"
 else
-    info "Installing OSS CAD Suite (Verilator, GHDL, Yosys)..."
-
-    OSS_CAD_TARBALL="oss-cad-suite-linux-x64-${OSS_CAD_SUITE_DATE}.tgz"
-    OSS_CAD_URL="https://github.com/YosysHQ/oss-cad-suite-build/releases/download/${OSS_CAD_SUITE_VERSION}/${OSS_CAD_TARBALL}"
-
-    info "Downloading from: $OSS_CAD_URL"
-    wget -q --show-progress -O "/tmp/${OSS_CAD_TARBALL}" "$OSS_CAD_URL"
-
-    info "Extracting to /opt..."
-    sudo tar -xzf "/tmp/${OSS_CAD_TARBALL}" -C /opt
-    rm "/tmp/${OSS_CAD_TARBALL}"
-
+    info "Installing OSS CAD Suite (Verilator, GHDL, Yosys) into $OSS_CAD_SUITE_PATH..."
+    install_oss_cad_suite "$OSS_CAD_SUITE_VERSION" "$OSS_CAD_SUITE_PATH"
     success "OSS CAD Suite installed"
 fi
 
@@ -172,8 +176,11 @@ success "Pre-commit hooks installed"
 # ============================================================================
 info "Patching venv activation script to include OSS CAD Suite..."
 ACTIVATE_SCRIPT="$PROJECT_ROOT/.venv/bin/activate"
-if ! grep -q "oss-cad-suite" "$ACTIVATE_SCRIPT"; then
-    sed -i 's|PATH="\$VIRTUAL_ENV/"bin":\$PATH"|PATH="$VIRTUAL_ENV/"bin":$PATH"\n# Add OSS CAD Suite to PATH if available\nif [ -d "/opt/oss-cad-suite/bin" ]; then\n    PATH="/opt/oss-cad-suite/bin:$PATH"\nfi|' "$ACTIVATE_SCRIPT"
+if ! grep -q "Add OSS CAD Suite to PATH" "$ACTIVATE_SCRIPT"; then
+    # Use the configured location ($OSS_CAD_SUITE), not a hardcoded /opt path
+    # Insert the suite *after* the venv's bin/: the suite bundles its own
+    # python3/cocotb, which must not shadow the venv's
+    sed -i "s|PATH=\"\\\$VIRTUAL_ENV/\"bin\":\\\$PATH\"|&\n# Add OSS CAD Suite to PATH if available (after the venv)\nif [ -d \"${OSS_CAD_SUITE_PATH}/bin\" ]; then\n    PATH=\"\$VIRTUAL_ENV/bin:${OSS_CAD_SUITE_PATH}/bin:\${PATH#\"\$VIRTUAL_ENV/bin:\"}\"\nfi|" "$ACTIVATE_SCRIPT"
     success "Patched activate script"
 else
     success "Activate script already patched"

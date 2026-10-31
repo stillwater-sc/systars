@@ -189,8 +189,10 @@ class DescriptorEngine(Component):
         desc_user_data = Signal(64)
 
         # Transfer state
-        transfer_beats_remaining = Signal(32)
-        transfer_beat_count = Signal(32)
+        transfer_beats_remaining = Signal(32)  # beats left in the whole transfer
+        transfer_beat_count = Signal(32)  # beats done in the whole transfer
+        burst_beats_left = Signal(9)  # beats left in the current (<= 256-beat) burst
+        transfer_is_fill = Signal()  # which REQ state to return to for the next burst
 
         # Fill pattern register
         fill_pattern = Signal(buswidth)
@@ -279,10 +281,14 @@ class DescriptorEngine(Component):
                     transfer_beat_count.eq(0),
                 ]
 
-                # Dispatch based on opcode
+                # Dispatch based on opcode (zero-length transfers move no data)
                 with m.Switch(desc_buffer[0:8]):
                     with m.Case(OP_MEMCPY):
-                        m.d.sync += state.eq(STATE_EXEC_MEMCPY_REQ)
+                        m.d.sync += transfer_is_fill.eq(0)
+                        with m.If(beats == 0):
+                            m.d.sync += state.eq(STATE_CHECK_CHAIN)
+                        with m.Else():
+                            m.d.sync += state.eq(STATE_EXEC_MEMCPY_REQ)
                     with m.Case(OP_FILL):
                         # Extract fill pattern (truncate or replicate to buswidth)
                         pattern_64 = desc_buffer[64:128]
@@ -292,7 +298,11 @@ class DescriptorEngine(Component):
                             # Replicate 64-bit pattern to fill buswidth
                             replications = buswidth // 64
                             m.d.sync += fill_pattern.eq(Cat(*[pattern_64] * replications))
-                        m.d.sync += state.eq(STATE_EXEC_FILL_REQ)
+                        m.d.sync += transfer_is_fill.eq(1)
+                        with m.If(beats == 0):
+                            m.d.sync += state.eq(STATE_CHECK_CHAIN)
+                        with m.Else():
+                            m.d.sync += state.eq(STATE_EXEC_FILL_REQ)
                     with m.Case(OP_FENCE):
                         # FENCE: just proceed to check chain
                         m.d.sync += state.eq(STATE_CHECK_CHAIN)
@@ -325,11 +335,15 @@ class DescriptorEngine(Component):
                 ]
 
                 with m.If(self.read_req_ready & self.write_req_ready):
-                    m.d.sync += state.eq(STATE_EXEC_MEMCPY_DATA)
+                    m.d.sync += [
+                        burst_beats_left.eq(capped_beats),
+                        state.eq(STATE_EXEC_MEMCPY_DATA),
+                    ]
 
             with m.Case(STATE_EXEC_MEMCPY_DATA):
-                # Stream data from read to write
-                is_last_beat = transfer_beat_count >= transfer_beats_remaining - 1
+                # Stream data from read to write. The burst ends after the beat
+                # count issued in MEMCPY_REQ (read_resp_last marks the same beat).
+                is_last_beat = burst_beats_left == 1
 
                 m.d.comb += [
                     self.read_resp_ready.eq(self.write_data_ready),
@@ -339,8 +353,11 @@ class DescriptorEngine(Component):
                 ]
 
                 with m.If(self.read_resp_valid & self.write_data_ready):
-                    m.d.sync += transfer_beat_count.eq(transfer_beat_count + 1)
-                    m.d.sync += transfer_beats_remaining.eq(transfer_beats_remaining - 1)
+                    m.d.sync += [
+                        transfer_beat_count.eq(transfer_beat_count + 1),
+                        transfer_beats_remaining.eq(transfer_beats_remaining - 1),
+                        burst_beats_left.eq(burst_beats_left - 1),
+                    ]
 
                     with m.If(self.read_resp_last | is_last_beat):
                         m.d.sync += state.eq(STATE_WAIT_WRITE)
@@ -363,11 +380,14 @@ class DescriptorEngine(Component):
                 ]
 
                 with m.If(self.write_req_ready):
-                    m.d.sync += state.eq(STATE_EXEC_FILL_DATA)
+                    m.d.sync += [
+                        burst_beats_left.eq(fill_capped_beats),
+                        state.eq(STATE_EXEC_FILL_DATA),
+                    ]
 
             with m.Case(STATE_EXEC_FILL_DATA):
                 # Send fill pattern data
-                is_last_beat = transfer_beat_count >= transfer_beats_remaining - 1
+                is_last_beat = burst_beats_left == 1
 
                 m.d.comb += [
                     self.write_data_valid.eq(1),
@@ -376,16 +396,25 @@ class DescriptorEngine(Component):
                 ]
 
                 with m.If(self.write_data_ready):
-                    m.d.sync += transfer_beat_count.eq(transfer_beat_count + 1)
-                    m.d.sync += transfer_beats_remaining.eq(transfer_beats_remaining - 1)
+                    m.d.sync += [
+                        transfer_beat_count.eq(transfer_beat_count + 1),
+                        transfer_beats_remaining.eq(transfer_beats_remaining - 1),
+                        burst_beats_left.eq(burst_beats_left - 1),
+                    ]
 
                     with m.If(is_last_beat):
                         m.d.sync += state.eq(STATE_WAIT_WRITE)
 
             with m.Case(STATE_WAIT_WRITE):  # noqa: SIM117
-                # Wait for write to complete
-                with m.If(self.write_done):  # noqa: SIM117
-                    m.d.sync += state.eq(STATE_CHECK_CHAIN)
+                # Wait for this burst's write to complete, then issue the next
+                # burst of a > 256-beat transfer, or finish the descriptor
+                with m.If(self.write_done):
+                    with m.If(transfer_beats_remaining == 0):
+                        m.d.sync += state.eq(STATE_CHECK_CHAIN)
+                    with m.Elif(transfer_is_fill):
+                        m.d.sync += state.eq(STATE_EXEC_FILL_REQ)
+                    with m.Else():
+                        m.d.sync += state.eq(STATE_EXEC_MEMCPY_REQ)
 
             with m.Case(STATE_CHECK_CHAIN):
                 # Check if we should continue to next descriptor

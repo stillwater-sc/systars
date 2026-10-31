@@ -201,8 +201,8 @@ def visualize_transpose(
 
     # Create test matrices
     np.random.seed(42)
-    A = np.arange(1, m * k + 1, dtype=np.int8).reshape(m, k)
-    B = np.arange(1, k * n + 1, dtype=np.int8).reshape(k, n) * 10
+    A = np.arange(1, m * k + 1, dtype=np.int32).reshape(m, k)  # int32: no wraparound
+    B = np.arange(1, k * n + 1, dtype=np.int32).reshape(k, n) * 10
 
     print(f"{c.BOLD}Goal:{c.RESET} Prepare matrices for systolic matmul C = A @ B")
     print(f"  A: {m}×{k} matrix (M×K)")
@@ -320,7 +320,7 @@ def animate_transpose(
     c = Colors
 
     np.random.seed(42)
-    A = np.arange(1, m * k + 1, dtype=np.int8).reshape(m, k)
+    A = np.arange(1, m * k + 1, dtype=np.int32).reshape(m, k)
 
     # Initialize
     dram = DRAM()

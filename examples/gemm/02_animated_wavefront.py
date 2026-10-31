@@ -556,8 +556,9 @@ def run_step_by_step(size: int = 3, use_color: bool = True):
     print(f"{c.BOLD}{'=' * 60}{c.RESET}")
 
     # Use very simple matrices for clarity
-    A = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.int8)[:size, :size]
-    B = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.int8)[:size, :size]
+    # (1..9 repeating) x identity, built at the requested size
+    A = (np.arange(size * size, dtype=np.int32) % 9 + 1).reshape(size, size)
+    B = np.eye(size, dtype=np.int32)
 
     print(f"\n{c.YELLOW}Matrix A:{c.RESET}")
     print(A)

@@ -14,7 +14,8 @@ Usage:
     args = parser.parse_args()
 
     # Use the unified accessor
-    delay = args.effective_delay  # Returns 0 if --fast, else args.delay
+    delay = get_effective_delay(args)  # Returns 0 if --fast, else args.delay
+    # or: AnimationArgs.from_namespace(args).effective_delay
 """
 
 from argparse import ArgumentParser, Namespace
@@ -247,7 +248,7 @@ def get_effective_delay(args: Namespace) -> int:
     """
     if getattr(args, "fast", False):
         return 0
-    return getattr(args, "delay", 200)
+    return getattr(args, "delay", 500)  # same default as add_animation_args
 
 
 def should_print(args: Namespace) -> bool:

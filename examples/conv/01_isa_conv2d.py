@@ -294,7 +294,9 @@ def run_conv2d_demo(
         # --- Monitor execution ---
         print("   Monitoring command generation...")
         cycle = 0
-        max_cycles = 2000  # Safety limit
+        # Safety limit scaled to the expected command count (>= 3 commands per K
+        # iteration and per output tile)
+        max_cycles = 200 + 8 * 3 * (total_k_iterations + total_output_tiles)
 
         while cycle < max_cycles:
             yield Tick()

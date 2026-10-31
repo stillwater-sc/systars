@@ -433,9 +433,6 @@ class MatrixLoader(Component):
             self.sp_write_mask.eq(loader.sp_write_mask),
         ]
 
-        # State machine for handling load_a and load_b commands
-        state = Signal(2, init=0)
-
         # Element size (assuming 1 byte = int8)
         elem_bytes = Signal(4, init=1)
 
@@ -451,11 +448,11 @@ class MatrixLoader(Component):
             loader.cmd_src_cols.eq(0),
             loader.cmd_elem_bytes.eq(elem_bytes),
             loader.cmd_id.eq(0),
-            self.busy.eq(state != 0),  # 0 = IDLE
             self.done.eq(0),
         ]
 
-        with m.FSM(init="IDLE"):
+        # State machine for handling load_a and load_b commands
+        with m.FSM(init="IDLE") as fsm:
             with m.State("IDLE"):
                 m.d.comb += [
                     self.load_a_ready.eq(1),
@@ -494,5 +491,8 @@ class MatrixLoader(Component):
             with m.State("LOAD_B"), m.If(loader.completed):
                 m.d.comb += self.done.eq(1)
                 m.next = "IDLE"
+
+        # Busy while a command is in progress or the loader is still transferring
+        m.d.comb += self.busy.eq(~fsm.ongoing("IDLE") | loader.busy)
 
         return m

@@ -16,6 +16,31 @@ from systars.config import Dataflow, SystolicConfig
 from systars.core.pe import PE, PEWithShift
 
 
+async def _mac(ctx, pe, a, b, d=0, *, dataflow, propagate):
+    """Apply one valid MAC cycle."""
+    ctx.set(pe.in_control_dataflow, dataflow)
+    ctx.set(pe.in_control_propagate, propagate)
+    ctx.set(pe.in_a, a)
+    ctx.set(pe.in_b, b)
+    ctx.set(pe.in_d, d)
+    ctx.set(pe.in_valid, 1)
+    await ctx.tick()
+    ctx.set(pe.in_valid, 0)
+
+
+def _read_reg(ctx, pe, propagate):
+    """out_c shows the register *not* selected by propagate: c1 when propagate=1."""
+    ctx.set(pe.in_control_propagate, propagate)
+    return ctx.get(pe.out_c)
+
+
+def _run(pe, testbench):
+    sim = Simulator(pe)
+    sim.add_clock(1e-6)
+    sim.add_testbench(testbench)
+    sim.run()
+
+
 class TestPE:
     """Test suite for the basic PE module."""
 
@@ -42,98 +67,42 @@ class TestPE:
         assert pe.config.acc_bits == 32
 
     def test_simple_mac(self, pe):
-        """Test a simple multiply-accumulate operation."""
-        results = []
+        """WS mode: c1 <= in_d + a * b = 10 + 3 * 4 = 22."""
+        out = {}
 
-        def testbench():
-            # Set up inputs: a=3, b=4, d=10
-            # Expected: 3 * 4 + 10 = 22
-            yield pe.in_a.eq(3)
-            yield pe.in_b.eq(4)
-            yield pe.in_d.eq(10)
-            yield pe.in_control_dataflow.eq(1)  # WS mode (uses in_d)
-            yield pe.in_control_propagate.eq(0)
-            yield pe.in_control_shift.eq(0)
-            yield pe.in_valid.eq(1)
-            yield Tick()
+        async def testbench(ctx):
+            await _mac(ctx, pe, 3, 4, 10, dataflow=1, propagate=0)
+            out["c1"] = _read_reg(ctx, pe, propagate=1)
 
-            # Wait for output
-            yield Tick()
-            out_c = yield pe.out_c
-            results.append(out_c)
-
-        sim = Simulator(pe)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        # In WS mode with in_d=10, the accumulated value should reflect MAC
-        # Note: exact behavior depends on implementation details
+        _run(pe, testbench)
+        assert out["c1"] == 22
 
     def test_accumulation_os_mode(self, pe):
-        """Test accumulation in output-stationary mode."""
-        accumulated_values = []
+        """OS mode accumulates into c1: 2 * 3 + 4 * 5 = 26."""
+        out = {}
 
-        def testbench():
-            # Output-stationary: accumulate into internal register
-            yield pe.in_control_dataflow.eq(0)  # OS mode
-            yield pe.in_control_propagate.eq(0)  # Use c1
+        async def testbench(ctx):
+            await _mac(ctx, pe, 2, 3, dataflow=0, propagate=0)
+            out["after_first"] = _read_reg(ctx, pe, propagate=1)
+            await _mac(ctx, pe, 4, 5, dataflow=0, propagate=0)
+            out["after_second"] = _read_reg(ctx, pe, propagate=1)
+            out["c2"] = _read_reg(ctx, pe, propagate=0)  # untouched
 
-            # First MAC: 2 * 3 = 6
-            yield pe.in_a.eq(2)
-            yield pe.in_b.eq(3)
-            yield pe.in_d.eq(0)
-            yield pe.in_valid.eq(1)
-            yield Tick()
-
-            # Second MAC: 4 * 5 = 20, accumulate with c1 (should be 6)
-            # Result: 6 + 20 = 26
-            yield pe.in_a.eq(4)
-            yield pe.in_b.eq(5)
-            yield pe.in_valid.eq(1)
-            yield Tick()
-
-            # Check output (c2 since propagate=0)
-            yield Tick()
-            out_c = yield pe.out_c
-            accumulated_values.append(out_c)
-
-        sim = Simulator(pe)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
+        _run(pe, testbench)
+        assert out == {"after_first": 6, "after_second": 26, "c2": 0}
 
     def test_propagate_toggle(self, pe):
-        """Test that propagate signal switches between c1 and c2."""
-        outputs = []
+        """propagate selects the register written (c1/c2); out_c shows the other one."""
+        out = {}
 
-        def testbench():
-            yield pe.in_control_dataflow.eq(0)  # OS mode
+        async def testbench(ctx):
+            await _mac(ctx, pe, 1, 1, dataflow=0, propagate=0)  # c1 = 1
+            await _mac(ctx, pe, 2, 2, dataflow=0, propagate=1)  # c2 = 4
+            out["c1"] = _read_reg(ctx, pe, propagate=1)
+            out["c2"] = _read_reg(ctx, pe, propagate=0)
 
-            # Write to c1 (propagate=0)
-            yield pe.in_control_propagate.eq(0)
-            yield pe.in_a.eq(1)
-            yield pe.in_b.eq(1)
-            yield pe.in_d.eq(0)
-            yield pe.in_valid.eq(1)
-            yield Tick()
-
-            # Write to c2 (propagate=1)
-            yield pe.in_control_propagate.eq(1)
-            yield pe.in_a.eq(2)
-            yield pe.in_b.eq(2)
-            yield pe.in_valid.eq(1)
-            yield Tick()
-
-            # Check outputs
-            yield Tick()
-            out1 = yield pe.out_c
-            outputs.append(out1)
-
-        sim = Simulator(pe)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
+        _run(pe, testbench)
+        assert out == {"c1": 1, "c2": 4}
 
     def test_passthrough_signals(self, pe):
         """Test that control signals pass through correctly."""
@@ -165,27 +134,17 @@ class TestPE:
         assert results["out_shift"] == 7
 
     def test_signed_multiplication(self, pe):
-        """Test multiplication with signed values."""
+        """Signed operands: -3 * 4 + 0 = -12, and -3 * -4 + -5 = 7."""
+        out = {}
 
-        def testbench():
-            yield pe.in_control_dataflow.eq(1)  # WS mode
-            yield pe.in_control_propagate.eq(0)
-            yield pe.in_valid.eq(1)
+        async def testbench(ctx):
+            await _mac(ctx, pe, -3, 4, 0, dataflow=1, propagate=0)
+            out["neg"] = _read_reg(ctx, pe, propagate=1)
+            await _mac(ctx, pe, -3, -4, -5, dataflow=1, propagate=0)
+            out["pos"] = _read_reg(ctx, pe, propagate=1)
 
-            # Test: -3 * 4 + 0 = -12
-            yield pe.in_a.eq(-3 & 0xFF)  # 8-bit signed
-            yield pe.in_b.eq(4)
-            yield pe.in_d.eq(0)
-            yield Tick()
-            yield Tick()
-
-            # Read accumulated value
-            # Note: exact location depends on dataflow implementation
-
-        sim = Simulator(pe)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
+        _run(pe, testbench)
+        assert out == {"neg": -12, "pos": 7}
 
 
 class TestPEWithShift:
@@ -209,57 +168,37 @@ class TestPEWithShift:
         assert pe is not None
 
     def test_rounding_shift(self, pe):
-        """Test rounding right shift."""
-        results = []
+        """Rounding right shift: (24 + (1 << 3)) >> 4 = 2."""
+        out = {}
 
-        def testbench():
-            yield pe.in_control_dataflow.eq(1)  # WS
-            yield pe.in_control_propagate.eq(0)
-            yield pe.in_control_shift.eq(4)  # Shift by 4 bits
-            yield pe.in_valid.eq(1)
+        async def testbench(ctx):
+            ctx.set(pe.in_control_shift, 4)
+            await _mac(ctx, pe, 6, 4, 0, dataflow=1, propagate=0)  # c1 = 24
+            _read_reg(ctx, pe, propagate=1)
+            await ctx.tick()  # shift amount is registered (out_control_shift)
+            out["shifted"] = ctx.get(pe.out_c_shifted)
 
-            # Value that would round: 24 >> 4 = 1 (with rounding: 24 + 8 = 32 >> 4 = 2)
-            yield pe.in_a.eq(6)
-            yield pe.in_b.eq(4)  # 6 * 4 = 24
-            yield pe.in_d.eq(0)
-            yield Tick()
-            yield Tick()
-
-            shifted = yield pe.out_c_shifted
-            results.append(shifted)
-
-        sim = Simulator(pe)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
+        _run(pe, testbench)
+        assert out["shifted"] == 2
 
     def test_saturation(self, pe):
-        """Test output saturation."""
-        results = []
+        """100 * 100 = 10000 saturates to the 8-bit output range: +127 / -128."""
+        out = {}
 
-        def testbench():
-            yield pe.in_control_dataflow.eq(1)
-            yield pe.in_control_propagate.eq(0)
-            yield pe.in_control_shift.eq(0)  # No shift
-            yield pe.in_valid.eq(1)
+        async def testbench(ctx):
+            ctx.set(pe.in_control_shift, 0)
+            await _mac(ctx, pe, 100, 100, 0, dataflow=1, propagate=0)
+            _read_reg(ctx, pe, propagate=1)
+            await ctx.tick()
+            out["pos"] = ctx.get(pe.out_c_shifted)
+            ctx.set(pe.in_control_propagate, 0)
+            await _mac(ctx, pe, -100, 100, 0, dataflow=1, propagate=0)
+            _read_reg(ctx, pe, propagate=1)
+            await ctx.tick()
+            out["neg"] = ctx.get(pe.out_c_shifted)
 
-            # Large multiplication that would overflow 8-bit output
-            yield pe.in_a.eq(100)
-            yield pe.in_b.eq(100)  # 10000, exceeds 127
-            yield pe.in_d.eq(0)
-            yield Tick()
-            yield Tick()
-
-            shifted = yield pe.out_c_shifted
-            results.append(shifted)
-
-        sim = Simulator(pe)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        # Should be saturated to max value (127 for signed 8-bit)
-        # Note: depends on exact implementation
+        _run(pe, testbench)
+        assert out == {"pos": 127, "neg": -128}
 
 
 class TestPEVerilogGeneration:

@@ -188,8 +188,7 @@ class LocalAddr:
             & addr[LocalAddr.READ_FULL_ROW_BIT]
         )
 
-    @staticmethod
-    def make_sp_addr(bank: int, row: int, read_full_row: bool = False) -> int:
+    def make_sp_addr(self, bank: int, row: int, read_full_row: bool = False) -> int:
         """
         Create a scratchpad address from components.
 
@@ -201,14 +200,14 @@ class LocalAddr:
         Returns:
             32-bit address integer
         """
-        addr = bank | (row << max(1, (bank).bit_length() if bank > 0 else 1))
+        # Bank in the low sp_bank_bits, row above it (matches the hardware decode)
+        addr = bank | (row << self.sp_bank_bits)
         if read_full_row:
             addr |= 1 << LocalAddr.READ_FULL_ROW_BIT
         return addr
 
-    @staticmethod
     def make_acc_addr(
-        bank: int, row: int, accumulate: bool = False, read_full_row: bool = False
+        self, bank: int, row: int, accumulate: bool = False, read_full_row: bool = False
     ) -> int:
         """
         Create an accumulator address from components.
@@ -222,7 +221,8 @@ class LocalAddr:
         Returns:
             32-bit address integer
         """
-        addr = bank | (row << max(1, (bank).bit_length() if bank > 0 else 1))
+        # Bank in the low acc_bank_bits, row above it (matches the hardware decode)
+        addr = bank | (row << self.acc_bank_bits)
         addr |= 1 << LocalAddr.IS_ACC_BIT  # Mark as accumulator
         if accumulate:
             addr |= 1 << LocalAddr.ACCUMULATE_BIT

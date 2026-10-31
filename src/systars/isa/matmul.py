@@ -131,6 +131,9 @@ class Matmul(Component):
 
         # Array dimension (assume square for simplicity)
         self.dim = config.grid_rows * config.tile_rows
+        if self.dim & (self.dim - 1):
+            # Tile offsets and counts are computed with shifts by log2(dim)
+            raise ValueError(f"Matmul requires a power-of-two array dimension, got {self.dim}")
 
         ports = {
             # Configuration interface

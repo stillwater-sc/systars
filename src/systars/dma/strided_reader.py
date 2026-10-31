@@ -230,8 +230,19 @@ class StridedStreamReader(Component):
             with m.State("ISSUE_STRIDED"):
                 m.d.comb += state.eq(STATE_ISSUE_STRIDED)
 
-                # Issue single-element read at current address
-                arsize = (elem_bytes - 1).bit_length() if elem_bytes > 0 else 0
+                # Issue single-element read at current address.
+                # AXI size = log2(bytes per element); elem_bytes is a runtime
+                # signal, so decode it in hardware (1, 2, 4, 8 bytes).
+                arsize = Signal(3)
+                with m.Switch(elem_bytes):
+                    with m.Case(2):
+                        m.d.comb += arsize.eq(1)
+                    with m.Case(4):
+                        m.d.comb += arsize.eq(2)
+                    with m.Case(8):
+                        m.d.comb += arsize.eq(3)
+                    with m.Default():
+                        m.d.comb += arsize.eq(0)
 
                 m.d.comb += [
                     self.mem_arvalid.eq(1),
@@ -270,15 +281,21 @@ class StridedStreamReader(Component):
             with m.State("OUTPUT"):
                 m.d.comb += state.eq(STATE_OUTPUT)
 
-                # Pack accumulated elements into output
-                # Elements are packed [elem_0, elem_1, ...] in resp_data
+                # Pack gathered elements into a scratchpad row: [elem_0, elem_1, ...]
+                # at the scratchpad element width (input_bits), the same layout
+                # ExecuteController unpacks. (accum_buffer holds up to
+                # max_elem_bits per element; only the low input_bits are a
+                # scratchpad element.)
                 packed_data = Signal(cfg.sp_width)
+                sp_elem_bits = cfg.input_bits
 
                 for i in range(self.max_elements):
-                    start_bit = i * max_elem_bits
-                    end_bit = start_bit + max_elem_bits
+                    start_bit = i * sp_elem_bits
+                    end_bit = start_bit + sp_elem_bits
                     if end_bit <= cfg.sp_width:
-                        m.d.comb += packed_data[start_bit:end_bit].eq(accum_buffer[i])
+                        m.d.comb += packed_data[start_bit:end_bit].eq(
+                            accum_buffer[i][:sp_elem_bits]
+                        )
 
                 m.d.comb += [
                     self.resp_valid.eq(1),

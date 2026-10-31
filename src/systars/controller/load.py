@@ -65,6 +65,13 @@ class LoadController(Component):
         self.config = config
         buswidth = config.dma_buswidth
         sp_width = config.sp_width
+        if sp_width > buswidth:
+            # One scratchpad row is written per DMA beat; a wider row would only
+            # receive the low dma_buswidth bits
+            raise ValueError(
+                f"LoadController: scratchpad row ({sp_width} bits) is wider than "
+                f"dma_buswidth ({buswidth}); set dma_buswidth >= {sp_width}"
+            )
         mask_width = sp_width // 8
 
         super().__init__(

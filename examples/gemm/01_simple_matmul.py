@@ -461,7 +461,8 @@ def run_demo(matrix_size: int = 4, run_rtl: bool = False):
 
     # Scratchpad addresses (local to accelerator)
     A_SP_ADDR = 0x00
-    B_SP_ADDR = 0x10
+    a_sp_beats = (M * K + config.bytes_per_beat - 1) // config.bytes_per_beat
+    B_SP_ADDR = A_SP_ADDR + a_sp_beats  # B directly after A (no overlap for any size)
 
     # Accumulator address
     C_ACC_ADDR = 0x00

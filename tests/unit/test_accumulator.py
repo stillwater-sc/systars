@@ -122,7 +122,9 @@ class TestAccumulatorBank:
             yield bank.write_en.eq(1)
             yield Tick()
 
+            # Drop accumulate together with write_en, as ExecuteController does
             yield bank.write_en.eq(0)
+            yield bank.accumulate.eq(0)
             yield Tick()
             yield Tick()
 
@@ -394,3 +396,81 @@ class TestAccumulatorVerilogGeneration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestAccumulatorBankRowSemantics:
+    """Accumulate and activation operate on each acc_bits element of a packed row."""
+
+    @pytest.fixture
+    def cfg(self):
+        # 2 elements of 32 bits per row
+        return SystolicConfig(
+            grid_rows=2, grid_cols=2, acc_banks=2, acc_capacity_kb=1, acc_latency=1
+        )
+
+    @staticmethod
+    def pack(values, bits=32):
+        return sum((v % (1 << bits)) << (i * bits) for i, v in enumerate(values))
+
+    @staticmethod
+    def unpack(value, n, bits=32):
+        out = []
+        for i in range(n):
+            v = (value >> (i * bits)) & ((1 << bits) - 1)
+            out.append(v - (1 << bits) if v >> (bits - 1) else v)
+        return out
+
+    def _run(self, bank, writes, activation=Activation.NONE.value):
+        """Issue (data, accumulate) writes to row 0 on consecutive cycles, then read row 0."""
+        out = {}
+
+        async def testbench(ctx):
+            for data, acc in writes:
+                ctx.set(bank.write_addr, 0)
+                ctx.set(bank.write_data, data)
+                ctx.set(bank.accumulate, acc)
+                ctx.set(bank.write_en, 1)
+                await ctx.tick()
+            ctx.set(bank.write_en, 0)
+            ctx.set(bank.accumulate, 0)
+            await ctx.tick()
+            await ctx.tick()
+            ctx.set(bank.read_addr, 0)
+            ctx.set(bank.read_activation, activation)
+            ctx.set(bank.read_en, 1)
+            await ctx.tick()
+            ctx.set(bank.read_en, 0)
+            out["valid"] = ctx.get(bank.read_valid)
+            out["data"] = ctx.get(bank.read_data)
+
+        sim = Simulator(bank)
+        sim.add_clock(1e-6)
+        sim.add_testbench(testbench)
+        sim.run()
+        assert out["valid"] == 1
+        return out["data"] % (1 << bank.config.acc_width)
+
+    def test_back_to_back_accumulates_same_row(self, cfg):
+        bank = AccumulatorBank(cfg, bank_id=0)
+        p = self.pack
+        data = self._run(bank, [(p([100, 1]), 0), (p([50, 2]), 1), (p([25, 3]), 1)])
+        assert self.unpack(data, 2) == [175, 6]
+
+    def test_accumulate_does_not_carry_between_elements(self, cfg):
+        bank = AccumulatorBank(cfg, bank_id=0)
+        p = self.pack
+        data = self._run(bank, [(p([-1, 10]), 0), (p([1, 0]), 1)])
+        assert self.unpack(data, 2) == [0, 10]
+
+    @pytest.mark.parametrize(
+        ("activation", "expected"),
+        [
+            (Activation.NONE.value, [-5, 9]),
+            (Activation.RELU.value, [0, 9]),
+            (Activation.RELU6.value, [0, 6]),
+        ],
+    )
+    def test_activation_is_per_element(self, cfg, activation, expected):
+        bank = AccumulatorBank(cfg, bank_id=0)
+        data = self._run(bank, [(self.pack([-5, 9]), 0)], activation=activation)
+        assert self.unpack(data, 2) == expected

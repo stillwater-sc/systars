@@ -587,3 +587,108 @@ class TestDescriptorEngineVerilogGeneration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestDescriptorEngineTransfers:
+    """Run whole transfers against a memory model and check every beat moves."""
+
+    @pytest.mark.parametrize(
+        ("opcode", "beats"),
+        [
+            (DmaOpcode.MEMCPY, 1),
+            (DmaOpcode.MEMCPY, 4),
+            (DmaOpcode.MEMCPY, 300),  # two bursts: 256 + 44
+            (DmaOpcode.FILL, 4),
+            (DmaOpcode.FILL, 300),
+        ],
+    )
+    def test_full_transfer(self, opcode, beats):
+        config = SystolicConfig(dma_buswidth=128, dma_maxbytes=64, grid_rows=4, grid_cols=4)
+        engine = DescriptorEngine(config)
+        bpb = config.dma_buswidth // 8
+        desc_bytes = DmaDescriptor(
+            opcode=opcode, length=beats * bpb, src_addr=0x10000, dst_addr=0x80000
+        ).to_bytes()
+        log = {"read_bursts": [], "write_bursts": [], "wlast_at": [], "written": 0}
+        state = {"done": False, "finished": False}
+
+        async def memory(ctx):
+            """Accept requests; stream read bursts; ack each write burst."""
+            read_left, read_idx, write_count, pending_done = 0, 0, 0, False
+            ctx.set(engine.fetch_req_ready, 1)
+            ctx.set(engine.read_req_ready, 1)
+            ctx.set(engine.write_req_ready, 1)
+            ctx.set(engine.write_data_ready, 1)
+            fetch_left = 0
+            async for _c, _r, *v in ctx.tick().sample(
+                engine.fetch_req_valid,
+                engine.fetch_resp_ready,
+                engine.read_req_valid,
+                engine.read_req_len,
+                engine.read_resp_ready,
+                engine.write_req_valid,
+                engine.write_req_len,
+                engine.write_data_valid,
+                engine.write_data_last,
+            ):
+                f_req, f_ready, r_req, r_len, r_ready, w_req, w_len, w_valid, w_last = v
+                ctx.set(engine.write_done, pending_done)
+                pending_done = False
+                # descriptor fetch
+                if f_req:
+                    fetch_left, fidx = 64 // bpb, 0
+                if fetch_left and f_ready:
+                    fetch_left -= 1
+                if r_req:
+                    read_left, read_idx = r_len + 1, 0
+                    log["read_bursts"].append(r_len + 1)
+                elif read_left and r_ready:
+                    read_left -= 1
+                    read_idx += 1
+                if w_req:
+                    log["write_bursts"].append(w_len + 1)
+                    write_count = 0
+                if w_valid:
+                    write_count += 1
+                    log["written"] += 1
+                    if w_last:
+                        log["wlast_at"].append(write_count)
+                        pending_done = True
+                # drive descriptor fetch response
+                total_fetch = 64 // bpb
+                ctx.set(engine.fetch_resp_valid, bool(fetch_left))
+                if fetch_left:
+                    fidx = total_fetch - fetch_left
+                    chunk = desc_bytes[fidx * bpb : (fidx + 1) * bpb]
+                    ctx.set(engine.fetch_resp_data, int.from_bytes(chunk, "little"))
+                    ctx.set(engine.fetch_resp_last, fetch_left == 1)
+                # drive read data
+                ctx.set(engine.read_resp_valid, bool(read_left))
+                ctx.set(engine.read_resp_data, read_idx)
+                ctx.set(engine.read_resp_last, read_left == 1)
+
+        async def testbench(ctx):
+            ctx.set(engine.desc_addr, 0x3000)
+            ctx.set(engine.start, 1)
+            await ctx.tick()
+            ctx.set(engine.start, 0)
+            for _ in range(3000):
+                await ctx.tick()
+                if ctx.get(engine.done) or not ctx.get(engine.busy):
+                    state["done"] = True
+                    break
+            state["finished"] = True
+
+        sim = Simulator(engine)
+        sim.add_clock(1e-6)
+        sim.add_process(memory)
+        sim.add_testbench(testbench)
+        sim.run_until(5000e-6)
+
+        assert state["finished"] and state["done"], "descriptor did not complete"
+        expected_bursts = [min(256, beats - i) for i in range(0, beats, 256)]
+        assert log["write_bursts"] == expected_bursts
+        if opcode == DmaOpcode.MEMCPY:
+            assert log["read_bursts"] == expected_bursts
+        assert log["written"] == beats, f"wrote {log['written']} of {beats} beats"
+        assert log["wlast_at"] == expected_bursts, "wlast must mark the last beat of each burst"

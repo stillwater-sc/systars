@@ -448,7 +448,8 @@ class TestStoreControllerVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        config = SystolicConfig(dma_buswidth=128, dma_maxbytes=64)
+        # 4 x 32-bit accumulator row = 128 bits: one row per 128-bit DMA beat
+        config = SystolicConfig(grid_rows=4, grid_cols=4, dma_buswidth=128, dma_maxbytes=64)
         ctrl = StoreController(config)
 
         output = verilog.convert(ctrl, name="StoreController")
@@ -460,6 +461,36 @@ class TestStoreControllerVerilogGeneration:
         verilog_file = tmp_path / "store_controller.v"
         verilog_file.write_text(output)
         assert verilog_file.exists()
+
+
+def test_rejects_rows_wider_than_dma_bus():
+    """A row wider than the DMA bus would be silently truncated: reject the config."""
+    with pytest.raises(ValueError, match="wider than dma_buswidth"):
+        StoreController(SystolicConfig(grid_rows=16, grid_cols=16, dma_buswidth=128))
+
+
+def test_default_config_dma_width_fits_rows():
+    """The default config picks a power-of-two DMA width that fits a row."""
+    config = SystolicConfig()
+    assert config.dma_buswidth >= max(config.sp_width, config.acc_width)
+    assert config.dma_buswidth & (config.dma_buswidth - 1) == 0
+    assert SystolicConfig(dma_buswidth=128, grid_rows=4, grid_cols=4).dma_buswidth == 128
+
+
+def test_default_config_systolic_top_converts():
+    """With the automatic DMA width, the default SystolicTop converts to Verilog."""
+    from amaranth._toolchain.yosys import YosysError, find_yosys
+
+    try:
+        find_yosys(lambda ver: ver >= (0, 40))
+    except YosysError:
+        pytest.skip("Yosys not found")
+    from amaranth.back import verilog
+
+    from systars.top import SystolicTop
+
+    output = verilog.convert(SystolicTop(SystolicConfig()), name="SystolicTop")
+    assert "module SystolicTop" in output
 
 
 if __name__ == "__main__":

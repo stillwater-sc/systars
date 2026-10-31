@@ -10,6 +10,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: these jobs only read the repository
+permissions:
+  contents: read
+
 jobs:
   python-lint:
     name: Python Lint
@@ -54,6 +58,8 @@ jobs:
       - name: Install OSS CAD Suite
         uses: YosysHQ/setup-oss-cad-suite@v3
         with:
+          # Authenticated release lookup: avoids the shared-runner API rate limit
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           version: "2025-12-12"
 
       - name: Install project

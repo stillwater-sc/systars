@@ -586,12 +586,12 @@ def visualize_dataflow(
     # Create skewed input queues (same as wavefront demo)
     a_queue = []
     for i in range(size):
-        row_data = [None] * i + list(A[i, :]) + [None] * (size - 1)
+        row_data = [None] * i + [int(x) for x in A[i, :]] + [None] * (size - 1)
         a_queue.append(row_data)
 
     b_queue = []
     for j in range(size):
-        col_data = [None] * j + list(B[:, j]) + [None] * (size - 1)
+        col_data = [None] * j + [int(x) for x in B[:, j]] + [None] * (size - 1)
         b_queue.append(col_data)
 
     total_cycles = 2 * size - 1 + size
