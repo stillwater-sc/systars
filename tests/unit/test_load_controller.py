@@ -341,15 +341,17 @@ class TestLoadControllerVerilogGeneration:
         assert verilog_file.exists()
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
-
 class TestStridedAndTransposeElaboration:
     """StridedStreamReader / MatrixLoader must elaborate and convert to Verilog."""
 
     @pytest.mark.parametrize("component", ["StridedStreamReader", "MatrixLoader"])
     def test_elaborates_to_verilog(self, component):
+        from amaranth._toolchain.yosys import YosysError, find_yosys
+
+        try:
+            find_yosys(lambda ver: ver >= (0, 40))
+        except YosysError:
+            pytest.skip("Yosys not found")
         from amaranth.back import verilog
 
         from systars.controller.load_transpose import MatrixLoader
@@ -359,3 +361,7 @@ class TestStridedAndTransposeElaboration:
         config = SystolicConfig(grid_rows=4, grid_cols=4, dma_buswidth=128)
         output = verilog.convert(cls(config), name=component)
         assert f"module {component}" in output
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
