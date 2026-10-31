@@ -146,8 +146,10 @@ class SystolicConfig:
     dma_maxbytes: int = 64
     """Maximum bytes per DMA transaction (typically cache line size)."""
 
-    dma_buswidth: int = 128
-    """DMA bus width in bits."""
+    dma_buswidth: int = 0
+    """DMA bus width in bits. 0 (default) = automatic: the widest scratchpad or
+    accumulator row, at least 128 bits, rounded up to a power of two. The DMA
+    moves one row per beat, so an explicit width must be at least that wide."""
 
     max_in_flight_reqs: int = 16
     """Maximum number of in-flight DMA requests."""
@@ -285,6 +287,9 @@ class SystolicConfig:
 
     def __post_init__(self):
         """Validate configuration parameters."""
+        if self.dma_buswidth == 0:
+            widest = max(128, self.sp_width, self.acc_width)
+            self.dma_buswidth = 1 << (widest - 1).bit_length()
         assert self.grid_rows > 0, "grid_rows must be positive"
         assert self.grid_cols > 0, "grid_cols must be positive"
         assert self.tile_rows > 0, "tile_rows must be positive"

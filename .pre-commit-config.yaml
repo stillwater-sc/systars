@@ -65,7 +65,7 @@ repos:
       # Generated RTL (gen/, gitignored) is linted by `just lint-rtl` and CI.
       - id: verilator-lint
         name: Verilator RTL Lint
-        entry: bash -c 'if ! command -v verilator >/dev/null 2>&1; then echo "verilator not found; skipping RTL lint (CI runs it)"; exit 0; fi; just lint-rtl-hand'
+        entry: bash -c 'PATH="${OSS_CAD_SUITE:-/opt/oss-cad-suite}/bin:$PATH"; if ! command -v verilator >/dev/null 2>&1; then echo "verilator not found; skipping RTL lint (CI runs it)"; exit 0; fi; just lint-rtl-hand'
         language: system
         files: \.(v|sv)$
         pass_filenames: false

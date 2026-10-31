@@ -471,3 +471,16 @@ def test_rejects_rows_wider_than_dma_bus():
     """A row wider than the DMA bus would be silently truncated: reject the config."""
     with pytest.raises(ValueError, match="wider than dma_buswidth"):
         StoreController(SystolicConfig(grid_rows=16, grid_cols=16, dma_buswidth=128))
+
+
+def test_default_config_dma_width_fits_rows():
+    """The default config picks a DMA width that fits a row, so SystolicTop elaborates."""
+    from amaranth.back import verilog
+
+    from systars.top import SystolicTop
+
+    config = SystolicConfig()
+    assert config.dma_buswidth >= max(config.sp_width, config.acc_width)
+    assert config.dma_buswidth & (config.dma_buswidth - 1) == 0
+    assert SystolicConfig(dma_buswidth=128, grid_rows=4, grid_cols=4).dma_buswidth == 128
+    assert "module SystolicTop" in verilog.convert(SystolicTop(config), name="SystolicTop")
