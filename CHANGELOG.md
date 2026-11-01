@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RTL wavefront animation** (`src/systars/wavefront.py`, `examples/gemm/08_rtl_wavefront.py`,
+  2026-11-01; ported from branes-ai/embodied-ai-soc-generator#12). Runs the real
+  `SystolicArray` in simulation, records what every PE sees in every cycle, and checks every PE
+  in every stream cycle (and `out_last`, and the result) against the predicted wavefront. Renders text frames and an animated SVG, each cell showing which k or
+  m is there (read back from the RTL's values), with the PEArray boundaries marked.
+  `tests/unit/test_wavefront.py` runs the check on 7 shapes, OS and WS, and shows that a skew
+  bug is caught. Two SVGs are in [the wavefront page](docs/wavefront-animation.md#wavefronts-from-the-rtl).
+  The existing examples 02–05 animate a Python model, not the RTL
+
 ### Fixed
 
 #### SystolicTop computes a GEMM end to end (2026-11-01)

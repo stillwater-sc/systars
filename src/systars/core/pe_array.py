@@ -62,6 +62,7 @@ class PEArray(Component):
         rows, cols = self.config.tile_rows, self.config.tile_cols
 
         pes = [[PE(self.config) for _ in range(cols)] for _ in range(rows)]
+        self.pes = pes  # the PEs of the last elaboration (read by ``wavefront`` tracing)
         for r in range(rows):
             for c in range(cols):
                 pe = pes[r][c]
