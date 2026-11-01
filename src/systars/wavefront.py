@@ -59,6 +59,8 @@ class Trace:
     B: np.ndarray
     C: np.ndarray  # the result as the RTL produced it
     frames: list[Frame] = field(default_factory=list)
+    latency: int = 0  # SystolicArray.latency
+    last_cycles: list[int] = field(default_factory=list)  # stream cycles with out_last high
 
     @property
     def rows(self) -> int:
@@ -81,9 +83,19 @@ class Trace:
         return index if 0 <= index < n else None
 
     def check(self) -> list[str]:
-        """Every place the RTL departs from the predicted wavefront (empty: correct)."""
+        """Every place the RTL departs from the predicted wavefront (empty: correct).
+
+        Checks every PE in every stream cycle, when ``out_last`` fired, and the result.
+        Preload and drain frames are recorded for drawing but not checked cycle by cycle.
+        """
         problems = []
         A, B = self.A, self.B
+        n = A.shape[1] if self.dataflow == OS else A.shape[0]
+        expected_last = [n - 1 + self.latency] if n else []
+        if self.last_cycles != expected_last:
+            problems.append(
+                f"out_last in stream cycles {self.last_cycles}, expected {expected_last}"
+            )
         for f in self.frames:
             if f.phase != "stream":
                 continue
@@ -148,14 +160,14 @@ def label_operands(config: SystolicConfig, dataflow: int, n: int, *, seed: int =
     if dataflow == OS:
         if rows * n > 127 or cols * n > 128:
             raise ValueError("labelled OS operands need rows * n <= 127 and cols * n <= 128")
-        A = np.array([[1 + i * n + k for k in range(n)] for i in range(rows)])
-        B = np.array([[-(1 + j * n + k) for j in range(cols)] for k in range(n)])
-        return A, B
+        A = np.array([[1 + i * n + k for k in range(n)] for i in range(rows)], dtype=np.int64)
+        B = np.array([[-(1 + j * n + k) for j in range(cols)] for k in range(n)], dtype=np.int64)
+        return A.reshape(rows, n), B.reshape(n, cols)
     if n * rows > 127:
         raise ValueError("labelled WS operands need n * rows <= 127")
-    A = np.array([[1 + m * rows + r for r in range(rows)] for m in range(n)])
+    A = np.array([[1 + m * rows + r for r in range(rows)] for m in range(n)], dtype=np.int64)
     W = rng.integers(-8, 8, (rows, cols))
-    return A, W
+    return A.reshape(n, rows), W
 
 
 def record(config: SystolicConfig, dataflow: int, A, B) -> Trace:
@@ -169,7 +181,7 @@ def record(config: SystolicConfig, dataflow: int, A, B) -> Trace:
     dut = SystolicArray(config)
     rows = config.grid_rows * config.tile_rows
     cols = config.grid_cols * config.tile_cols
-    trace = Trace(config, dataflow, A, B, np.zeros((0, cols), dtype=np.int64))
+    trace = Trace(config, dataflow, A, B, np.zeros((0, cols), dtype=np.int64), latency=dut.latency)
     sim = Simulator(dut)  # elaborates the design, so the PE references below exist
     pes = [
         [
@@ -208,8 +220,10 @@ def record(config: SystolicConfig, dataflow: int, A, B) -> Trace:
     async def run_os(ctx):
         k_dim = A.shape[1]
         drive(ctx, in_control_dataflow=OS)
-        cycle, seen_last = 0, False
-        while not seen_last:
+        # The last product reaches the bottom-right PEArray in cycle k_dim - 1 + latency.
+        # A fixed range (not "until out_last") keeps a control-path bug from hanging
+        # the trace; check() then reports the missing out_last.
+        for cycle in range(k_dim + dut.latency):
             streaming = cycle < k_dim
             drive(ctx, in_valid=streaming, in_last=cycle == k_dim - 1)
             for i in range(rows):
@@ -217,9 +231,10 @@ def record(config: SystolicConfig, dataflow: int, A, B) -> Trace:
             for j in range(cols):
                 drive(ctx, **{f"in_b_{j}": B[cycle, j] if streaming else 0})
             snapshot(ctx, cycle, "stream")
-            seen_last = ctx.get(dut.out_last)
+            if ctx.get(dut.out_last):
+                trace.last_cycles.append(cycle)
             await ctx.tick()
-            cycle += 1
+        cycle = k_dim + dut.latency
         drive(ctx, in_valid=0, in_last=0, in_shift=1)
         drained = []
         for _ in range(rows):
@@ -246,6 +261,8 @@ def record(config: SystolicConfig, dataflow: int, A, B) -> Trace:
             for i in range(rows):
                 drive(ctx, **{f"in_a_{i}": A[cycle, i] if streaming else 0})
             snapshot(ctx, cycle, "stream")
+            if ctx.get(dut.out_last):
+                trace.last_cycles.append(cycle)
             if ctx.get(dut.out_valid):
                 out.append([ctx.get(getattr(dut, f"out_psum_{j}")) for j in range(cols)])
             await ctx.tick()

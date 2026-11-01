@@ -4,7 +4,7 @@ This document explains the wavefront data flow pattern in systolic arrays and ho
 
 > The visualization tools below animate a Python model of a textbook array, where each PE is its
 > own pipeline stage. The generated RTL registers only at PEArray boundaries. For animations of
-> the RTL itself, checked cycle by cycle, see
+> the RTL itself, checked against the predicted wavefront, see
 > [Wavefronts from the RTL](#wavefronts-from-the-rtl).
 
 ## Table of Contents
@@ -364,8 +364,10 @@ termtosvg -c "python examples/gemm/02_animated_wavefront.py --size 3"
 
 ## Wavefronts from the RTL
 
-`systars.wavefront` runs the `SystolicArray` RTL in simulation, records what every PE sees in
-every cycle, and checks it against the predicted wavefront:
+`systars.wavefront` runs the `SystolicArray` RTL in simulation and records what every PE sees in
+every cycle. It checks every PE in every stream cycle against the predicted wavefront, along with
+when `out_last` fires and the result (the preload and drain frames are drawn, not checked cycle by
+cycle):
 
 - output-stationary: A[i, k] meets B[k, j] at PE(i, j) in cycle `k + ti + tj`, where `ti` and
   `tj` are the PEArray row and column;

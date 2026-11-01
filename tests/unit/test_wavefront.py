@@ -87,3 +87,29 @@ def test_label_operands_limits():
     cfg = config((4, 4, 2, 2))  # 8x8 PEs
     with pytest.raises(ValueError, match="rows \\* n"):
         label_operands(cfg, OS, 20)
+
+
+@pytest.mark.parametrize("dataflow", [OS, WS], ids=["os", "ws"])
+def test_zero_length_run_terminates(dataflow):
+    cfg = config((2, 2, 1, 1))
+    A, B = label_operands(cfg, dataflow, 0)
+    trace = record(cfg, dataflow, A, B)
+    assert trace.check() == []
+    assert trace.C.shape == ((0, 2) if dataflow == WS else (2, 2))
+
+
+def test_lost_last_is_reported_not_hung(monkeypatch):
+    """If out_last never reaches the output, recording still ends and check() says so."""
+    from amaranth import Const
+
+    real = systolic_array._delayed
+
+    def drop_last(m, value, cycles, name):
+        out = real(m, value, cycles, name)
+        return Const(0) if name.startswith("last_") else out
+
+    monkeypatch.setattr(systolic_array, "_delayed", drop_last)
+    cfg = config((2, 2, 1, 1))
+    A, B = label_operands(cfg, OS, 3)
+    problems = record(cfg, OS, A, B).check()
+    assert any(p.startswith("out_last in stream cycles []") for p in problems)

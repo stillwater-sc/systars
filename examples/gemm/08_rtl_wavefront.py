@@ -65,7 +65,12 @@ def main():
         for p in problems[:20]:
             print(f"  {p}")
         sys.exit(1)
-    print(f"RTL matches the predicted wavefront in all {len(trace.frames)} cycles, and C == A @ B.")
+    checked = sum(1 for f in trace.frames if f.phase == "stream")
+    print(
+        f"RTL matches the predicted wavefront in all {checked} stream cycles "
+        f"(out_last on time), and C == A @ B. "
+        f"({len(trace.frames) - checked} preload/drain frames are drawn, not checked.)"
+    )
 
 
 if __name__ == "__main__":
