@@ -29,7 +29,7 @@ class ScratchpadBank(Component):
     Single scratchpad bank with read and write ports.
 
     Features:
-    - Single read port with configurable latency
+    - Two read ports with the same configurable latency
     - Single write port with byte-level masking
     - Valid signal indicating read data availability
 
@@ -54,11 +54,16 @@ class ScratchpadBank(Component):
 
         super().__init__(
             {
-                # Read port
+                # Read port A
                 "read_addr": In(unsigned(row_bits)),
                 "read_en": In(1),
                 "read_data": Out(unsigned(width)),
                 "read_valid": Out(1),
+                # Read port B (same latency as A)
+                "read_b_addr": In(unsigned(row_bits)),
+                "read_b_en": In(1),
+                "read_b_data": Out(unsigned(width)),
+                "read_b_valid": Out(1),
                 # Write port
                 "write_addr": In(unsigned(row_bits)),
                 "write_en": In(1),
@@ -75,37 +80,27 @@ class ScratchpadBank(Component):
         mem = Memory(shape=unsigned(cfg.sp_width), depth=cfg.sp_bank_entries, init=[])
         m.submodules.mem = mem
 
-        # Read port
-        rd_port = mem.read_port()
-        m.d.comb += [
-            rd_port.addr.eq(self.read_addr),
-            rd_port.en.eq(self.read_en),
-        ]
-
-        # Pipeline read valid through latency stages
-        # Memory has 1-cycle latency, add additional pipeline stages
+        # Two read ports with the same latency, so the execute controller can
+        # read an A row and a B row in the same cycle from any banks
         latency = max(1, cfg.spad_read_delay)
-        if latency == 1:
-            # Just the memory's inherent 1-cycle latency
-            m.d.sync += self.read_valid.eq(self.read_en)
-            m.d.comb += self.read_data.eq(rd_port.data)
-        else:
-            # Additional pipeline stages for read valid
-            read_valid_pipe = [Signal(name=f"rv_{i}") for i in range(latency)]
-            m.d.sync += read_valid_pipe[0].eq(self.read_en)
+        for addr, en, data, valid, tag in (
+            (self.read_addr, self.read_en, self.read_data, self.read_valid, "a"),
+            (self.read_b_addr, self.read_b_en, self.read_b_data, self.read_b_valid, "b"),
+        ):
+            rd_port = mem.read_port()
+            m.d.comb += [rd_port.addr.eq(addr), rd_port.en.eq(en)]
+            # The memory provides the first cycle of latency; the rest is pipeline
+            valid_pipe = [Signal(name=f"rv_{tag}_{i}") for i in range(latency)]
+            m.d.sync += valid_pipe[0].eq(en)
             for i in range(1, latency):
-                m.d.sync += read_valid_pipe[i].eq(read_valid_pipe[i - 1])
-            m.d.comb += self.read_valid.eq(read_valid_pipe[-1])
-
-            # Pipeline the data as well
-            data_pipe = [Signal(unsigned(cfg.sp_width), name=f"rd_{i}") for i in range(latency - 1)]
-            if data_pipe:
-                m.d.sync += data_pipe[0].eq(rd_port.data)
-                for i in range(1, len(data_pipe)):
-                    m.d.sync += data_pipe[i].eq(data_pipe[i - 1])
-                m.d.comb += self.read_data.eq(data_pipe[-1])
-            else:
-                m.d.comb += self.read_data.eq(rd_port.data)
+                m.d.sync += valid_pipe[i].eq(valid_pipe[i - 1])
+            m.d.comb += valid.eq(valid_pipe[-1])
+            value = rd_port.data
+            for i in range(latency - 1):
+                stage = Signal(unsigned(cfg.sp_width), name=f"rd_{tag}_{i}")
+                m.d.sync += stage.eq(value)
+                value = stage
+            m.d.comb += data.eq(value)
 
         # Write port with byte masking
         wr_port = mem.write_port(granularity=8)
@@ -135,6 +130,8 @@ class Scratchpad(Component):
         read_addr: Full 32-bit local address
         read_data: Data read from selected bank
         read_valid: High when read_data is valid
+        read_b_*: A second read port, identical to the first (same latency).
+            Every bank has both ports, so the two never conflict.
 
         write_req: Request to write
         write_addr: Full 32-bit local address
@@ -154,6 +151,11 @@ class Scratchpad(Component):
                 "read_addr": In(unsigned(32)),
                 "read_data": Out(unsigned(width)),
                 "read_valid": Out(1),
+                # Second read interface
+                "read_b_req": In(1),
+                "read_b_addr": In(unsigned(32)),
+                "read_b_data": Out(unsigned(width)),
+                "read_b_valid": Out(1),
                 # Write interface
                 "write_req": In(1),
                 "write_addr": In(unsigned(32)),
@@ -174,39 +176,36 @@ class Scratchpad(Component):
         # Address decoding utilities
         addr_util = LocalAddr(cfg)
 
-        # Read path: decode address and route to bank
-        read_bank_sel = Signal(unsigned(addr_util.sp_bank_bits))
-        read_row_addr = Signal(unsigned(addr_util.sp_row_bits))
-
-        m.d.comb += [
-            read_bank_sel.eq(addr_util.sp_bank(self.read_addr)),
-            read_row_addr.eq(addr_util.sp_row(self.read_addr)),
-        ]
-
-        # Pipeline the bank selection to match read latency
+        # Read paths: decode the address, route the request to its bank, and
+        # mux the data back with the bank selection pipelined to the latency
         latency = max(1, cfg.spad_read_delay)
-        bank_sel_pipe = [
-            Signal(unsigned(addr_util.sp_bank_bits), name=f"bs_{i}") for i in range(latency)
-        ]
-        m.d.sync += bank_sel_pipe[0].eq(read_bank_sel)
-        for i in range(1, latency):
-            m.d.sync += bank_sel_pipe[i].eq(bank_sel_pipe[i - 1])
-
-        # Route read request to all banks (they ignore if not selected)
-        # but only one bank will be read based on address
-        for i, bank in enumerate(banks):
+        for req, addr, data, valid, prefix in (
+            (self.read_req, self.read_addr, self.read_data, self.read_valid, "read"),
+            (self.read_b_req, self.read_b_addr, self.read_b_data, self.read_b_valid, "read_b"),
+        ):
+            bank_sel = Signal(unsigned(addr_util.sp_bank_bits), name=f"{prefix}_bank_sel")
+            row_addr = Signal(unsigned(addr_util.sp_row_bits), name=f"{prefix}_row_addr")
             m.d.comb += [
-                bank.read_addr.eq(read_row_addr),
-                bank.read_en.eq(self.read_req & (read_bank_sel == i)),
+                bank_sel.eq(addr_util.sp_bank(addr)),
+                row_addr.eq(addr_util.sp_row(addr)),
             ]
-
-        # Mux read data from selected bank (using pipelined selection)
-        for i, bank in enumerate(banks):
-            with m.If(bank_sel_pipe[-1] == i):
+            sel_pipe = [
+                Signal(unsigned(addr_util.sp_bank_bits), name=f"{prefix}_bs_{i}")
+                for i in range(latency)
+            ]
+            m.d.sync += sel_pipe[0].eq(bank_sel)
+            for i in range(1, latency):
+                m.d.sync += sel_pipe[i].eq(sel_pipe[i - 1])
+            for i, bank in enumerate(banks):
                 m.d.comb += [
-                    self.read_data.eq(bank.read_data),
-                    self.read_valid.eq(bank.read_valid),
+                    getattr(bank, f"{prefix}_addr").eq(row_addr),
+                    getattr(bank, f"{prefix}_en").eq(req & (bank_sel == i)),
                 ]
+                with m.If(sel_pipe[-1] == i):
+                    m.d.comb += [
+                        data.eq(getattr(bank, f"{prefix}_data")),
+                        valid.eq(getattr(bank, f"{prefix}_valid")),
+                    ]
 
         # Write path: decode address and route to bank
         write_bank_sel = Signal(unsigned(addr_util.sp_bank_bits))

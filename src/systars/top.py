@@ -24,7 +24,7 @@ Data Flow for Matrix Multiply C = A × B + D:
 5. Store C from Accumulator → DRAM via StoreController + StreamWriter
 """
 
-from amaranth import Module, Mux, Signal
+from amaranth import Module
 from amaranth.lib.wiring import Component, In, Out
 
 from .config import SystolicConfig
@@ -279,62 +279,21 @@ class SystolicTop(Component):
         # ExecuteController <-> Scratchpad <-> SystolicArray <-> Accumulator
         # =====================================================================
 
-        # ExecuteController -> Scratchpad (read A)
-        # Note: Scratchpad has single read port, need to arbitrate
-        # For simplicity, exec_ctrl has priority when busy
-        sp_read_req_exec = Signal()
-        sp_read_addr_exec = Signal(32)
-
+        # ExecuteController reads A and B on the scratchpad's two read ports
+        # (no other block reads the scratchpad)
         m.d.comb += [
-            sp_read_req_exec.eq(exec_ctrl.sp_a_read_req | exec_ctrl.sp_b_read_req),
-            # Use A address when A is requested, else B address
-            sp_read_addr_exec.eq(
-                Mux(exec_ctrl.sp_a_read_req, exec_ctrl.sp_a_read_addr, exec_ctrl.sp_b_read_addr)
-            ),
-        ]
-
-        # Scratchpad read arbitration: exec takes priority when active
-        with m.If(exec_ctrl.busy):
-            m.d.comb += [
-                scratchpad.read_req.eq(sp_read_req_exec),
-                scratchpad.read_addr.eq(sp_read_addr_exec),
-            ]
-        with m.Else():
-            # No other readers in this design, but could add more
-            m.d.comb += [
-                scratchpad.read_req.eq(0),
-                scratchpad.read_addr.eq(0),
-            ]
-
-        # Scratchpad -> ExecuteController
-        # Route read data to both A and B (controller knows which it requested)
-        m.d.comb += [
+            scratchpad.read_req.eq(exec_ctrl.sp_a_read_req),
+            scratchpad.read_addr.eq(exec_ctrl.sp_a_read_addr),
             exec_ctrl.sp_a_read_data.eq(scratchpad.read_data),
             exec_ctrl.sp_a_read_valid.eq(scratchpad.read_valid),
-            exec_ctrl.sp_b_read_data.eq(scratchpad.read_data),
-            exec_ctrl.sp_b_read_valid.eq(scratchpad.read_valid),
+            scratchpad.read_b_req.eq(exec_ctrl.sp_b_read_req),
+            scratchpad.read_b_addr.eq(exec_ctrl.sp_b_read_addr),
+            exec_ctrl.sp_b_read_data.eq(scratchpad.read_b_data),
+            exec_ctrl.sp_b_read_valid.eq(scratchpad.read_b_valid),
         ]
 
-        # ExecuteController <-> Accumulator
-        # Read (for preload)
-        acc_read_by_exec = Signal()
-        m.d.comb += acc_read_by_exec.eq(exec_ctrl.acc_read_req & exec_ctrl.busy)
-
-        # Accumulator read arbitration: store_ctrl takes priority
-        with m.If(store_ctrl.busy):
-            pass  # Already connected above
-        with m.Elif(acc_read_by_exec):
-            m.d.comb += [
-                accumulator.read_req.eq(exec_ctrl.acc_read_req),
-                accumulator.read_addr.eq(exec_ctrl.acc_read_addr),
-            ]
-
-        m.d.comb += [
-            exec_ctrl.acc_read_data.eq(accumulator.read_data),
-            exec_ctrl.acc_read_valid.eq(accumulator.read_valid),
-        ]
-
-        # Accumulator write (from exec_ctrl)
+        # ExecuteController writes result rows to the accumulator (the
+        # StoreController only reads it)
         m.d.comb += [
             accumulator.write_req.eq(exec_ctrl.acc_write_req),
             accumulator.write_addr.eq(exec_ctrl.acc_write_addr),
@@ -346,37 +305,23 @@ class SystolicTop(Component):
         # ExecuteController <-> SystolicArray
         # =====================================================================
 
-        # Control signals
         m.d.comb += [
-            array.in_control_dataflow.eq(exec_ctrl.array_in_control_dataflow),
-            array.in_control_propagate.eq(exec_ctrl.array_in_control_propagate),
-            array.in_control_shift.eq(exec_ctrl.array_in_control_shift),
             array.in_valid.eq(exec_ctrl.array_in_valid),
-            array.in_id.eq(exec_ctrl.array_in_id),
             array.in_last.eq(exec_ctrl.array_in_last),
+            array.in_shift.eq(exec_ctrl.array_in_shift),
+            array.in_control_dataflow.eq(exec_ctrl.array_in_dataflow),
+            exec_ctrl.array_out_valid.eq(array.out_valid),
+            exec_ctrl.array_out_last.eq(array.out_last),
         ]
-
-        # Input vectors A (one per row)
         for i in range(total_rows):
             m.d.comb += getattr(array, f"in_a_{i}").eq(getattr(exec_ctrl, f"array_in_a_{i}"))
-
-        # Input vectors B and D (one per column)
         for j in range(total_cols):
             m.d.comb += [
                 getattr(array, f"in_b_{j}").eq(getattr(exec_ctrl, f"array_in_b_{j}")),
                 getattr(array, f"in_d_{j}").eq(getattr(exec_ctrl, f"array_in_d_{j}")),
+                getattr(exec_ctrl, f"array_out_psum_{j}").eq(getattr(array, f"out_psum_{j}")),
+                getattr(exec_ctrl, f"array_out_c_{j}").eq(getattr(array, f"out_c_{j}")),
             ]
-
-        # Output vectors C (one per column)
-        for j in range(total_cols):
-            m.d.comb += getattr(exec_ctrl, f"array_out_c_{j}").eq(getattr(array, f"out_c_{j}"))
-
-        # Output control
-        m.d.comb += [
-            exec_ctrl.array_out_valid.eq(array.out_valid),
-            exec_ctrl.array_out_id.eq(array.out_id),
-            exec_ctrl.array_out_last.eq(array.out_last),
-        ]
 
         # =====================================================================
         # AXI Interface Wiring

@@ -18,8 +18,9 @@ def main():
     gen_dir = project_root / "gen"
     gen_dir.mkdir(exist_ok=True)
 
-    # Generate 2x2 systolic array with 1x1 PEArrays (minimal with pipeline registers)
-    config_2x2 = SystolicConfig(grid_rows=2, grid_cols=2, tile_rows=1, tile_cols=1)
+    # Generate a 2x2 grid of 2x2 PEArrays (4x4 PEs), so signals cross PEArray
+    # boundaries in both directions (the cocotb tests expect this shape)
+    config_2x2 = SystolicConfig(grid_rows=2, grid_cols=2, tile_rows=2, tile_cols=2)
     systolic_array_2x2 = SystolicArray(config_2x2)
 
     output_path = gen_dir / "systolic_array.v"

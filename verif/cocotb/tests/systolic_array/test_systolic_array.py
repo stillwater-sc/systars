@@ -1,194 +1,83 @@
 """
-Cocotb tests for the SystolicArray module.
-
-These tests verify the SystolicArray module behavior using cycle-accurate RTL simulation.
-The SystolicArray adds pipeline registers between PEArrays, so data takes multiple cycles
-to propagate through.
+Cocotb tests for the ``systolic_array`` target: a 2x2 grid of 2x2 PEArrays
+(4x4 PEs), so every signal crosses PEArray boundaries in both directions.
+Unskewed A and B vectors in, A @ B out, for output- and weight-stationary.
 """
 
+import random
+
 import cocotb
-from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge
+from tb.gemm import cycle, signed, start, tick
+
+ROWS = COLS = 4
+LATENCY = (2 - 1) + (2 - 1)  # (grid_rows - 1) + (grid_cols - 1)
+OS, WS = 0, 1
+
+
+def matmul(A, B):
+    return [
+        [sum(A[i][k] * B[k][j] for k in range(len(B))) for j in range(len(B[0]))]
+        for i in range(len(A))
+    ]
+
+
+def rand_matrix(rng, rows, cols):
+    return [[rng.randint(-128, 127) for _ in range(cols)] for _ in range(rows)]
 
 
 @cocotb.test()
-async def test_array_reset(dut):
-    """Test SystolicArray initial state after reset."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    dut._log.info("SystolicArray reset complete")
-
-
-@cocotb.test()
-async def test_array_simple_operation(dut):
-    """Test simple operation through 2x2 SystolicArray."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Set up inputs for row 0 and row 1
-    dut.in_a_0.value = 3
-    dut.in_a_1.value = 5
-    dut.in_b_0.value = 4
-    dut.in_b_1.value = 2
-    dut.in_d_0.value = 0
-    dut.in_d_1.value = 0
-    dut.in_control_dataflow.value = 1  # WS mode
-    dut.in_control_propagate.value = 0
-    dut.in_control_shift.value = 0
-    dut.in_valid.value = 1
-    dut.in_id.value = 1
-    dut.in_last.value = 0
-
-    # Wait for data to propagate through pipeline
-    for _ in range(6):
-        await RisingEdge(dut.clk)
-
-    # Check output valid propagates
-    assert dut.out_valid.value == 1, "Output should be valid"
-
-    dut._log.info(f"out_a_0 = {dut.out_a_0.value}")
-    dut._log.info(f"out_a_1 = {dut.out_a_1.value}")
-    dut._log.info(f"out_b_0 = {dut.out_b_0.value}")
-    dut._log.info(f"out_b_1 = {dut.out_b_1.value}")
+async def test_systolic_array_output_stationary(dut):
+    await start(dut)
+    rng = random.Random(5)
+    k = 6
+    A, B = rand_matrix(rng, ROWS, k), rand_matrix(rng, k, COLS)
+    out_last_at = None
+    for t in range(k + LATENCY + 1):
+        inputs = {
+            "in_control_dataflow": OS,
+            "in_shift": 0,
+            "in_valid": t < k,
+            "in_last": t == k - 1,
+        }
+        for i in range(ROWS):
+            inputs[f"in_a_{i}"] = A[i][t] if t < k else 0
+        for j in range(COLS):
+            inputs[f"in_b_{j}"] = B[t][j] if t < k else 0
+        await cycle(dut, **inputs)
+        if int(dut.out_last.value):
+            out_last_at = t
+        await tick(dut)
+    assert out_last_at == k - 1 + LATENCY
+    drained = []
+    for _ in range(ROWS):
+        await cycle(dut, in_valid=0, in_last=0, in_shift=1, **{f"in_d_{j}": 0 for j in range(COLS)})
+        drained.append([signed(dut, f"out_c_{j}") for j in range(COLS)])
+        await tick(dut)
+    assert drained[::-1] == matmul(A, B)
 
 
 @cocotb.test()
-async def test_array_control_passthrough(dut):
-    """Test that control signals pass through the SystolicArray correctly."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Set specific control values
-    dut.in_a_0.value = 42
-    dut.in_a_1.value = 43
-    dut.in_b_0.value = 0
-    dut.in_b_1.value = 0
-    dut.in_d_0.value = 0
-    dut.in_d_1.value = 0
-    dut.in_id.value = 99
-    dut.in_last.value = 1
-    dut.in_valid.value = 1
-    dut.in_control_shift.value = 12
-    dut.in_control_dataflow.value = 1
-    dut.in_control_propagate.value = 1
-
-    # Wait for control to propagate through array pipeline
-    for _ in range(6):
-        await RisingEdge(dut.clk)
-
-    # Check pass-through
-    assert dut.out_id.value == 99, f"out_id should be 99, got {dut.out_id.value}"
-    assert dut.out_last.value == 1, f"out_last should be 1, got {dut.out_last.value}"
-    assert dut.out_control_shift.value == 12, "out_control_shift should be 12"
-    assert dut.out_control_dataflow.value == 1, "out_control_dataflow should be 1"
-    assert dut.out_control_propagate.value == 1, "out_control_propagate should be 1"
-
-    dut._log.info("SystolicArray control pass-through test passed")
-
-
-@cocotb.test()
-async def test_array_a_flow(dut):
-    """Test that A data flows through the array horizontally."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Set A inputs
-    dut.in_a_0.value = 77
-    dut.in_a_1.value = 88
-    dut.in_b_0.value = 1
-    dut.in_b_1.value = 1
-    dut.in_d_0.value = 0
-    dut.in_d_1.value = 0
-    dut.in_control_dataflow.value = 1
-    dut.in_control_propagate.value = 0
-    dut.in_control_shift.value = 0
-    dut.in_valid.value = 1
-    dut.in_id.value = 0
-    dut.in_last.value = 0
-
-    # Wait for pipeline propagation
-    for _ in range(6):
-        await RisingEdge(dut.clk)
-
-    # A should pass through (with pipeline delay)
-    assert dut.out_a_0.value == 77, f"out_a_0 should be 77, got {dut.out_a_0.value}"
-    assert dut.out_a_1.value == 88, f"out_a_1 should be 88, got {dut.out_a_1.value}"
-
-    dut._log.info("SystolicArray A-flow test passed")
-
-
-@cocotb.test()
-async def test_array_pipeline_latency(dut):
-    """Test that array has expected pipeline latency between PEArrays."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Initialize to zero
-    dut.in_a_0.value = 0
-    dut.in_a_1.value = 0
-    dut.in_b_0.value = 0
-    dut.in_b_1.value = 0
-    dut.in_d_0.value = 0
-    dut.in_d_1.value = 0
-    dut.in_control_dataflow.value = 1
-    dut.in_control_propagate.value = 0
-    dut.in_control_shift.value = 0
-    dut.in_valid.value = 1
-    dut.in_id.value = 0
-    dut.in_last.value = 0
-
-    await RisingEdge(dut.clk)
-
-    # Inject a pulse on row 0
-    dut.in_a_0.value = 100
-    await RisingEdge(dut.clk)
-    dut.in_a_0.value = 0
-
-    # Track when the pulse arrives at output
-    pulse_arrived = False
-    cycles = 0
-    for _ in range(10):
-        await RisingEdge(dut.clk)
-        cycles += 1
-        if int(dut.out_a_0.value) == 100:
-            pulse_arrived = True
-            break
-
-    assert pulse_arrived, "Pulse should propagate through array"
-    dut._log.info(f"Pulse took {cycles} cycles to propagate through array")
+async def test_systolic_array_weight_stationary(dut):
+    await start(dut)
+    rng = random.Random(6)
+    m_rows = 7
+    W, A = rand_matrix(rng, ROWS, COLS), rand_matrix(rng, m_rows, ROWS)
+    for r in reversed(range(ROWS)):
+        await cycle(
+            dut,
+            in_control_dataflow=WS,
+            in_valid=0,
+            in_shift=1,
+            **{f"in_d_{j}": W[r][j] for j in range(COLS)},
+        )
+        await tick(dut)
+    out = []
+    for t in range(m_rows + LATENCY + 1):
+        inputs = {"in_shift": 0, "in_valid": t < m_rows, "in_last": t == m_rows - 1}
+        for i in range(ROWS):
+            inputs[f"in_a_{i}"] = A[t][i] if t < m_rows else 0
+        await cycle(dut, **inputs)
+        if int(dut.out_valid.value):
+            out.append([signed(dut, f"out_psum_{j}") for j in range(COLS)])
+        await tick(dut)
+    assert out == matmul(A, W)

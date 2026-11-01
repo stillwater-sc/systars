@@ -1,31 +1,32 @@
 """
-SystolicArray - A pipelined grid of PEArrays forming the systolic matmul array.
+SystolicArray - a pipelined grid of PEArrays.
 
-The SystolicArray instantiates a grid_rows x grid_cols grid of PEArrays and adds
-pipeline registers between boundaries to enable proper systolic data flow for
-the operation D = A × B + C.
+The array is ``grid_rows x grid_cols`` PEArrays. Every signal that crosses a
+PEArray boundary passes through exactly one pipeline register: A going right;
+B, the partial sum and the control (``valid``, ``last``) going down or right.
+So PEArray ``(ti, tj)`` sees the control presented at the array inputs in cycle
+``t`` in cycle ``t + ti + tj``.
 
-Key difference from PEArray:
-- PEArray: All PE connections are combinational (within-array)
-- SystolicArray: Pipeline registers between PEArray boundaries (inter-array)
+The array skews its own inputs and deskews its outputs, so callers present
+unskewed vectors:
 
-Data flows through the array in a systolic pattern:
-- A (left operand): flows horizontally (left to right) with inter-array registers
-- B (right operand/partial sums): flows vertically (top to bottom) with registers
-- D (bias/preload): chains through via out_c -> in_d with inter-array registers
+- A lane ``i`` (PEArray row ``ti = i // tile_rows``) is delayed by ``ti``, and B
+  lane ``j`` (PEArray column ``tj = j // tile_cols``) by ``tj``. A[i, k] and
+  B[k, j] presented in the same cycle then meet at every PE(i, j), together
+  with their ``valid``.
+- The WS partial sums leave the bottom edge with column ``j`` ``tj`` cycles late;
+  each is delayed by ``grid_cols - 1 - tj`` so that a whole row leaves together.
 
-Example 2x2 SystolicArray (each box is a PEArray):
+Timing contract (``latency = (grid_rows - 1) + (grid_cols - 1)``):
 
-           in_b[0..N]    in_b[N..2N]
-              |              |
-in_a[0..M] -> [PEArray 0,0] -R-> [PEArray 0,1] -> out_a[0..M]
-              |                  |
-             [R]                [R]           (R = pipeline register)
-              |                  |
-in_a[M..] ->  [PEArray 1,0] -R-> [PEArray 1,1] -> out_a[M..]
-              |                  |
-           out_b[0..N]       out_b[N..2N]
-           out_c[0..N]       out_c[N..2N]
+- ``out_psum_*`` (WS) for the A vector presented in cycle ``t`` is valid in
+  cycle ``t + latency``, together with that vector's ``out_valid`` and
+  ``out_last``.
+- In OS, the PE at the bottom-right accumulates the last product in the cycle
+  ``out_last`` is high, so every result is complete from the next cycle.
+- The shift chain (``in_shift``, ``in_d_*`` -> ``out_c_*``) is not pipelined:
+  it is one register per PE row, shifted everywhere in the same cycle.
+  ``out_c_*`` is the bottom row's chain register.
 """
 
 from amaranth import Module, Signal, signed
@@ -35,209 +36,133 @@ from ..config import SystolicConfig
 from .pe_array import PEArray
 
 
+def _delayed(m: Module, value, cycles: int, name: str):
+    """``value`` delayed by ``cycles`` registers (the value itself for 0)."""
+    for stage in range(cycles):
+        reg = Signal.like(value, name=f"{name}_d{stage}")
+        m.d.sync += reg.eq(value)
+        value = reg
+    return value
+
+
 class SystolicArray(Component):
     """
-    SystolicArray - A pipelined grid of PEArrays for systolic matmul.
-
-    The SystolicArray instantiates a grid_rows x grid_cols grid of PEArrays
-    and wires them together with pipeline registers at boundaries.
+    Pipelined grid of PEArrays with input skew and output deskew.
 
     Ports:
-        in_a_0..N: Input A operands (one per total row, flows right)
-        in_b_0..M: Input B operands/partial sums (one per total column, flows down)
-        in_d_0..M: Preload values (one per total column, enters at top)
-        in_control_*: Control signals (broadcast/pipelined to arrays)
-        in_valid: Data valid signal
-        in_id: Operation tag
-        in_last: Last element in sequence
+        in_a_i: A lane per array row (unskewed)
+        in_b_j: B lane per array column (OS operand, unskewed)
+        in_d_j: Shift-chain input per column (top edge)
+        in_valid, in_last: Control, pipelined with the data
+        in_shift: Shift the chain this cycle (broadcast)
+        in_control_dataflow: 0 = OS, 1 = WS (static during an operation)
 
-        out_a_0..N: Output A operands (right edge)
-        out_b_0..M: Output B operands/partial sums (bottom edge)
-        out_c_0..M: Accumulated results (bottom edge)
-        out_control_*: Pass-through control signals
-        out_valid, out_id, out_last: Pass-through metadata
+        out_psum_j: WS partial sums at the bottom edge (deskewed)
+        out_c_j: Bottom row's shift-chain register (OS results, WS weights)
+        out_valid, out_last: Control as it reaches the bottom-right PEArray
 
-    Parameters:
-        config: SystolicConfig with grid dimensions and data widths
+    Attributes:
+        latency: Cycles from ``in_valid`` to ``out_valid``
     """
 
     def __init__(self, config: SystolicConfig):
         self.config = config
+        self.latency = (config.grid_rows - 1) + (config.grid_cols - 1)
+        total_rows = config.grid_rows * config.tile_rows
+        total_cols = config.grid_cols * config.tile_cols
 
-        # Grid dimensions (in PEArrays)
-        grid_rows = config.grid_rows
-        grid_cols = config.grid_cols
-
-        # PEArray dimensions (PEs per array)
-        tile_rows = config.tile_rows
-        tile_cols = config.tile_cols
-
-        # Total dimensions (in PEs)
-        total_rows = grid_rows * tile_rows
-        total_cols = grid_cols * tile_cols
-
-        # Build port signature dynamically based on grid dimensions
         ports = {}
-
-        # Vector inputs - A (one per total row)
         for i in range(total_rows):
             ports[f"in_a_{i}"] = In(signed(config.input_bits))
-
-        # Vector inputs - B and D (one per total column)
         for j in range(total_cols):
             ports[f"in_b_{j}"] = In(signed(config.weight_bits))
             ports[f"in_d_{j}"] = In(signed(config.acc_bits))
-
-        # Control inputs (broadcast to all tiles)
-        ports["in_control_dataflow"] = In(1)
-        ports["in_control_propagate"] = In(1)
-        ports["in_control_shift"] = In(5)
         ports["in_valid"] = In(1)
-        ports["in_id"] = In(8)
         ports["in_last"] = In(1)
-
-        # Vector outputs - A (one per total row, right edge)
-        for i in range(total_rows):
-            ports[f"out_a_{i}"] = Out(signed(config.input_bits))
-
-        # Vector outputs - B and C (one per total column, bottom edge)
+        ports["in_shift"] = In(1)
+        ports["in_control_dataflow"] = In(1)
         for j in range(total_cols):
-            ports[f"out_b_{j}"] = Out(signed(config.output_bits))
+            ports[f"out_psum_{j}"] = Out(signed(config.acc_bits))
             ports[f"out_c_{j}"] = Out(signed(config.acc_bits))
-
-        # Control outputs (pass-through from bottom-right tile)
-        ports["out_control_dataflow"] = Out(1)
-        ports["out_control_propagate"] = Out(1)
-        ports["out_control_shift"] = Out(5)
         ports["out_valid"] = Out(1)
-        ports["out_id"] = Out(8)
         ports["out_last"] = Out(1)
-
         super().__init__(ports)
 
     def elaborate(self, _platform):
         m = Module()
         cfg = self.config
+        grid_rows, grid_cols = cfg.grid_rows, cfg.grid_cols
+        tile_rows, tile_cols = cfg.tile_rows, cfg.tile_cols
 
-        grid_rows = cfg.grid_rows
-        grid_cols = cfg.grid_cols
-        tile_rows = cfg.tile_rows
-        tile_cols = cfg.tile_cols
+        tiles = [[PEArray(cfg) for _ in range(grid_cols)] for _ in range(grid_rows)]
+        for tr in range(grid_rows):
+            for tc in range(grid_cols):
+                m.submodules[f"pe_array_{tr}_{tc}"] = tiles[tr][tc]
 
-        # Create PEArray grid
-        pe_arrays = [[PEArray(cfg) for _ in range(grid_cols)] for _ in range(grid_rows)]
-
-        # Register all PEArrays as submodules
-        for mr in range(grid_rows):
-            for mc in range(grid_cols):
-                m.submodules[f"pe_array_{mr}_{mc}"] = pe_arrays[mr][mc]
-
-        # =================================================================
-        # Horizontal (A) Wiring - flows left to right
-        # =================================================================
-        for mr in range(grid_rows):
-            # First tile column gets external inputs
-            for tr in range(tile_rows):
-                global_row = mr * tile_rows + tr
-                m.d.comb += getattr(pe_arrays[mr][0], f"in_a_{tr}").eq(
-                    getattr(self, f"in_a_{global_row}")
-                )
-
-            # Chain through tile columns with pipeline registers
-            for mc in range(1, grid_cols):
-                for tr in range(tile_rows):
-                    # Pipeline register between tiles
-                    pipe_a = Signal(signed(cfg.input_bits), name=f"pipe_a_{mr}_{mc}_{tr}")
-                    m.d.sync += pipe_a.eq(getattr(pe_arrays[mr][mc - 1], f"out_a_{tr}"))
-                    m.d.comb += getattr(pe_arrays[mr][mc], f"in_a_{tr}").eq(pipe_a)
-
-            # Last tile column outputs to grid edge
-            for tr in range(tile_rows):
-                global_row = mr * tile_rows + tr
-                m.d.comb += getattr(self, f"out_a_{global_row}").eq(
-                    getattr(pe_arrays[mr][grid_cols - 1], f"out_a_{tr}")
-                )
-
-        # =================================================================
-        # Vertical (B, D) Wiring - flows top to bottom
-        # =================================================================
-        for mc in range(grid_cols):
-            # First tile row gets external inputs
-            for tc in range(tile_cols):
-                global_col = mc * tile_cols + tc
-                m.d.comb += getattr(pe_arrays[0][mc], f"in_b_{tc}").eq(
-                    getattr(self, f"in_b_{global_col}")
-                )
-                m.d.comb += getattr(pe_arrays[0][mc], f"in_d_{tc}").eq(
-                    getattr(self, f"in_d_{global_col}")
-                )
-
-            # Chain through tile rows with pipeline registers
-            for mr in range(1, grid_rows):
-                for tc in range(tile_cols):
-                    # Pipeline registers between tiles
-                    pipe_b = Signal(signed(cfg.output_bits), name=f"pipe_b_{mr}_{mc}_{tc}")
-                    pipe_d = Signal(signed(cfg.acc_bits), name=f"pipe_d_{mr}_{mc}_{tc}")
-
-                    m.d.sync += pipe_b.eq(getattr(pe_arrays[mr - 1][mc], f"out_b_{tc}"))
-                    m.d.sync += pipe_d.eq(getattr(pe_arrays[mr - 1][mc], f"out_c_{tc}"))
-
-                    m.d.comb += getattr(pe_arrays[mr][mc], f"in_b_{tc}").eq(pipe_b)
-                    m.d.comb += getattr(pe_arrays[mr][mc], f"in_d_{tc}").eq(pipe_d)
-
-            # Last tile row outputs to grid edge
-            for tc in range(tile_cols):
-                global_col = mc * tile_cols + tc
-                m.d.comb += getattr(self, f"out_b_{global_col}").eq(
-                    getattr(pe_arrays[grid_rows - 1][mc], f"out_b_{tc}")
-                )
-                m.d.comb += getattr(self, f"out_c_{global_col}").eq(
-                    getattr(pe_arrays[grid_rows - 1][mc], f"out_c_{tc}")
-                )
-
-        # =================================================================
-        # Control Signal Distribution
-        # Row 0: direct connection (no delay)
-        # Row r > 0: use previous row's output (already registered in tile)
-        # This synchronizes control with data as it flows down
-        # =================================================================
-        for mc in range(grid_cols):
-            # First row gets direct external control
-            m.d.comb += [
-                pe_arrays[0][mc].in_control_dataflow.eq(self.in_control_dataflow),
-                pe_arrays[0][mc].in_control_propagate.eq(self.in_control_propagate),
-                pe_arrays[0][mc].in_control_shift.eq(self.in_control_shift),
-                pe_arrays[0][mc].in_valid.eq(self.in_valid),
-                pe_arrays[0][mc].in_id.eq(self.in_id),
-                pe_arrays[0][mc].in_last.eq(self.in_last),
-            ]
-
-            # Subsequent rows chain from previous row's output
-            for mr in range(1, grid_rows):
+        # Control: enters PEArray (0, 0) unregistered, then one register per hop,
+        # down the first column and right along each row.
+        valid = [[None] * grid_cols for _ in range(grid_rows)]
+        last = [[None] * grid_cols for _ in range(grid_rows)]
+        for tr in range(grid_rows):
+            for tc in range(grid_cols):
+                if tr == 0 and tc == 0:
+                    v, lst = self.in_valid, self.in_last
+                else:
+                    src = (tr - 1, 0) if tc == 0 else (tr, tc - 1)
+                    v = _delayed(m, valid[src[0]][src[1]], 1, f"valid_{tr}_{tc}")
+                    lst = _delayed(m, last[src[0]][src[1]], 1, f"last_{tr}_{tc}")
+                valid[tr][tc], last[tr][tc] = v, lst
                 m.d.comb += [
-                    pe_arrays[mr][mc].in_control_dataflow.eq(
-                        pe_arrays[mr - 1][mc].out_control_dataflow
-                    ),
-                    pe_arrays[mr][mc].in_control_propagate.eq(
-                        pe_arrays[mr - 1][mc].out_control_propagate
-                    ),
-                    pe_arrays[mr][mc].in_control_shift.eq(pe_arrays[mr - 1][mc].out_control_shift),
-                    pe_arrays[mr][mc].in_valid.eq(pe_arrays[mr - 1][mc].out_valid),
-                    pe_arrays[mr][mc].in_id.eq(pe_arrays[mr - 1][mc].out_id),
-                    pe_arrays[mr][mc].in_last.eq(pe_arrays[mr - 1][mc].out_last),
+                    tiles[tr][tc].in_valid.eq(v),
+                    tiles[tr][tc].in_shift.eq(self.in_shift),
+                    tiles[tr][tc].in_control_dataflow.eq(self.in_control_dataflow),
                 ]
-
-        # =================================================================
-        # Control Output - from bottom-right tile (longest path)
-        # =================================================================
-        bottom_right = pe_arrays[grid_rows - 1][grid_cols - 1]
         m.d.comb += [
-            self.out_control_dataflow.eq(bottom_right.out_control_dataflow),
-            self.out_control_propagate.eq(bottom_right.out_control_propagate),
-            self.out_control_shift.eq(bottom_right.out_control_shift),
-            self.out_valid.eq(bottom_right.out_valid),
-            self.out_id.eq(bottom_right.out_id),
-            self.out_last.eq(bottom_right.out_last),
+            self.out_valid.eq(valid[grid_rows - 1][grid_cols - 1]),
+            self.out_last.eq(last[grid_rows - 1][grid_cols - 1]),
         ]
 
+        # A: skewed by PEArray row, then registered at each column boundary
+        for tr in range(grid_rows):
+            for r in range(tile_rows):
+                lane = tr * tile_rows + r
+                a = _delayed(m, getattr(self, f"in_a_{lane}"), tr, f"skew_a_{lane}")
+                for tc in range(grid_cols):
+                    if tc > 0:
+                        a = _delayed(
+                            m, getattr(tiles[tr][tc - 1], f"out_a_{r}"), 1, f"a_{tr}_{tc}_{r}"
+                        )
+                    m.d.comb += getattr(tiles[tr][tc], f"in_a_{r}").eq(a)
+
+        # B and partial sums: B skewed by PEArray column, both registered at each
+        # row boundary. The shift chain crosses boundaries unregistered.
+        for tc in range(grid_cols):
+            for c in range(tile_cols):
+                lane = tc * tile_cols + c
+                for tr in range(grid_rows):
+                    tile = tiles[tr][tc]
+                    if tr == 0:
+                        b = _delayed(m, getattr(self, f"in_b_{lane}"), tc, f"skew_b_{lane}")
+                        psum = 0
+                        d = getattr(self, f"in_d_{lane}")
+                    else:
+                        above = tiles[tr - 1][tc]
+                        b = _delayed(m, getattr(above, f"out_b_{c}"), 1, f"b_{tr}_{tc}_{c}")
+                        psum = _delayed(
+                            m, getattr(above, f"out_psum_{c}"), 1, f"psum_{tr}_{tc}_{c}"
+                        )
+                        d = getattr(above, f"out_c_{c}")
+                    m.d.comb += [
+                        getattr(tile, f"in_b_{c}").eq(b),
+                        getattr(tile, f"in_psum_{c}").eq(psum),
+                        getattr(tile, f"in_d_{c}").eq(d),
+                    ]
+                bottom = tiles[grid_rows - 1][tc]
+                psum_out = _delayed(
+                    m, getattr(bottom, f"out_psum_{c}"), grid_cols - 1 - tc, f"deskew_{lane}"
+                )
+                m.d.comb += [
+                    getattr(self, f"out_psum_{lane}").eq(psum_out),
+                    getattr(self, f"out_c_{lane}").eq(getattr(bottom, f"out_c_{c}")),
+                ]
         return m
