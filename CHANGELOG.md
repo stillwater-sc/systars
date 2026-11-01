@@ -80,9 +80,10 @@ repository's systolic stack. Each RTL fix has a test that fails on the previous 
 
 ### Known issues
 
-- The execute path cannot yet compute a GEMM end to end (B operand never read in `SystolicTop`,
-  COMPUTE result capture, Matmul/ExecuteController command encoding, ISA bank encoding, Conv2d
-  addressing, array skew). This is tracked in a separate issue.
+- The Matmul and Conv2d ISA instructions do not yet issue commands the execute controller
+  decodes (opcodes and CONFIG dataflow values), encode the bank as `bank << 16` where the
+  memories decode it from the low bits, and Conv2d does not apply its input addressing (#2,
+  items 4–6). The GEMM execute path itself is fixed (see Fixed, above)
 
 ### Added
 
