@@ -95,6 +95,7 @@ class SystolicArray(Component):
         tile_rows, tile_cols = cfg.tile_rows, cfg.tile_cols
 
         tiles = [[PEArray(cfg) for _ in range(grid_cols)] for _ in range(grid_rows)]
+        self.pe_arrays = tiles  # the PEArrays of the last elaboration (``wavefront`` tracing)
         for tr in range(grid_rows):
             for tc in range(grid_cols):
                 m.submodules[f"pe_array_{tr}_{tc}"] = tiles[tr][tc]

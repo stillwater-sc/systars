@@ -2,6 +2,11 @@
 
 This document explains the wavefront data flow pattern in systolic arrays and how to use the visualization tools to understand and share these concepts.
 
+> The visualization tools below animate a Python model of a textbook array, where each PE is its
+> own pipeline stage. The generated RTL registers only at PEArray boundaries. For animations of
+> the RTL itself, checked cycle by cycle, see
+> [Wavefronts from the RTL](#wavefronts-from-the-rtl).
+
 ## Table of Contents
 
 1. [Why Wavefront Data Flow?](#why-wavefront-data-flow)
@@ -356,3 +361,35 @@ termtosvg -c "python examples/gemm/02_animated_wavefront.py --size 3"
 - Original systolic array paper: H.T. Kung, "Why Systolic Architectures?" (1982)
 - Google TPU architecture: Uses systolic arrays for ML inference
 - Gemmini project: Open-source systolic array generator (Berkeley)
+
+## Wavefronts from the RTL
+
+`systars.wavefront` runs the `SystolicArray` RTL in simulation, records what every PE sees in
+every cycle, and checks it against the predicted wavefront:
+
+- output-stationary: A[i, k] meets B[k, j] at PE(i, j) in cycle `k + ti + tj`, where `ti` and
+  `tj` are the PEArray row and column;
+- weight-stationary: row m of A meets W[r, j] at PE(r, j) in cycle `m + ti + tj`, with the
+  partial sum `A[m, :r] @ W[:r, j]`.
+
+Each cell shows which element is meeting there, read back from the RTL's own values: `kN`
+(output-stationary) or `mN` (weight-stationary). A cell where A and B disagree would show `X`.
+Thick lines are PEArray boundaries, where the pipeline registers sit. Because data passes
+combinationally inside a PEArray, the wavefront advances one PEArray per cycle, not one PE.
+
+Output-stationary, 2x2 grid of 2x2 PEArrays, K = 4, then the results draining down the columns:
+
+![Output-stationary wavefront](rtl-wavefront-os.svg)
+
+Weight-stationary, same array, 5 rows of A, after the weights shift in:
+
+![Weight-stationary wavefront](rtl-wavefront-ws.svg)
+
+To draw other shapes:
+
+```bash
+python examples/gemm/08_rtl_wavefront.py --grid 4 4 --tile 1 1 --dataflow ws --svg out.svg
+```
+
+It prints the frames and exits non-zero if the RTL departs from the predicted wavefront.
+`tests/unit/test_wavefront.py` runs the same check on 7 grid and PEArray shapes.
