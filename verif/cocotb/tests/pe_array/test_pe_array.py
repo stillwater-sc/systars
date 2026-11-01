@@ -1,131 +1,60 @@
-"""
-Cocotb tests for the PEArray module.
+"""Cocotb tests for a 2x2 PEArray: OS block product and WS combinational partial sums."""
 
-These tests verify the PEArray module behavior using cycle-accurate RTL simulation.
-"""
+import random
+
+from tb.gemm import cycle, signed, start, tick
 
 import cocotb
-from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge
+
+ROWS = COLS = 2
+OS, WS = 0, 1
+
+
+def matmul(A, B):
+    return [
+        [sum(A[i][k] * B[k][j] for k in range(len(B))) for j in range(len(B[0]))]
+        for i in range(len(A))
+    ]
 
 
 @cocotb.test()
-async def test_pe_array_reset(dut):
-    """Test PEArray initial state after reset."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    dut._log.info("PEArray reset complete")
-
-
-@cocotb.test()
-async def test_pe_array_simple_operation(dut):
-    """Test simple operation through 1x1 PEArray (single PE)."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Set up inputs: a=3, b=4, d=0 in WS mode
-    dut.in_a_0.value = 3
-    dut.in_b_0.value = 4
-    dut.in_d_0.value = 0
-    dut.in_control_dataflow.value = 1  # WS mode
-    dut.in_control_propagate.value = 0
-    dut.in_control_shift.value = 0
-    dut.in_valid.value = 1
-    dut.in_id.value = 1
-    dut.in_last.value = 0
-
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # Check output valid propagates
-    assert dut.out_valid.value == 1, "Output should be valid"
-
-    dut._log.info(f"out_a_0 = {dut.out_a_0.value}")
-    dut._log.info(f"out_b_0 = {dut.out_b_0.value}")
-    dut._log.info(f"out_c_0 = {dut.out_c_0.value}")
+async def test_pe_array_output_stationary(dut):
+    """A and B in the same cycle meet at every PE; draining gives A @ B, bottom row first."""
+    await start(dut)
+    rng = random.Random(3)
+    k = 5
+    A = [[rng.randint(-128, 127) for _ in range(k)] for _ in range(ROWS)]
+    B = [[rng.randint(-128, 127) for _ in range(COLS)] for _ in range(k)]
+    for step in range(k):
+        inputs = {f"in_a_{i}": A[i][step] for i in range(ROWS)}
+        inputs.update({f"in_b_{j}": B[step][j] for j in range(COLS)})
+        await cycle(dut, in_control_dataflow=OS, in_valid=1, in_shift=0, **inputs)
+        await tick(dut)
+    drained = []
+    for _ in range(ROWS):
+        await cycle(dut, in_valid=0, in_shift=1, **{f"in_d_{j}": 0 for j in range(COLS)})
+        drained.append([signed(dut, f"out_c_{j}") for j in range(COLS)])
+        await tick(dut)
+    assert drained[::-1] == matmul(A, B)
 
 
 @cocotb.test()
-async def test_pe_array_passthrough(dut):
-    """Test that control signals pass through the PEArray correctly."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Set specific control values
-    dut.in_a_0.value = 42
-    dut.in_b_0.value = 0
-    dut.in_d_0.value = 0
-    dut.in_id.value = 99
-    dut.in_last.value = 1
-    dut.in_valid.value = 1
-    dut.in_control_shift.value = 12
-    dut.in_control_dataflow.value = 1
-    dut.in_control_propagate.value = 1
-
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # Check pass-through
-    assert dut.out_a_0.value == 42, f"out_a_0 should be 42, got {dut.out_a_0.value}"
-    assert dut.out_id.value == 99, f"out_id should be 99, got {dut.out_id.value}"
-    assert dut.out_last.value == 1, f"out_last should be 1, got {dut.out_last.value}"
-    assert dut.out_control_shift.value == 12, "out_control_shift should be 12"
-    assert dut.out_control_dataflow.value == 1, "out_control_dataflow should be 1"
-    assert dut.out_control_propagate.value == 1, "out_control_propagate should be 1"
-
-    dut._log.info("PEArray pass-through test passed")
-
-
-@cocotb.test()
-async def test_pe_array_a_flow(dut):
-    """Test that A data flows through the PEArray horizontally."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Set A input
-    dut.in_a_0.value = 77
-    dut.in_b_0.value = 1
-    dut.in_d_0.value = 0
-    dut.in_control_dataflow.value = 1
-    dut.in_control_propagate.value = 0
-    dut.in_control_shift.value = 0
-    dut.in_valid.value = 1
-    dut.in_id.value = 0
-    dut.in_last.value = 0
-
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # A should pass through (registered)
-    assert dut.out_a_0.value == 77, f"out_a_0 should be 77, got {dut.out_a_0.value}"
-
-    dut._log.info("PEArray A-flow test passed")
+async def test_pe_array_weight_stationary(dut):
+    """Weights shift in last row first; out_psum = in_psum + a @ W, combinationally."""
+    await start(dut)
+    rng = random.Random(4)
+    W = [[rng.randint(-128, 127) for _ in range(COLS)] for _ in range(ROWS)]
+    for r in reversed(range(ROWS)):
+        await cycle(
+            dut, in_control_dataflow=WS, in_shift=1, **{f"in_d_{j}": W[r][j] for j in range(COLS)}
+        )
+        await tick(dut)
+    for _ in range(4):
+        a = [rng.randint(-128, 127) for _ in range(ROWS)]
+        psum = [rng.randint(-1000, 1000) for _ in range(COLS)]
+        inputs = {f"in_a_{i}": a[i] for i in range(ROWS)}
+        inputs.update({f"in_psum_{j}": psum[j] for j in range(COLS)})
+        await cycle(dut, in_shift=0, **inputs)
+        expected = [psum[j] + sum(a[i] * W[i][j] for i in range(ROWS)) for j in range(COLS)]
+        assert [signed(dut, f"out_psum_{j}") for j in range(COLS)] == expected
+        await tick(dut)

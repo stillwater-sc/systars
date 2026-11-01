@@ -19,6 +19,9 @@ TOPLEVEL = PEArray
 # Python test module
 COCOTB_TEST_MODULES = test_pe_array
 
+# Shared testbench helpers (verif/cocotb/tb)
+export PYTHONPATH := $(PROJECT_ROOT)/verif/cocotb:$(PYTHONPATH)
+
 # Disable cocotb's pytest assertion rewriting (avoids conftest.py conflicts)
 export COCOTB_REWRITE_ASSERTION_FILES :=
 
@@ -43,7 +46,7 @@ gen-rtl:
 from systars.config import SystolicConfig; \
 from systars.core.pe_array import PEArray; \
 from amaranth.back import verilog; \
-config = SystolicConfig(tile_rows=1, tile_cols=1); \
+config = SystolicConfig(tile_rows=2, tile_cols=2); \
 pe_array = PEArray(config); \
 import os; os.makedirs('gen', exist_ok=True); \
 open('gen/pe_array.v', 'w').write(verilog.convert(pe_array, name='PEArray')); \

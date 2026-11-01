@@ -19,6 +19,9 @@ TOPLEVEL = SystolicArray
 # Python test module
 COCOTB_TEST_MODULES = test_systolic_array
 
+# Shared testbench helpers (verif/cocotb/tb)
+export PYTHONPATH := $(PROJECT_ROOT)/verif/cocotb:$(PYTHONPATH)
+
 # Disable cocotb's pytest assertion rewriting (avoids conftest.py conflicts)
 export COCOTB_REWRITE_ASSERTION_FILES :=
 

@@ -1,459 +1,313 @@
 """
-ExecuteController - Orchestrates matrix multiply operations on the systolic array.
+ExecuteController - runs matrix multiplies on the systolic array.
 
-The ExecuteController manages the data flow for systolic matmul operations:
-- CONFIG: Set dataflow mode and shift amount
-- PRELOAD: Load bias/initial values from accumulator into array
-- COMPUTE: Execute matmul by feeding A and B from scratchpad, storing C to accumulator
+The controller reads operands from the scratchpad (two read ports, one row per
+cycle on each), drives the ``SystolicArray`` with unskewed vectors (the array
+skews them itself), and writes result rows to the accumulator. ``R`` and ``C``
+are the array's rows and columns (in PEs). A scratchpad row holds ``R`` A
+elements (``input_bits`` each) or ``C`` B elements (``weight_bits`` each), element
+0 in the low bits. An accumulator row holds ``C`` results (``acc_bits`` each).
 
-State Machine:
-    IDLE -> CONFIG -> IDLE (on CONFIG command)
-    IDLE -> PRELOAD_START -> PRELOAD_WAIT -> PRELOAD_FEED -> IDLE (on PRELOAD)
-    IDLE -> COMPUTE_START -> COMPUTE_A_WAIT -> COMPUTE_B_WAIT -> COMPUTE_FEED
-         -> COMPUTE_LOOP -> COMPUTE_FLUSH -> COMPUTE_WRITE -> IDLE (on COMPUTE)
+Commands (``cmd_opcode``, ``ExecOpcode``):
 
-Data Flow:
-    Scratchpad (A, B) --> SystolicArray --> Accumulator (C)
-                              ^
-                              |
-    Accumulator (D) --(preload bias)
+- ``CONFIG``: ``rs1[0]`` selects the dataflow, 0 = output-stationary (OS),
+  1 = weight-stationary (WS). A configuration with only one dataflow ignores it.
+- ``COMPUTE`` / ``COMPUTE_ACCUMULATE``: one matmul. ``COMPUTE`` overwrites the
+  destination rows; ``COMPUTE_ACCUMULATE`` adds to them (a bias, or the
+  partial result of an earlier K block).
 
-For a simple 1x1 matmul (single row × single column), the flow is:
-1. PRELOAD: Read D[col] from accumulator, feed to array in_d[col]
-2. COMPUTE: Read A[row] from scratchpad, B[col] from scratchpad
-            Feed to array: in_a[row], in_b[col]
-            Wait for pipeline latency
-            Read out_c[col] from array, write to accumulator
+  - OS: ``C[R x C] = A[R x K] @ B[K x C]`` with ``K = k_dim``. ``rs1`` is the
+    scratchpad address of Aᵀ (K rows; row ``k`` holds column ``k`` of A),
+    ``rs2`` of B (K rows), and ``rd`` the accumulator address of C (R rows).
+  - WS: ``C[M x C] = A[M x R] @ W`` with ``M = k_dim``, where ``W`` is the
+    ``R x C`` matrix in the PE weights (see ``PRELOAD``). ``rs1`` is the address
+    of A (M rows), ``rd`` of C (M rows). ``rs2`` is unused.
+
+- ``PRELOAD`` (WS): loads ``W`` from the B rows at scratchpad address ``rs1``.
+  ``k_dim`` rows (at most ``R``) are read; the PE rows below them get zero
+  weights, so a K < R product needs no padding. In OS, ``PRELOAD`` does nothing.
+
+Every command, including an unknown opcode, pulses ``completed`` once, after its
+last accumulator write has been issued.
+
+Timing:
+
+- OS: K cycles of streaming, the array latency, then R cycles of draining the
+  results down the columns (bottom row first). Draining shifts zeros in, so the
+  array is clear for the next ``COMPUTE``.
+- WS: M cycles of streaming; row ``m`` of C is written ``latency`` cycles after
+  row ``m`` of A enters the array.
 """
 
-from amaranth import Module, Signal, signed
+from amaranth import Cat, Module, Mux, Signal, signed
 from amaranth.lib.wiring import Component, In, Out
 
-from ..config import SystolicConfig
-from ..util.commands import OpCode
+from ..config import Dataflow, SystolicConfig
+from ..util.commands import ExecOpcode
 
 
 class ExecuteController(Component):
     """
-    Execute controller for systolic array operations.
-
-    Coordinates data movement between scratchpad, accumulator, and systolic array
-    to perform matrix multiply operations.
+    Execute controller for the systolic array.
 
     Ports:
-        Command Interface:
-            cmd_valid: Command available
-            cmd_ready: Controller ready to accept command
-            cmd_opcode: Operation code (CONFIG, PRELOAD, COMPUTE)
-            cmd_rs1: Source operand 1 (A address for COMPUTE, acc addr for PRELOAD)
-            cmd_rs2: Source operand 2 (B address for COMPUTE)
-            cmd_rd: Destination (C address for COMPUTE)
-            cmd_config: Configuration data (dataflow, shift for CONFIG)
-
-        Scratchpad Interface:
-            sp_read_req: Request read from scratchpad
-            sp_read_addr: Scratchpad address
-            sp_read_data: Read data (sp_width bits)
-            sp_read_valid: Data is valid
-
-        Accumulator Interface:
-            acc_read_req: Request read from accumulator
-            acc_read_addr: Accumulator address
-            acc_read_data: Read data (acc_width bits)
-            acc_read_valid: Data is valid
-            acc_write_req: Request write to accumulator
-            acc_write_addr: Write address
-            acc_write_data: Write data
-            acc_accumulate: Add to existing value (vs overwrite)
-
-        Status:
-            busy: Controller is processing a command
-            completed: Command completed this cycle
-            completed_id: ID of completed command
+        cmd_*: Command (``valid``/``ready`` handshake; fields latched on accept)
+        cfg_dataflow: Current dataflow (0 = OS, 1 = WS)
+        sp_a_read_*, sp_b_read_*: The scratchpad's two read ports
+        acc_write_*, acc_accumulate: Accumulator write port
+        array_*: SystolicArray interface (see ``SystolicArray``)
+        busy, completed, completed_id, state_debug: Status
     """
 
     def __init__(self, config: SystolicConfig):
         self.config = config
-
-        # Calculate dimensions
-        total_rows = config.grid_rows * config.tile_rows
-        total_cols = config.grid_cols * config.tile_cols
+        rows = config.grid_rows * config.tile_rows
+        cols = config.grid_cols * config.tile_cols
+        if (
+            rows * config.input_bits > config.sp_width
+            or cols * config.weight_bits > config.sp_width
+        ):
+            raise ValueError(
+                f"a {config.sp_width}-bit scratchpad row cannot hold {rows} A elements "
+                f"({config.input_bits}-bit) and {cols} B elements ({config.weight_bits}-bit)"
+            )
+        self.supports_os = bool(config.dataflow & Dataflow.OUTPUT_STATIONARY)
+        self.supports_ws = bool(config.dataflow & Dataflow.B_STATIONARY)
+        if not (self.supports_os or self.supports_ws):
+            raise ValueError(f"dataflow {config.dataflow!r} is not implemented (need OS or WS)")
 
         ports = {
-            # Command interface (simplified)
             "cmd_valid": In(1),
             "cmd_ready": Out(1),
             "cmd_opcode": In(8),
-            "cmd_rs1": In(32),  # A address or preload source
-            "cmd_rs2": In(32),  # B address
-            "cmd_rd": In(32),  # C destination address
-            "cmd_k_dim": In(16),  # Inner dimension for matmul
-            "cmd_id": In(8),  # Command ID for tracking
-            # Configuration (set via CONFIG command or directly)
-            "cfg_dataflow": Out(1),  # 0=OS, 1=WS
-            "cfg_shift": Out(5),  # Rounding shift amount
-            "cfg_propagate": Out(1),  # Which register bank to use
-            # Scratchpad read interface (two ports for A and B)
+            "cmd_rs1": In(32),
+            "cmd_rs2": In(32),
+            "cmd_rd": In(32),
+            "cmd_k_dim": In(16),
+            "cmd_id": In(8),
+            "cfg_dataflow": Out(1),
             "sp_a_read_req": Out(1),
             "sp_a_read_addr": Out(32),
-            "sp_a_read_data": In(signed(config.sp_width)),
+            "sp_a_read_data": In(config.sp_width),
             "sp_a_read_valid": In(1),
             "sp_b_read_req": Out(1),
             "sp_b_read_addr": Out(32),
-            "sp_b_read_data": In(signed(config.sp_width)),
+            "sp_b_read_data": In(config.sp_width),
             "sp_b_read_valid": In(1),
-            # Accumulator read interface (for preload)
-            "acc_read_req": Out(1),
-            "acc_read_addr": Out(32),
-            "acc_read_data": In(signed(config.acc_width)),
-            "acc_read_valid": In(1),
-            # Accumulator write interface (for results)
             "acc_write_req": Out(1),
             "acc_write_addr": Out(32),
             "acc_write_data": Out(signed(config.acc_width)),
             "acc_accumulate": Out(1),
-            # Status
             "busy": Out(1),
             "completed": Out(1),
             "completed_id": Out(8),
-            "state_debug": Out(8),  # For debugging
+            "state_debug": Out(8),
         }
-
-        # Systolic array interface - vector signals
-        # Input vectors to array
-        for i in range(total_rows):
+        for i in range(rows):
             ports[f"array_in_a_{i}"] = Out(signed(config.input_bits))
-        for j in range(total_cols):
+        for j in range(cols):
             ports[f"array_in_b_{j}"] = Out(signed(config.weight_bits))
             ports[f"array_in_d_{j}"] = Out(signed(config.acc_bits))
-
-        # Array control outputs
-        ports["array_in_valid"] = Out(1)
-        ports["array_in_control_dataflow"] = Out(1)
-        ports["array_in_control_propagate"] = Out(1)
-        ports["array_in_control_shift"] = Out(5)
-        ports["array_in_id"] = Out(8)
-        ports["array_in_last"] = Out(1)
-
-        # Output vectors from array
-        for j in range(total_cols):
+            ports[f"array_out_psum_{j}"] = In(signed(config.acc_bits))
             ports[f"array_out_c_{j}"] = In(signed(config.acc_bits))
-
-        # Array status inputs
+        ports["array_in_valid"] = Out(1)
+        ports["array_in_last"] = Out(1)
+        ports["array_in_shift"] = Out(1)
+        ports["array_in_dataflow"] = Out(1)
         ports["array_out_valid"] = In(1)
-        ports["array_out_id"] = In(8)
         ports["array_out_last"] = In(1)
-
         super().__init__(ports)
+
+    # State numbers reported on ``state_debug``
+    STATE_IDLE = 0
+    STATE_CONFIG = 1
+    STATE_DONE = 2
+    STATE_OS_COMPUTE = 3
+    STATE_OS_DRAIN = 4
+    STATE_PRELOAD_ZERO = 5
+    STATE_PRELOAD_LOAD = 6
+    STATE_WS_COMPUTE = 7
 
     def elaborate(self, _platform):
         m = Module()
         cfg = self.config
+        rows = cfg.grid_rows * cfg.tile_rows
+        cols = cfg.grid_cols * cfg.tile_cols
 
-        total_rows = cfg.grid_rows * cfg.tile_rows
-        total_cols = cfg.grid_cols * cfg.tile_cols
+        dataflow = Signal(init=0 if self.supports_os else 1)
+        cmd_id = Signal(8)
+        rs1 = Signal(32)
+        rs2 = Signal(32)
+        rd = Signal(32)
+        count = Signal(16)  # K (OS), M (WS compute), or weight rows (PRELOAD)
+        accumulate = Signal()
+        issued = Signal(16)  # scratchpad reads issued
+        received = Signal(16)  # scratchpad reads returned
+        written = Signal(16)  # accumulator rows written (WS compute)
+        zeros = Signal(range(rows + 1))  # zero weight rows still to shift in
+        drain = Signal(range(rows))  # OS drain step
 
-        # Pipeline latency through the array
-        # For a grid, data takes grid_rows + grid_cols - 1 cycles to traverse
-        array_latency = cfg.grid_rows + cfg.grid_cols - 1
+        def a_lane(data, i):
+            return data[i * cfg.input_bits : (i + 1) * cfg.input_bits].as_signed()
 
-        # =================================================================
-        # Internal Registers
-        # =================================================================
+        def b_lane(data, j):
+            return data[j * cfg.weight_bits : (j + 1) * cfg.weight_bits].as_signed()
 
-        # Configuration registers
-        dataflow_reg = Signal(1, init=0)
-        shift_reg = Signal(5, init=0)
-        propagate_reg = Signal(1, init=0)
+        def acc_row(prefix):
+            return Cat(*[getattr(self, f"{prefix}_{j}") for j in range(cols)])
 
-        # Command registers (latched on command accept)
-        cmd_id_reg = Signal(8)
-        a_addr_reg = Signal(32)
-        b_addr_reg = Signal(32)
-        c_addr_reg = Signal(32)
-        k_dim_reg = Signal(16)
+        def write_row(addr, data):
+            m.d.comb += [
+                self.acc_write_req.eq(1),
+                self.acc_write_addr.eq(addr),
+                self.acc_write_data.eq(data),
+                self.acc_accumulate.eq(accumulate),
+            ]
 
-        # Loop counters
-        k_count = Signal(16)  # Current k iteration
-        flush_count = Signal(16)  # Flush cycle counter
-
-        # State encoding
-        STATE_IDLE = 0
-        STATE_CONFIG = 1
-        STATE_PRELOAD_START = 2
-        STATE_PRELOAD_WAIT = 3
-        STATE_PRELOAD_FEED = 4
-        STATE_COMPUTE_START = 5
-        STATE_COMPUTE_A_REQ = 6
-        STATE_COMPUTE_B_REQ = 7
-        STATE_COMPUTE_WAIT = 8
-        STATE_COMPUTE_FEED = 9
-        STATE_COMPUTE_FLUSH = 10
-        STATE_COMPUTE_WRITE = 11
-
-        state = Signal(8, init=STATE_IDLE)
-
-        # =================================================================
-        # Output Configuration
-        # =================================================================
+        def stream(port, base, addr_offset):
+            """Issue one read per cycle on ``port`` until ``count`` are issued."""
+            with m.If(issued < count):
+                m.d.comb += [
+                    getattr(self, f"sp_{port}_read_req").eq(1),
+                    getattr(self, f"sp_{port}_read_addr").eq(base + addr_offset),
+                ]
+                m.d.sync += issued.eq(issued + 1)
 
         m.d.comb += [
-            self.cfg_dataflow.eq(dataflow_reg),
-            self.cfg_shift.eq(shift_reg),
-            self.cfg_propagate.eq(propagate_reg),
-            self.state_debug.eq(state),
+            self.cfg_dataflow.eq(dataflow),
+            self.array_in_dataflow.eq(dataflow),
         ]
-
-        # =================================================================
-        # Default Signal Values
-        # =================================================================
-
-        m.d.comb += [
-            # Command interface
-            self.cmd_ready.eq(state == STATE_IDLE),
-            # Scratchpad interface
-            self.sp_a_read_req.eq(0),
-            self.sp_a_read_addr.eq(0),
-            self.sp_b_read_req.eq(0),
-            self.sp_b_read_addr.eq(0),
-            # Accumulator interface
-            self.acc_read_req.eq(0),
-            self.acc_read_addr.eq(0),
-            self.acc_write_req.eq(0),
-            self.acc_write_addr.eq(0),
-            self.acc_write_data.eq(0),
-            self.acc_accumulate.eq(0),
-            # Array interface - defaults
-            self.array_in_valid.eq(0),
-            self.array_in_control_dataflow.eq(dataflow_reg),
-            self.array_in_control_propagate.eq(propagate_reg),
-            self.array_in_control_shift.eq(shift_reg),
-            self.array_in_id.eq(cmd_id_reg),
-            self.array_in_last.eq(0),
-            # Status
-            self.busy.eq(state != STATE_IDLE),
-            self.completed.eq(0),
-            self.completed_id.eq(0),
-        ]
-
-        # Default array inputs to zero
-        for i in range(total_rows):
-            m.d.comb += getattr(self, f"array_in_a_{i}").eq(0)
-        for j in range(total_cols):
-            m.d.comb += getattr(self, f"array_in_b_{j}").eq(0)
-            m.d.comb += getattr(self, f"array_in_d_{j}").eq(0)
-
-        # =================================================================
-        # State Machine
-        # =================================================================
 
         with m.FSM(init="IDLE"):
-            # ---------------------------------------------------------
-            # IDLE: Wait for command
-            # ---------------------------------------------------------
             with m.State("IDLE"):
-                m.d.comb += state.eq(STATE_IDLE)
-
+                m.d.comb += [self.state_debug.eq(self.STATE_IDLE), self.cmd_ready.eq(1)]
                 with m.If(self.cmd_valid):
-                    # Latch command parameters
                     m.d.sync += [
-                        cmd_id_reg.eq(self.cmd_id),
-                        a_addr_reg.eq(self.cmd_rs1),
-                        b_addr_reg.eq(self.cmd_rs2),
-                        c_addr_reg.eq(self.cmd_rd),
-                        k_dim_reg.eq(self.cmd_k_dim),
+                        cmd_id.eq(self.cmd_id),
+                        rs1.eq(self.cmd_rs1),
+                        rs2.eq(self.cmd_rs2),
+                        rd.eq(self.cmd_rd),
+                        count.eq(self.cmd_k_dim),
+                        accumulate.eq(self.cmd_opcode == ExecOpcode.COMPUTE_ACCUMULATE),
+                        issued.eq(0),
+                        received.eq(0),
+                        written.eq(0),
+                        drain.eq(0),
                     ]
-
-                    # Dispatch based on opcode
                     with m.Switch(self.cmd_opcode):
-                        with m.Case(OpCode.CONFIG_EX):
+                        with m.Case(ExecOpcode.CONFIG):
                             m.next = "CONFIG"
-                        with m.Case(OpCode.PRELOAD):
-                            m.next = "PRELOAD_START"
-                        with m.Case(OpCode.COMPUTE):
-                            m.next = "COMPUTE_START"
+                        with m.Case(ExecOpcode.PRELOAD):
+                            with m.If(dataflow):
+                                weight_rows = Mux(self.cmd_k_dim > rows, rows, self.cmd_k_dim)
+                                m.d.sync += [count.eq(weight_rows), zeros.eq(rows - weight_rows)]
+                                m.next = "PRELOAD_ZERO"
+                            with m.Else():
+                                m.next = "DONE"
+                        with m.Case(ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE):
+                            with m.If(dataflow):
+                                m.next = "WS_COMPUTE"
+                            with m.Else():
+                                m.next = "OS_COMPUTE"
                         with m.Default():
-                            m.next = "IDLE"  # Unknown opcode, ignore
+                            m.next = "DONE"
 
-            # ---------------------------------------------------------
-            # CONFIG: Apply configuration
-            # ---------------------------------------------------------
             with m.State("CONFIG"):
-                m.d.comb += state.eq(STATE_CONFIG)
+                m.d.comb += self.state_debug.eq(self.STATE_CONFIG)
+                if self.supports_os and self.supports_ws:
+                    m.d.sync += dataflow.eq(rs1[0])
+                m.next = "DONE"
 
-                # Extract config from cmd_rs1:
-                # [0]: dataflow, [4:1]: shift
-                # (from the value latched at the handshake, not the live port)
-                m.d.sync += [
-                    dataflow_reg.eq(a_addr_reg[0]),
-                    shift_reg.eq(a_addr_reg[1:6]),
-                ]
-
-                # Signal completion
+            with m.State("DONE"):
                 m.d.comb += [
+                    self.state_debug.eq(self.STATE_DONE),
                     self.completed.eq(1),
-                    self.completed_id.eq(cmd_id_reg),
+                    self.completed_id.eq(cmd_id),
                 ]
-
                 m.next = "IDLE"
 
-            # ---------------------------------------------------------
-            # PRELOAD: Load bias from accumulator to array
-            # ---------------------------------------------------------
-            with m.State("PRELOAD_START"):
-                m.d.comb += state.eq(STATE_PRELOAD_START)
-
-                # Request read from accumulator
-                m.d.comb += [
-                    self.acc_read_req.eq(1),
-                    self.acc_read_addr.eq(a_addr_reg),  # rs1 has acc address
-                ]
-
-                m.d.sync += k_count.eq(0)
-                m.next = "PRELOAD_WAIT"
-
-            with m.State("PRELOAD_WAIT"):
-                m.d.comb += state.eq(STATE_PRELOAD_WAIT)
-
-                # Wait for accumulator read valid
-                with m.If(self.acc_read_valid):
-                    m.next = "PRELOAD_FEED"
-
-            with m.State("PRELOAD_FEED"):
-                m.d.comb += state.eq(STATE_PRELOAD_FEED)
-
-                # Feed bias values to array D inputs
-                # For simplicity, broadcast same value to all columns
-                # In a full implementation, would unpack acc_read_data
-                m.d.comb += self.array_in_valid.eq(1)
-
-                # Extract individual elements from acc_read_data
-                # Each element is acc_bits wide
-                for j in range(total_cols):
-                    start_bit = j * cfg.acc_bits
-                    end_bit = start_bit + cfg.acc_bits
-                    m.d.comb += getattr(self, f"array_in_d_{j}").eq(
-                        self.acc_read_data[start_bit:end_bit]
-                    )
-
-                # Signal completion
-                m.d.comb += [
-                    self.completed.eq(1),
-                    self.completed_id.eq(cmd_id_reg),
-                ]
-
-                m.next = "IDLE"
-
-            # ---------------------------------------------------------
-            # COMPUTE: Execute matmul
-            # ---------------------------------------------------------
-            with m.State("COMPUTE_START"):
-                m.d.comb += state.eq(STATE_COMPUTE_START)
-
-                m.d.sync += [
-                    k_count.eq(0),
-                    flush_count.eq(0),
-                ]
-
-                m.next = "COMPUTE_A_REQ"
-
-            with m.State("COMPUTE_A_REQ"):
-                m.d.comb += state.eq(STATE_COMPUTE_A_REQ)
-
-                # Request A data from scratchpad
-                m.d.comb += [
-                    self.sp_a_read_req.eq(1),
-                    self.sp_a_read_addr.eq(a_addr_reg + k_count),
-                ]
-
-                m.next = "COMPUTE_B_REQ"
-
-            with m.State("COMPUTE_B_REQ"):
-                m.d.comb += state.eq(STATE_COMPUTE_B_REQ)
-
-                # Keep A request active, also request B
-                m.d.comb += [
-                    self.sp_a_read_req.eq(1),
-                    self.sp_a_read_addr.eq(a_addr_reg + k_count),
-                    self.sp_b_read_req.eq(1),
-                    self.sp_b_read_addr.eq(b_addr_reg + k_count),
-                ]
-
-                m.next = "COMPUTE_WAIT"
-
-            with m.State("COMPUTE_WAIT"):
-                m.d.comb += state.eq(STATE_COMPUTE_WAIT)
-
-                # Wait for both A and B to be valid
-                with m.If(self.sp_a_read_valid & self.sp_b_read_valid):
-                    m.next = "COMPUTE_FEED"
-
-            with m.State("COMPUTE_FEED"):
-                m.d.comb += state.eq(STATE_COMPUTE_FEED)
-
-                # Feed data to array
-                m.d.comb += self.array_in_valid.eq(1)
-
-                # Unpack A data (one element per row)
-                for i in range(total_rows):
-                    start_bit = i * cfg.input_bits
-                    end_bit = start_bit + cfg.input_bits
-                    m.d.comb += getattr(self, f"array_in_a_{i}").eq(
-                        self.sp_a_read_data[start_bit:end_bit]
-                    )
-
-                # Unpack B data (one element per column)
-                for j in range(total_cols):
-                    start_bit = j * cfg.weight_bits
-                    end_bit = start_bit + cfg.weight_bits
-                    m.d.comb += getattr(self, f"array_in_b_{j}").eq(
-                        self.sp_b_read_data[start_bit:end_bit]
-                    )
-
-                # Set last flag on final k iteration
-                with m.If(k_count >= k_dim_reg - 1):
-                    m.d.comb += self.array_in_last.eq(1)
-                    m.next = "COMPUTE_FLUSH"
-                with m.Else():
-                    m.d.sync += k_count.eq(k_count + 1)
-                    m.next = "COMPUTE_A_REQ"
-
-            with m.State("COMPUTE_FLUSH"):
-                m.d.comb += state.eq(STATE_COMPUTE_FLUSH)
-
-                # Wait for array pipeline to drain
-                m.d.sync += flush_count.eq(flush_count + 1)
-
-                with m.If(flush_count >= array_latency):
-                    m.next = "COMPUTE_WRITE"
-
-            with m.State("COMPUTE_WRITE"):
-                m.d.comb += state.eq(STATE_COMPUTE_WRITE)
-
-                # Write results to accumulator
-                with m.If(self.array_out_valid):
-                    # Pack output data from array
-                    acc_data = Signal(cfg.acc_width)
-                    for j in range(total_cols):
-                        start_bit = j * cfg.acc_bits
-                        end_bit = start_bit + cfg.acc_bits
-                        m.d.comb += acc_data[start_bit:end_bit].eq(
-                            getattr(self, f"array_out_c_{j}")
+            # OS: stream Aᵀ and B rows; the array accumulates C in place
+            with m.State("OS_COMPUTE"):
+                m.d.comb += self.state_debug.eq(self.STATE_OS_COMPUTE)
+                stream("a", rs1, issued)
+                with m.If(issued < count):
+                    m.d.comb += [
+                        self.sp_b_read_req.eq(1),
+                        self.sp_b_read_addr.eq(rs2 + issued),
+                    ]
+                with m.If(self.sp_a_read_valid):
+                    m.d.comb += [
+                        self.array_in_valid.eq(1),
+                        self.array_in_last.eq(received == count - 1),
+                    ]
+                    for i in range(rows):
+                        m.d.comb += getattr(self, f"array_in_a_{i}").eq(
+                            a_lane(self.sp_a_read_data, i)
                         )
+                    for j in range(cols):
+                        m.d.comb += getattr(self, f"array_in_b_{j}").eq(
+                            b_lane(self.sp_b_read_data, j)
+                        )
+                    m.d.sync += received.eq(received + 1)
+                # The last product is accumulated at the end of the cycle that
+                # out_last is high; with K = 0 there is nothing to accumulate
+                with m.If(self.array_out_last | (count == 0)):
+                    m.next = "OS_DRAIN"
 
+            # OS: shift the results down the columns, bottom row first
+            with m.State("OS_DRAIN"):
+                m.d.comb += [self.state_debug.eq(self.STATE_OS_DRAIN), self.array_in_shift.eq(1)]
+                write_row(rd + (rows - 1 - drain), acc_row("array_out_c"))
+                m.d.sync += drain.eq(drain + 1)
+                with m.If(drain == rows - 1):
+                    m.next = "DONE"
+
+            # WS: shift in zero weights for the PE rows below the loaded ones
+            with m.State("PRELOAD_ZERO"):
+                m.d.comb += self.state_debug.eq(self.STATE_PRELOAD_ZERO)
+                with m.If(zeros != 0):
+                    m.d.comb += self.array_in_shift.eq(1)
+                    m.d.sync += zeros.eq(zeros - 1)
+                with m.Else():
+                    m.next = "PRELOAD_LOAD"
+
+            # WS: shift in the weight rows, last row first
+            with m.State("PRELOAD_LOAD"):
+                m.d.comb += self.state_debug.eq(self.STATE_PRELOAD_LOAD)
+                stream("b", rs1, count - 1 - issued)
+                with m.If(self.sp_b_read_valid):
+                    m.d.comb += self.array_in_shift.eq(1)
+                    for j in range(cols):
+                        m.d.comb += getattr(self, f"array_in_d_{j}").eq(
+                            b_lane(self.sp_b_read_data, j)
+                        )
+                    m.d.sync += received.eq(received + 1)
+                    with m.If(received == count - 1):
+                        m.next = "DONE"
+                with m.If(count == 0):
+                    m.next = "DONE"
+
+            # WS: stream A rows; each leaves the array as a row of C
+            with m.State("WS_COMPUTE"):
+                m.d.comb += self.state_debug.eq(self.STATE_WS_COMPUTE)
+                stream("a", rs1, issued)
+                with m.If(self.sp_a_read_valid):
                     m.d.comb += [
-                        self.acc_write_req.eq(1),
-                        self.acc_write_addr.eq(c_addr_reg),
-                        self.acc_write_data.eq(acc_data),
-                        self.acc_accumulate.eq(1),  # Accumulate mode
+                        self.array_in_valid.eq(1),
+                        self.array_in_last.eq(received == count - 1),
                     ]
+                    for i in range(rows):
+                        m.d.comb += getattr(self, f"array_in_a_{i}").eq(
+                            a_lane(self.sp_a_read_data, i)
+                        )
+                    m.d.sync += received.eq(received + 1)
+                with m.If(self.array_out_valid):
+                    write_row(rd + written, acc_row("array_out_psum"))
+                    m.d.sync += written.eq(written + 1)
+                    with m.If(self.array_out_last):
+                        m.next = "DONE"
+                with m.If(count == 0):
+                    m.next = "DONE"
 
-                # Wait for last output
-                with m.If(self.array_out_last):
-                    m.d.comb += [
-                        self.completed.eq(1),
-                        self.completed_id.eq(cmd_id_reg),
-                    ]
-                    m.next = "IDLE"
-
+        m.d.comb += self.busy.eq(~self.cmd_ready)
         return m

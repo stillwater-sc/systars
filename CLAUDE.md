@@ -69,27 +69,30 @@ The architecture follows a hierarchical design:
 PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) → Top-level accelerator
 ```
 
-- **PE (`core/pe.py`)**: Fundamental compute unit performing MAC operations for D = A × B + C. Supports multiple dataflow modes:
-  - OUTPUT_STATIONARY: Result (D) accumulates in place, A and B flow through
-  - A_STATIONARY: Left operand (A) stays in PE, B and partial sums flow through
-  - B_STATIONARY: Right operand (B) stays in PE, A and partial sums flow through
-  - Uses two internal registers (c1, c2) that alternate based on `propagate` signal
+- **PE (`core/pe.py`)**: The MAC unit. Two dataflows, selected at run time by `in_control_dataflow`:
+  - Output-stationary (0): `c += a * b` while `in_valid`; A and B pass through combinationally. Results leave by shifting down the column (`in_shift`, `in_d` -> `out_c`), bottom row first
+  - Weight-stationary (1): a weight register `w`, loaded through the same shift chain; A flows right and partial sums flow down: `out_psum = in_psum + a * w`
+  - No pass-through registers: pipeline registers sit only at PEArray boundaries
 
 - **PEArray (`core/pe_array.py`)**: Combinational grid of PEs (tile_rows × tile_cols). Data flows directly between adjacent PEs without pipeline registers.
 
-- **SystolicArray (`core/systolic_array.py`)**: Pipelined grid of PEArrays (grid_rows × grid_cols). Pipeline registers between PEArray boundaries enable timing closure at scale.
+- **SystolicArray (`core/systolic_array.py`)**: Pipelined grid of PEArrays (grid_rows × grid_cols). Every signal crossing a PEArray boundary passes through exactly one register. The array skews its own inputs and deskews its outputs, so callers present unskewed A/B vectors; `latency = (grid_rows - 1) + (grid_cols - 1)`.
+
+- **ExecuteController (`controller/execute.py`)**: Streams A and B from the scratchpad's two read ports into the array and writes result rows to the accumulator. The command semantics (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE; OS and WS operand layouts) are in its module docstring.
 
 - **Config (`config.py`)**: Central `SystolicConfig` dataclass with all hardware parameters. Pre-defined configs: `DEFAULT_CONFIG`, `LEAN_CONFIG`, `CHIP_CONFIG`, `LARGE_CONFIG`
 
 ### Implemented Components
 
 - PE, PEArray, SystolicArray (core compute hierarchy)
-- Scratchpad and Accumulator memory banks (Phase 2)
+- Scratchpad (two read ports) and Accumulator memory banks
+- Load/Execute/Store controllers, DMA engines (StreamReader/StreamWriter), and `SystolicTop`,
+  which computes a verified GEMM end to end (`tests/unit/test_gemm_systolic.py`)
+- Matmul and Conv2d ISA instructions (`isa/`); their command encoding does not yet match
+  the execute controller (#2)
 
 ### Planned Components (see docs/plan/implementation.md)
 
-- Load/Execute/Store controllers
-- DMA engines (StreamReader/StreamWriter)
 - Loop unrollers (LoopMatmul, LoopConv)
 
 ### Test Structure

@@ -1,173 +1,50 @@
-"""
-Cocotb tests for the Processing Element (PE).
+"""Cocotb tests for the PE (default config): OS accumulate and drain, WS weight and psum.
 
-These tests verify the PE module behavior using cycle-accurate RTL simulation.
+Every ``cycle`` (drive inputs, then sample in the read-only phase) is followed
+by a ``tick`` (the rising edge), so registered outputs are sampled one cycle
+after the inputs that update them.
 """
+
+import random
+
+from tb.gemm import cycle, signed, start, tick
 
 import cocotb
-from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge
+
+OS, WS = 0, 1
 
 
 @cocotb.test()
-async def test_pe_reset(dut):
-    """Test PE initial state after reset."""
-    # Create clock
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Check initial state
-    dut._log.info("PE reset complete")
-
-
-@cocotb.test()
-async def test_pe_simple_mac(dut):
-    """Test a simple multiply-accumulate operation."""
-    # Create clock
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Set up inputs: a=3, b=4
-    # In WS mode with d=0, result should be 3*4=12
-    dut.in_a.value = 3
-    dut.in_b.value = 4
-    dut.in_d.value = 0
-    dut.in_control_dataflow.value = 1  # WS mode
-    dut.in_control_propagate.value = 0
-    dut.in_control_shift.value = 0
-    dut.in_valid.value = 1
-    dut.in_id.value = 1
-    dut.in_last.value = 0
-
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # Check output valid propagates
-    assert dut.out_valid.value == 1, "Output should be valid"
-
-    dut._log.info(f"out_a = {dut.out_a.value}")
-    dut._log.info(f"out_b = {dut.out_b.value}")
-    dut._log.info(f"out_c = {dut.out_c.value}")
+async def test_pe_output_stationary(dut):
+    """c accumulates a * b while valid; a shift replaces c with in_d."""
+    await start(dut)
+    rng = random.Random(1)
+    total = 0
+    for _ in range(8):
+        a, b, valid = rng.randint(-128, 127), rng.randint(-128, 127), rng.random() < 0.75
+        await cycle(dut, in_control_dataflow=OS, in_a=a, in_b=b, in_valid=valid, in_shift=0)
+        assert signed(dut, "out_c") == total  # before this cycle's product
+        assert signed(dut, "out_a") == a and signed(dut, "out_b") == b  # combinational
+        await tick(dut)
+        total += a * b if valid else 0
+    await cycle(dut, in_valid=0, in_shift=1, in_d=-12345)
+    assert signed(dut, "out_c") == total
+    await tick(dut)
+    await cycle(dut, in_shift=0)
+    assert signed(dut, "out_c") == -12345
+    await tick(dut)
 
 
 @cocotb.test()
-async def test_pe_passthrough(dut):
-    """Test that control signals pass through correctly."""
-    # Create clock
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Set specific values
-    dut.in_a.value = 42
-    dut.in_id.value = 123
-    dut.in_last.value = 1
-    dut.in_valid.value = 1
-    dut.in_control_shift.value = 7
-    dut.in_control_dataflow.value = 0
-    dut.in_control_propagate.value = 1
-    dut.in_b.value = 0
-    dut.in_d.value = 0
-
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # Check pass-through
-    assert dut.out_a.value == 42, f"out_a should be 42, got {dut.out_a.value}"
-    assert dut.out_id.value == 123, f"out_id should be 123, got {dut.out_id.value}"
-    assert dut.out_last.value == 1, f"out_last should be 1, got {dut.out_last.value}"
-    assert dut.out_control_shift.value == 7, "out_control_shift should be 7"
-
-    dut._log.info("Pass-through test passed")
-
-
-@cocotb.test()
-async def test_pe_accumulation(dut):
-    """Test accumulation over multiple cycles."""
-    # Create clock
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Output-stationary mode: accumulate internally
-    dut.in_control_dataflow.value = 0  # OS mode
-    dut.in_control_propagate.value = 0  # Use c1
-    dut.in_control_shift.value = 0
-    dut.in_valid.value = 1
-    dut.in_id.value = 1
-    dut.in_last.value = 0
-
-    # First MAC: 2 * 3 = 6
-    dut.in_a.value = 2
-    dut.in_b.value = 3
-    dut.in_d.value = 0
-    await RisingEdge(dut.clk)
-
-    # Second MAC: 4 * 5 = 20, should accumulate with 6 -> 26
-    dut.in_a.value = 4
-    dut.in_b.value = 5
-    await RisingEdge(dut.clk)
-
-    # Wait for output
-    await RisingEdge(dut.clk)
-
-    dut._log.info(f"Accumulated result: out_c = {dut.out_c.value}")
-
-
-@cocotb.test()
-async def test_pe_signed_values(dut):
-    """Test PE with signed values."""
-    # Create clock
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst.value = 0
-    await RisingEdge(dut.clk)
-
-    # Test: -3 * 4 = -12 (in WS mode)
-    dut.in_control_dataflow.value = 1  # WS mode
-    dut.in_control_propagate.value = 0
-    dut.in_control_shift.value = 0
-    dut.in_valid.value = 1
-    dut.in_id.value = 1
-    dut.in_last.value = 0
-
-    # -3 in 8-bit signed = 0xFD
-    dut.in_a.value = -3 & 0xFF
-    dut.in_b.value = 4
-    dut.in_d.value = 0
-
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    dut._log.info(f"Signed result: out_c = {dut.out_c.value.to_signed()}")
+async def test_pe_weight_stationary(dut):
+    """A shift loads the weight; out_psum = in_psum + a * w, combinationally."""
+    await start(dut)
+    await cycle(dut, in_control_dataflow=WS, in_valid=0, in_shift=1, in_d=-77)
+    await tick(dut)
+    rng = random.Random(2)
+    for _ in range(8):
+        a, psum = rng.randint(-128, 127), rng.randint(-100_000, 100_000)
+        await cycle(dut, in_shift=0, in_a=a, in_psum=psum, in_b=rng.randint(-128, 127))
+        assert signed(dut, "out_c") == -77
+        assert signed(dut, "out_psum") == psum + a * -77
+        await tick(dut)

@@ -319,3 +319,41 @@ class TestScratchpadVerilogGeneration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize("delay", [1, 2, 4])
+@pytest.mark.parametrize("same_bank", [True, False])
+def test_two_read_ports_in_the_same_cycle(delay, same_bank):
+    """Both read ports return their own row, with the same latency, from any banks."""
+    from ._sim import run_sim
+
+    cfg = SystolicConfig(
+        sp_banks=4, sp_capacity_kb=16, spad_read_delay=delay, grid_rows=4, grid_cols=4
+    )
+    dut = Scratchpad(cfg)
+    rows = {addr: 0x1111_0000 + addr for addr in range(16)}
+    addr_a, addr_b = (4, 8) if same_bank else (4, 5)  # banks are the low address bits
+
+    async def tb(ctx):
+        ctx.set(dut.write_mask, (1 << (cfg.sp_width // 8)) - 1)
+        for addr, value in rows.items():
+            ctx.set(dut.write_req, 1)
+            ctx.set(dut.write_addr, addr)
+            ctx.set(dut.write_data, value)
+            await ctx.tick()
+        ctx.set(dut.write_req, 0)
+        ctx.set(dut.read_req, 1)
+        ctx.set(dut.read_addr, addr_a)
+        ctx.set(dut.read_b_req, 1)
+        ctx.set(dut.read_b_addr, addr_b)
+        await ctx.tick()
+        ctx.set(dut.read_req, 0)
+        ctx.set(dut.read_b_req, 0)
+        for _ in range(delay - 1):
+            assert not ctx.get(dut.read_valid) and not ctx.get(dut.read_b_valid)
+            await ctx.tick()
+        assert ctx.get(dut.read_valid) and ctx.get(dut.read_b_valid)
+        assert ctx.get(dut.read_data) == rows[addr_a]
+        assert ctx.get(dut.read_b_data) == rows[addr_b]
+
+    run_sim(dut, tb)

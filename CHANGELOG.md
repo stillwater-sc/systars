@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### SystolicTop computes a GEMM end to end (2026-11-01)
+
+Ported from branes-ai/embodied-ai-soc-generator#9, items 1–3 and 7 of #2. `SystolicTop` now
+runs LOAD A and B, CONFIG, PRELOAD, COMPUTE and STORE C to a verified `A @ B`, output-stationary
+and weight-stationary. The previous execute path could not:
+
+- *B was never read*: both operands shared the scratchpad's one read port, and the address mux
+  preferred A. The scratchpad has a second read port (in every bank), and A and B stream at one
+  row per cycle
+- *COMPUTE never completed*: it waited for an `out_last` pulse that had already passed, and
+  dropped the outputs produced meanwhile
+- *A, B and control were skewed inconsistently*: A was registered in every PE and at PEArray
+  boundaries, B only at boundaries, and `valid` not at all across PEArray columns. Now every
+  signal crossing a PEArray boundary passes through one register, and `SystolicArray` skews its
+  inputs and deskews its outputs itself
+- *B-stationary held no weight*: the PE multiplied the incoming partial sum. The PE now has a
+  weight register, loaded by PRELOAD, and partial sums flow down
+- *OS results could not be read out*: the PE ignored `in_d` in OS. Results now drain down each
+  column through a shift chain, bottom row first
+
+### Changed
+
+- **Execute semantics**: `COMPUTE` overwrites its destination rows and `COMPUTE_ACCUMULATE` adds
+  to them. OS computes `C[R x C] = A[R x K] @ B[K x C]` from Aᵀ and B rows; WS computes
+  `C[M x C] = A[M x R] @ W` with `W` loaded by `PRELOAD` (which no longer reads the accumulator,
+  and does nothing in OS). Details in `controller/execute.py`
+- **PE ports**: `in_psum`/`out_psum` (WS partial sums) and `in_shift` (shift chain); the
+  `propagate` double buffer, the rounding `shift`, `id` and the PE's pass-through registers are
+  gone, and so is `PEWithShift` (unused)
+- **Generated RTL**: the cocotb PEArray is 2x2, and `gen/systolic_array.v` is a 2x2 grid of 2x2
+  PEArrays (4x4 PEs)
+- **Unit-test simulations** (`tests/unit/_sim.py`) end when the testbench returns, with a cycle
+  limit as a watchdog
+
 #### Bugs found reviewing the kpugen port (2026-10-31)
 
 These were found in code review of branes-ai/embodied-ai-soc-generator#1, which ports this
@@ -46,9 +80,10 @@ repository's systolic stack. Each RTL fix has a test that fails on the previous 
 
 ### Known issues
 
-- The execute path cannot yet compute a GEMM end to end (B operand never read in `SystolicTop`,
-  COMPUTE result capture, Matmul/ExecuteController command encoding, ISA bank encoding, Conv2d
-  addressing, array skew). This is tracked in a separate issue.
+- The Matmul and Conv2d ISA instructions do not yet issue commands the execute controller
+  decodes (opcodes and CONFIG dataflow values), encode the bank as `bank << 16` where the
+  memories decode it from the low bits, and Conv2d does not apply its input addressing (#2,
+  items 4–6). The GEMM execute path itself is fixed (see Fixed, above)
 
 ### Added
 
