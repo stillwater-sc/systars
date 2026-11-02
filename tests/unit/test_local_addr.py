@@ -281,9 +281,10 @@ class TestLocalAddrEdgeCases:
         config = SystolicConfig(sp_banks=1, acc_banks=1)
         addr_util = LocalAddr(config)
 
-        # Single bank still needs at least 1 bit
-        assert addr_util.sp_bank_bits >= 1
-        assert addr_util.acc_bank_bits >= 1
+        # One bank takes no address bits: consecutive rows stay in bank 0
+        assert addr_util.sp_bank_bits == 0
+        assert addr_util.acc_bank_bits == 0
+        assert [addr_util.make_sp_addr(0, row) for row in range(3)] == [0, 1, 2]
 
     def test_large_banks(self):
         """Test with many banks."""

@@ -2,9 +2,10 @@
 Unit tests for the Matmul ISA instruction.
 
 - Its command stream, checked numerically: a Python model of SystolicTop runs
-  the commands Matmul issues against numpy (``_isa.TopModel``), on beat-aligned
-  layouts and, with the layout check off, on layouts tiled in M, N and K.
-- Matmul driving a real SystolicTop through an AXI memory model.
+  the commands Matmul issues against numpy (``_isa.TopModel``), with A, B and C
+  dense row-major (or strided) at any address, tiled in M, N and K.
+- Matmul driving a real SystolicTop through a byte-addressed AXI memory model:
+  dense operands, any M, N and K, at unaligned addresses.
 - Configuration errors.
 """
 
@@ -18,9 +19,9 @@ from systars.isa.matmul import Matmul, MatmulCmd, MatmulError
 from systars.top import SystolicTop
 from systars.util.commands import DmaOpcode, ExecOpcode
 
+from ._axi import axi_memory
 from ._isa import TopModel, from_bytes, run_isa, to_unsigned_bytes
 from ._sim import run_sim, skip_without_yosys
-from .test_gemm_systolic import axi_dram, pack, unpack
 
 A_ADDR, B_ADDR, C_ADDR = 0x1000, 0x8000, 0x10000
 
@@ -55,15 +56,15 @@ def read_back(model, base, rows, cols, stride, bits):
     return np.array([model.read_elems(base + r * stride, bits, cols) for r in range(rows)])
 
 
-def check_numerically(cfg, M, N, K, a_stride, b_stride, c_stride, *, aligned=True, seed=0):
+def check_numerically(cfg, M, N, K, a_stride, b_stride, c_stride, *, a_addr=A_ADDR, seed=0):
     rng = np.random.default_rng(seed)
     A = rng.integers(-128, 128, (M, K))
     B = rng.integers(-128, 128, (K, N))
-    isa = Matmul(cfg, require_beat_aligned=aligned)
-    result = run_isa(isa, setup(M, N, K, a_stride, b_stride, c_stride), MatmulCmd.START)
+    cmds = setup(M, N, K, a_stride, b_stride, c_stride, a_addr=a_addr)
+    result = run_isa(Matmul(cfg), cmds, MatmulCmd.START)
     assert result.done and not result.error, f"error {result.error_code:#x}"
     model = TopModel(cfg)
-    place(model, A_ADDR, A, a_stride, 8)
+    place(model, a_addr, A, a_stride, 8)
     place(model, B_ADDR, B, b_stride, 8)
     model.run(result.commands)
     np.testing.assert_array_equal(read_back(model, C_ADDR, M, N, c_stride, 32), A @ B)
@@ -93,28 +94,40 @@ class TestConstruction:
 class TestCommandStream:
     def test_commands_target_controllers_with_their_own_opcodes(self):
         cfg = config()
-        beat = cfg.dma_buswidth // 8
-        result = run_isa(Matmul(cfg), setup(6, 4, 3, beat, beat, beat), MatmulCmd.START)
+        result = run_isa(Matmul(cfg), setup(6, 4, 3, 3, 4, 16), MatmulCmd.START)
         assert result.done
         cmds = result.commands
         assert (cmds[0].type, cmds[0].opcode, cmds[0].rs1) == (CTRL_EXEC, ExecOpcode.CONFIG, 1)
         loads = [c for c in cmds if c.type == CTRL_LOAD]
         stores = [c for c in cmds if c.type == CTRL_STORE]
         execs = [c.opcode for c in cmds[1:] if c.type == CTRL_EXEC]
-        assert all(c.opcode == DmaOpcode.MEMCPY and c.len == 1 for c in loads + stores)
-        # Two M tiles (4 + 2 rows), one N and one K tile
+        assert all(c.opcode == DmaOpcode.MEMCPY for c in loads + stores)
+        # Two M tiles (4 + 2 rows), one N and one K tile: one LOAD per A and B tile,
+        # one STORE per C tile
         assert execs == [ExecOpcode.PRELOAD, ExecOpcode.COMPUTE] * 2
-        assert len(loads) == (4 + 3) + (2 + 3)
-        assert [c.dram_addr for c in stores] == [C_ADDR + r * beat for r in range(6)]
+        assert [(c.len, c.stride, c.row_bytes) for c in loads] == [
+            (4, 3, 3), (3, 4, 4), (2, 3, 3), (3, 4, 4),
+        ]  # fmt: skip
+        assert [(c.dram_addr, c.len, c.stride, c.row_bytes) for c in stores] == [
+            (C_ADDR, 4, 16, 16), (C_ADDR + 4 * 16, 2, 16, 16),
+        ]  # fmt: skip
         assert [c.id for c in cmds] == list(range(len(cmds)))
+
+    def test_edge_tiles_move_only_their_columns(self):
+        """N = 6 on a 4-wide array: the second N tile's B rows and C rows are 2 wide."""
+        cfg = config()
+        cmds = run_isa(Matmul(cfg), setup(4, 6, 4, 4, 6, 24), MatmulCmd.START).commands
+        loads_b = [c for c in cmds if c.type == CTRL_LOAD][1::2]
+        stores = [c for c in cmds if c.type == CTRL_STORE]
+        assert [(c.dram_addr, c.row_bytes) for c in loads_b] == [(B_ADDR, 4), (B_ADDR + 4, 2)]
+        assert [(c.dram_addr, c.row_bytes) for c in stores] == [(C_ADDR, 16), (C_ADDR + 16, 8)]
 
     def test_scratchpad_addresses_use_low_bank_bits(self):
         """Tile rows are consecutive local addresses (banks in the low bits), not bank << 16."""
         cfg = config()
-        beat = cfg.dma_buswidth // 8
-        cmds = run_isa(Matmul(cfg), setup(4, 4, 4, beat, beat, beat), MatmulCmd.START).commands
+        cmds = run_isa(Matmul(cfg), setup(4, 4, 4, 4, 4, 16), MatmulCmd.START).commands
         loads = [c.local_addr for c in cmds if c.type == CTRL_LOAD]
-        assert loads == [0, 1, 2, 3, 4, 5, 6, 7]  # A rows, then B rows at dim
+        assert loads == [0, 4]  # the A tile at row 0, the B tile at row dim
         preload = next(c for c in cmds if c.opcode == ExecOpcode.PRELOAD and c.type == CTRL_EXEC)
         assert preload.rs1 == 4 and preload.k_dim == 4
 
@@ -138,8 +151,7 @@ class TestCommandStream:
 class TestNumerical:
     @pytest.mark.parametrize("grid,tile", [(2, 1), (4, 1), (2, 2)])
     @pytest.mark.parametrize("M", [1, 4, 10])
-    def test_beat_aligned_layout(self, grid, tile, M):
-        """The layouts the tile's DMA can move: N, K <= dim, rows one beat apart."""
+    def test_beat_spaced_rows(self, grid, tile, M):
         cfg = config(grid=grid, tile=tile)
         dim = grid * tile
         beat = cfg.dma_buswidth // 8
@@ -147,11 +159,12 @@ class TestNumerical:
         check_numerically(cfg, M, dim - 1, max(1, dim - 1), 2 * beat, beat, beat, seed=1)
 
     @pytest.mark.parametrize("M,N,K", [(7, 9, 6), (4, 4, 8), (9, 2, 13), (1, 11, 1)])
-    def test_tiled_in_m_n_and_k(self, M, N, K):
-        """With the alignment check off, dense A and B tiled in every dimension."""
-        cfg = config()
-        n_padded = -(-N // 4) * 4  # C rows hold whole N tiles (STORE writes tile rows)
-        check_numerically(cfg, M, N, K, K, N, n_padded * 4, aligned=False, seed=M + N + K)
+    def test_dense_tiled_in_m_n_and_k(self, M, N, K):
+        """Dense row-major A, B and C, tiled in every dimension."""
+        check_numerically(config(), M, N, K, K, N, N * 4, seed=M + N + K)
+
+    def test_unaligned_and_strided(self):
+        check_numerically(config(), 9, 7, 10, 13, 11, 31, a_addr=A_ADDR + 3, seed=5)
 
 
 class TestErrors:
@@ -180,37 +193,23 @@ class TestErrors:
         assert result.error_code == MatmulError.UNSUPPORTED_ACCUMULATE
         assert not result.commands
 
-    @pytest.mark.parametrize(
-        "case",
-        [
-            "unaligned_base",
-            "unaligned_stride",
-            "zero_stride",
-            "two_n_tiles",
-            "two_k_tiles",
-            "short_c_stride",
-        ],
-    )
-    def test_layouts_the_dma_cannot_move(self, case):
-        cfg = config()
-        beat = cfg.dma_buswidth // 8
-        args = {"M": 4, "N": 4, "K": 4, "a_stride": beat, "b_stride": beat, "c_stride": beat}
-        kw = {}
-        if case == "unaligned_base":
-            kw["a_addr"] = A_ADDR + 4
-        elif case == "unaligned_stride":
-            args["a_stride"] = beat + 4
-        elif case == "zero_stride":
+    @pytest.mark.parametrize("case", ["zero_a_stride", "zero_b_stride", "short_c_stride"])
+    def test_rejected_layouts(self, case):
+        args = {"M": 4, "N": 8, "K": 4, "a_stride": 4, "b_stride": 8, "c_stride": 32}
+        if case == "zero_a_stride":
+            args["a_stride"] = 0
+        elif case == "zero_b_stride":
             args["b_stride"] = 0
-        elif case == "two_n_tiles":
-            args.update(N=8, c_stride=4 * beat)
-        elif case == "two_k_tiles":
-            args["K"] = 8
         elif case == "short_c_stride":
-            args.update(N=8, c_stride=beat)
-        result = self.run(cfg, setup(**args, **kw))
+            args["c_stride"] = 31  # C rows of 8 results would overlap
+        result = self.run(config(), setup(**args))
         assert result.error_code == MatmulError.UNSUPPORTED_LAYOUT
         assert not result.commands
+
+    def test_unaligned_layouts_are_accepted(self):
+        """The BlockMover moves rows from any byte address: no alignment requirement."""
+        result = self.run(config(), setup(5, 6, 7, 7, 6, 24, a_addr=A_ADDR + 1))
+        assert result.done and not result.error
 
 
 class MatmulOnTop(Elaboratable):
@@ -226,28 +225,44 @@ class MatmulOnTop(Elaboratable):
         return m
 
 
-@pytest.mark.parametrize("grid,tile", [(4, 1), (2, 2)])
-def test_matmul_drives_systolic_top(grid, tile):
-    """Matmul issues every command to a real SystolicTop; C in DRAM equals A @ B."""
+@pytest.mark.parametrize(
+    "grid,tile,M,N,K",
+    [(4, 1, 9, 7, 10), (2, 2, 4, 4, 4), (2, 2, 5, 9, 3), (2, 1, 3, 5, 6)],
+)
+def test_matmul_drives_systolic_top(grid, tile, M, N, K):
+    """Matmul issues every command to a real SystolicTop; dense C in L3 equals A @ B.
+
+    A, B and C are dense row-major at odd addresses, tiled in M, N and K, with edge
+    tiles in each; every byte outside C keeps its value."""
     cfg = config(grid=grid, tile=tile)
-    dim = grid * tile
     beat = cfg.dma_buswidth // 8
-    rng = np.random.default_rng(grid * 10 + tile)
-    M, N, K = 2 * dim + 1, dim - 1, dim
+    rng = np.random.default_rng(grid * 100 + M * 10 + N + K)
     A = rng.integers(-128, 128, (M, K))
     B = rng.integers(-128, 128, (K, N))
-    memory = {}
-    for r, row in enumerate(A):
-        memory[A_ADDR + r * beat] = pack(row, 8)
-    for r, row in enumerate(B):
-        memory[B_ADDR + r * beat] = pack(row, 8)
+    a_addr, b_addr, c_addr = A_ADDR + 1, B_ADDR + 7, C_ADDR + 3
+    memory = bytearray(rng.integers(0, 256, 1 << 17, dtype=np.uint8).tobytes())
+    memory[a_addr : a_addr + M * K] = to_unsigned_bytes(A, 8)
+    memory[b_addr : b_addr + K * N] = to_unsigned_bytes(B, 8)
+    before = bytes(memory)
 
     dut = MatmulOnTop(cfg)
     isa, top = dut.isa, dut.top
     status = {}
 
     async def testbench(ctx):
-        for cmd, data in [*setup(M, N, K, beat, beat, beat), (MatmulCmd.START, 0)]:
+        cmds = setup(M, N, K, K, N, 4 * N, a_addr=a_addr)
+        cmds = [
+            (
+                c,
+                b_addr
+                if c == MatmulCmd.CONFIG_B_ADDR
+                else c_addr
+                if c == MatmulCmd.CONFIG_C_ADDR
+                else d,
+            )
+            for c, d in cmds
+        ]
+        for cmd, data in [*cmds, (MatmulCmd.START, 0)]:
             ctx.set(isa.cfg_valid, 1)
             ctx.set(isa.cfg_cmd, cmd)
             ctx.set(isa.cfg_data, data)
@@ -256,10 +271,15 @@ def test_matmul_drives_systolic_top(grid, tile):
         done, error = await ctx.tick().sample(isa.done, isa.error).until(isa.done | isa.error)
         status.update(done=done, error=error)
 
-    run_sim(dut, testbench, processes=[axi_dram(top, memory, beat)], max_cycles=50_000)
+    run_sim(dut, testbench, processes=[axi_memory(top, memory, beat)], max_cycles=200_000)
     assert status == {"done": 1, "error": 0}
-    C = np.array([unpack(memory.get(C_ADDR + r * beat, 0), 32, dim)[:N] for r in range(M)])
+    c_bytes = M * N * 4
+    C = np.array(from_bytes(memory[c_addr : c_addr + c_bytes], 32, M * N)).reshape(M, N)
     np.testing.assert_array_equal(C, A @ B)
+    assert (
+        memory[:c_addr] == before[:c_addr]
+        and memory[c_addr + c_bytes :] == before[c_addr + c_bytes :]
+    )
 
 
 def test_helpers_round_trip():

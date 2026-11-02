@@ -51,9 +51,10 @@ class LocalAddr:
         """
         self.config = config
 
-        # Compute bit widths for bank selection
-        self.sp_bank_bits = max(1, (config.sp_banks - 1).bit_length())
-        self.acc_bank_bits = max(1, (config.acc_banks - 1).bit_length())
+        # Bank selection bits: log2(banks), so one bank takes no address bits (with a
+        # bit reserved, every other row would select a bank that does not exist)
+        self.sp_bank_bits = (config.sp_banks - 1).bit_length()
+        self.acc_bank_bits = (config.acc_banks - 1).bit_length()
 
         # Compute bit widths for row addresses
         self.sp_row_bits = max(1, (config.sp_bank_entries - 1).bit_length())

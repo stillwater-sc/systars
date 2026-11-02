@@ -18,24 +18,24 @@ weight-stationary. For each output tile (M tile, N tile), and each K tile:
 
 - LOAD one row per output position ``p = (b, oh, ow)``: the input pixel
   ``X[b, oh*stride_h + kh*dilation_h - pad_h, ow*stride_w + kw*dilation_w - pad_w,
-  ic0:]``, or, where that falls in the padding, the zero row at
-  ``CONFIG_ZERO_ADDR``;
-- LOAD the filter rows ``F[kh, kw, ic0 + r, n0:]``, PRELOAD them as weights, and
-  COMPUTE (the first K tile overwrites, later ones accumulate);
+  ic0:]`` (its chunk's channels), or, where that falls in the padding, the zero
+  row at ``CONFIG_ZERO_ADDR``;
+- LOAD the filter tile ``F[kh, kw, ic0:, n0:]`` (one command: rows ``out_c``
+  elements apart), PRELOAD it as weights, and COMPUTE (the first K tile
+  overwrites, later ones accumulate);
 
-then STORE the output tile, one row per position. The commands go one at a time
-(see ``isa.command``).
+then STORE the output tile, one command: rows ``y_stride`` bytes apart, only the
+tile's own channels written (byte strobes), so Y can be dense. The commands go one
+at a time (see ``isa.command``). The tile's BlockMover moves rows from and to any
+byte address, so X, F and Y need no alignment.
 
 Errors (``error_code``): CONFIG_INCOMPLETE without the input, output and kernel
 dimensions and the X/F/Y addresses (or with padding but no zero row);
 INVALID_DIMS for a zero dimension, stride or dilation; UNSUPPORTED_BIAS for a
-bias and UNSUPPORTED_ACCUMULATE for accumulating onto an existing Y (``CONFIG_OPTIONS``
-bit 0), which both need a DMA into the accumulator; UNSUPPORTED_LAYOUT when output positions are too close for whole tile rows
-(``y_stride`` below ``ceil(out_c / dim) * dim`` results) or, with
-``require_beat_aligned`` (the default), when a loaded or stored row would not
-start on a DMA beat boundary. The tile's DMA moves whole beats, so the second
-holds for most real convolutions today; ``require_beat_aligned=False`` skips it,
-for a DMA that can address any byte (and to verify the address arithmetic).
+bias and UNSUPPORTED_ACCUMULATE for accumulating onto an existing Y
+(``CONFIG_OPTIONS`` bit 0), which both need a load into the accumulator;
+UNSUPPORTED_LAYOUT when output positions are closer than ``out_c`` results
+(``y_stride``), so rows would overlap.
 
 The caller sets ``out_h``/``out_w`` consistently with the input, kernel, stride,
 padding and dilation; they are not derived.
@@ -103,12 +103,11 @@ class Conv2d(Component):
         progress_m, progress_n, progress_k: Current M tile, N tile, K tile
         selected_dataflow: 1 (weight-stationary)
         param_*: Configured and derived dimensions
-        dbg_addr_X/F/Y/B, dbg_tile_M/N/K: Current row addresses and tile sizes
+        dbg_addr_X/F/Y/B, dbg_tile_M/N/K: Current X row, F and Y tile addresses; tile sizes
     """
 
-    def __init__(self, config: SystolicConfig, *, require_beat_aligned: bool = True):
+    def __init__(self, config: SystolicConfig):
         self.config = config
-        self.require_beat_aligned = require_beat_aligned
         rows = config.grid_rows * config.tile_rows
         cols = config.grid_cols * config.tile_cols
         if rows != cols:
@@ -171,7 +170,6 @@ class Conv2d(Component):
         dim_shift = (dim - 1).bit_length()
         in_bytes = cfg.input_bits // 8
         acc_bytes = cfg.acc_bits // 8
-        beat = cfg.dma_buswidth // 8
         issuer = CommandIssuer(m, self)
 
         # Configuration
@@ -234,35 +232,18 @@ class Conv2d(Component):
             iw.eq(pos_ow * stride_w + kw * dil_w - pad_w),
             in_bounds.eq((ih >= 0) & (ih < in_h) & (iw >= 0) & (iw < in_w)),
         ]
-        x_row, f_row, y_row = Signal(64), Signal(64), Signal(64)
+        x_row, f_tile, y_tile = Signal(64), Signal(64), Signal(64)
         pixel = Signal(64)
         m.d.comb += [
             pixel.eq((pos_b * in_h + ih.as_unsigned()) * in_w + iw.as_unsigned()),
             x_row.eq(Mux(in_bounds, x_addr + (pixel * in_c + ic0) * in_bytes, zero_addr)),
-            f_row.eq(f_addr + (((kh * kernel_w + kw) * in_c + ic0 + row) * out_c + n0) * in_bytes),
-            y_row.eq(y_addr + (m0 + row) * y_stride + n0 * acc_bytes),
+            f_tile.eq(f_addr + (((kh * kernel_w + kw) * in_c + ic0) * out_c + n0) * in_bytes),
+            y_tile.eq(y_addr + m0 * y_stride + n0 * acc_bytes),
         ]
 
-        # Layout checks (see the module docstring)
-        def aligned(value):
-            return (value & (beat - 1)) == 0
-
-        tile_row_beats_in = (dim * in_bytes) % beat == 0
-        tile_row_beats_acc = (dim * acc_bytes) % beat == 0
-        beat_ok = Signal()
-        m.d.comb += beat_ok.eq(
-            aligned(x_addr)
-            & aligned(f_addr)
-            & aligned(y_addr)
-            & (aligned(zero_addr) | ~zero_valid)
-            & aligned(in_c * in_bytes)  # pixel stride
-            & aligned(out_c * in_bytes)  # filter row stride
-            & aligned(y_stride)
-            & ((tiles_C <= 1) | tile_row_beats_in)
-            & ((tiles_N <= 1) | (tile_row_beats_in & tile_row_beats_acc))
-        )
+        # Output rows must not overlap (see the module docstring)
         y_stride_ok = Signal()
-        m.d.comb += y_stride_ok.eq(y_stride >= (tiles_N << dim_shift) * acc_bytes)
+        m.d.comb += y_stride_ok.eq(y_stride >= out_c * acc_bytes)
 
         m.d.comb += [
             self.param_batch.eq(batch),
@@ -282,8 +263,8 @@ class Conv2d(Component):
             self.progress_n.eq(tile_n),
             self.progress_k.eq((kh * kernel_w + kw) * tiles_C + chunk),
             self.dbg_addr_X.eq(x_row),
-            self.dbg_addr_F.eq(f_row),
-            self.dbg_addr_Y.eq(y_row),
+            self.dbg_addr_F.eq(f_tile),
+            self.dbg_addr_Y.eq(y_tile),
             self.dbg_addr_B.eq(b_addr),
             self.dbg_tile_M.eq(tile_M),
             self.dbg_tile_N.eq(tile_N),
@@ -384,7 +365,7 @@ class Conv2d(Component):
                 with m.Elif(accumulate):
                     m.d.sync += self.error_code.eq(Conv2dError.UNSUPPORTED_ACCUMULATE)
                     m.next = "ERROR"
-                with m.Elif(~y_stride_ok | (~beat_ok if self.require_beat_aligned else 0)):
+                with m.Elif(~y_stride_ok):
                     m.d.sync += self.error_code.eq(Conv2dError.UNSUPPORTED_LAYOUT)
                     m.next = "ERROR"
                 with m.Else():
@@ -400,7 +381,7 @@ class Conv2d(Component):
 
             issuer.state(
                 "LOAD_X", "X_NEXT", CTRL_LOAD, DmaOpcode.MEMCPY,
-                dram_addr=x_row, local_addr=self.sp_x + row, len=1,
+                dram_addr=x_row, local_addr=self.sp_x + row, len=1, row_bytes=tile_K * in_bytes,
             )  # fmt: skip
             with m.State("X_NEXT"):
                 m.d.sync += [pos_b.eq(succ_b), pos_oh.eq(succ_oh), pos_ow.eq(succ_ow)]
@@ -417,17 +398,12 @@ class Conv2d(Component):
                     ]
                     m.next = "LOAD_F"
 
+            # The filter tile, one command: rows out_c elements apart
             issuer.state(
-                "LOAD_F", "F_NEXT", CTRL_LOAD, DmaOpcode.MEMCPY,
-                dram_addr=f_row, local_addr=self.sp_f + row, len=1,
+                "LOAD_F", "PRELOAD", CTRL_LOAD, DmaOpcode.MEMCPY,
+                dram_addr=f_tile, local_addr=self.sp_f, len=tile_K,
+                stride=out_c * in_bytes, row_bytes=tile_N * in_bytes,
             )  # fmt: skip
-            with m.State("F_NEXT"):
-                with m.If(row + 1 < tile_K):
-                    m.d.sync += row.eq(row + 1)
-                    m.next = "LOAD_F"
-                with m.Else():
-                    m.d.sync += row.eq(0)
-                    m.next = "PRELOAD"
 
             issuer.state(
                 "PRELOAD", "COMPUTE", CTRL_EXEC, ExecOpcode.PRELOAD, rs1=self.sp_f, k_dim=tile_K
@@ -453,17 +429,12 @@ class Conv2d(Component):
                     m.d.sync += [chunk.eq(0), kw.eq(0), kh.eq(0), row.eq(0)]
                     m.next = "STORE"
 
+            # The output tile, one command: only its own channels
             issuer.state(
-                "STORE", "Y_NEXT", CTRL_STORE, DmaOpcode.MEMCPY,
-                dram_addr=y_row, local_addr=self.acc_y + row, len=1, activation=activation,
+                "STORE", "NEXT_MN", CTRL_STORE, DmaOpcode.MEMCPY,
+                dram_addr=y_tile, local_addr=self.acc_y, len=tile_M,
+                stride=y_stride, row_bytes=tile_N * acc_bytes, activation=activation,
             )  # fmt: skip
-            with m.State("Y_NEXT"):
-                with m.If(row + 1 < tile_M):
-                    m.d.sync += row.eq(row + 1)
-                    m.next = "STORE"
-                with m.Else():
-                    m.d.sync += row.eq(0)
-                    m.next = "NEXT_MN"
 
             with m.State("NEXT_MN"):
                 with m.If(tile_n + 1 < tiles_N):

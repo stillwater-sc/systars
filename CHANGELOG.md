@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The BlockMover moves a tile from or to any byte address** (#8, 2026-11-02; ported from
+  branes-ai/embodied-ai-soc-generator#14). Following the KPU's CSP model (kpu-sim), the AXI
+  port is `SystolicTop`'s link to L3 and LOAD/STORE are the BlockMover's two legs. A LOAD or
+  STORE now moves a whole tile: `len` rows, `stride` bytes apart (`cmd_stride`; 0 = one beat),
+  `row_bytes` bytes each (`cmd_row_bytes`; 0 = a whole row). A row may start at any byte (a 1-
+  or 2-beat burst, shifted into place); a loaded row is zero-filled past `row_bytes`, and a
+  stored row writes only its own bytes, with AXI byte strobes (`StreamWriter.data_strb`).
+  Consecutive beats from a beat boundary still stream as one burst (up to 256 beats).
+  `tests/unit/test_block_mover.py`. Known limitation: bursts are not split at 4 KB boundaries
+  (#11)
+- **Matmul and Conv2d on dense layouts** (#8): Matmul computes any M, N and K with dense
+  row-major A, B and C at any address, and Conv2d dense NHWC X, F and Y, both verified end to
+  end through a real `SystolicTop`. They issue one LOAD per operand tile (Conv2d: one per
+  output position, and one per filter tile) and one STORE per output tile
+
 - **RTL wavefront animation** (`src/systars/wavefront.py`, `examples/gemm/08_rtl_wavefront.py`,
   2026-11-01; ported from branes-ai/embodied-ai-soc-generator#12). Runs the real
   `SystolicArray` in simulation, records what every PE sees in every cycle, and checks every PE
@@ -68,6 +83,13 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **ISA layout check** (#8): `require_beat_aligned` is gone from `Matmul` and `Conv2d`, and
+  START reports `UNSUPPORTED_LAYOUT` only for a zero stride or output rows that would overlap.
+  C and Y rows no longer need to hold whole N tiles. The ISA examples use dense operands
+  (`07_isa_matmul.py` loses `--any-layout`)
+- **Bank counts** (#8): `sp_banks` and `acc_banks` must be powers of two, and one bank takes
+  no address bits. With one bank, every other row selected a bank that did not exist; with a
+  count that is not a power of two, some rows did
 - **ISA instructions**: `InternalOpcode` and the `dbg_sp_bank_*`/`dbg_acc_bank` ports are gone;
   `cmd_rs1`/`cmd_rs2`/`cmd_rd` are 32-bit and carry execute operands only. START reports
   `UNSUPPORTED_LAYOUT` when the DMA could not move a row (today N and K must each fit one tile

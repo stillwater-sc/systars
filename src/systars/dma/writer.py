@@ -34,6 +34,7 @@ class StreamWriter(Component):
         data_valid: Write data valid
         data_ready: Ready to accept data
         data: Write data (dma_buswidth bits)
+        data_strb: Byte strobes for the beat (default: all bytes)
         data_last: Last beat of burst
 
     Status Interface:
@@ -81,6 +82,8 @@ class StreamWriter(Component):
                 "data_ready": Out(1),
                 "data": In(buswidth),
                 "data_last": In(1),
+                # Byte strobes for this beat (all bytes unless driven)
+                "data_strb": In(strb_width, init=(1 << strb_width) - 1),
                 # Status
                 "busy": Out(1),
                 "done": Out(1),
@@ -111,7 +114,6 @@ class StreamWriter(Component):
         # Calculate awsize from bus width (log2 of bytes per beat)
         bytes_per_beat = cfg.dma_buswidth // 8
         awsize_value = (bytes_per_beat - 1).bit_length()  # log2
-        strb_all_ones = (1 << bytes_per_beat) - 1
 
         # State machine
         # IDLE: Wait for request
@@ -187,7 +189,7 @@ class StreamWriter(Component):
                     self.data_ready.eq(self.mem_wready),
                     self.mem_wvalid.eq(self.data_valid),
                     self.mem_wdata.eq(self.data),
-                    self.mem_wstrb.eq(strb_all_ones),
+                    self.mem_wstrb.eq(self.data_strb),
                     self.mem_wlast.eq(self.data_last),
                 ]
 

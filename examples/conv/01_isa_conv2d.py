@@ -12,13 +12,13 @@ implicit GEMM:
 
 For each K tile it LOADs one row per output position (the input pixel that
 kernel offset reads, with stride, dilation and padding applied, or a zero row
-in the padding) and the filter rows, then PRELOADs the filter rows as weights and
-COMPUTEs; after the K tiles it STOREs the output rows.
+in the padding) and the filter tile (one command), then PRELOADs the filter rows
+as weights and COMPUTEs; after the K tiles it STOREs the output tile (one
+command). X, F and Y are dense NHWC at any address: the tile's BlockMover moves
+rows from and to any byte.
 
 Here a stand-in controller accepts and completes every command, and the demo
-prints a summary of the command stream and checks it against the tiling. The
-tile's DMA moves whole bus beats, which these layouts do not meet, so the demo
-turns Conv2d's beat-alignment check off (see ``isa/conv2d.py``).
+prints a summary of the command stream and checks it against the tiling.
 
 Usage:
     python 01_isa_conv2d.py [--batch B] [--in-h H] [--in-w W] [--in-c C] [--out-c C]
@@ -59,8 +59,8 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
     config = SystolicConfig(
         grid_rows=array_dim, grid_cols=array_dim, sp_capacity_kb=4, acc_capacity_kb=4
     )
-    conv = Conv2d(config, require_beat_aligned=False)
-    y_stride = -(-out_c // array_dim) * array_dim * 4  # output rows hold whole N tiles
+    conv = Conv2d(config)
+    y_stride = 0  # dense output: out_c results per position
     trace, status = [], {}
 
     async def controller(ctx):
@@ -133,12 +133,12 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
         for _tn in tiles(out_c):
             for _kh in range(kernel):
                 for _kw in range(kernel):
-                    for tk in tiles(in_c):
-                        expected["loads"] += tm + tk
+                    for _tk in tiles(in_c):
+                        expected["loads"] += tm + 1  # a row per position, the filter tile
             expected["PRELOAD"] += k_tiles
             expected["COMPUTE"] += 1
             expected["COMPUTE_ACCUMULATE"] += k_tiles - 1
-            expected["stores"] += tm
+            expected["stores"] += 1  # the output tile
     actual = {
         "loads": sum(1 for t in trace if t[0] == CTRL_LOAD),
         "stores": sum(1 for t in trace if t[0] == CTRL_STORE),
