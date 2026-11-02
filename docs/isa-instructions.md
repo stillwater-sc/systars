@@ -26,10 +26,14 @@ check, for a DMA that can address any byte. Bias, and accumulating onto an exist
 ## Examples
 
 ```bash
-python examples/gemm/07_isa_matmul.py            # Matmul on a real SystolicTop
+python examples/gemm/07_isa_matmul.py            # Matmul's command stream
 python examples/gemm/07_isa_matmul.py --any-layout
-python examples/conv/01_isa_conv2d.py            # Conv2d command stream, checked against numpy
+python examples/conv/01_isa_conv2d.py            # Conv2d's command stream
 ```
+
+Both run the instruction in simulation against a stand-in controller that accepts and
+completes every command, and check the count of each command against the tiling. They do
+not run `SystolicTop` or check numerical results; the unit tests below do.
 
 ## Verification
 
