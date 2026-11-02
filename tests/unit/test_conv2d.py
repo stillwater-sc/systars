@@ -1,880 +1,251 @@
 """
-Unit tests for the Conv2D ISA instruction.
+Unit tests for the Conv2D ISA instruction (an implicit GEMM).
 
-Tests cover:
-- Configuration interface
-- Dimension calculation (M, N, K mapping)
-- Address calculation for different tile positions
-- Edge tile size handling
-- Dataflow selection heuristics
-- Command emission
+The command stream Conv2d issues is run through a Python model of SystolicTop
+(``_isa.TopModel``) and the output compared with a numpy NHWC convolution: this
+checks the address arithmetic (output-position decoding, kernel offsets, stride,
+padding, dilation, channel chunks and N tiles). The layout check is off for
+those, because the tile's DMA cannot load these layouts (see ``isa/conv2d.py``).
 """
 
+import numpy as np
 import pytest
-from amaranth.sim import Simulator, Tick
 
-from systars.config import SystolicConfig
-from systars.isa.conv2d import Conv2d, Conv2dCmd
+from systars.config import Dataflow, SystolicConfig
+from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE
+from systars.isa.conv2d import Conv2d, Conv2dCmd, Conv2dError
+from systars.util.commands import ExecOpcode
+
+from ._isa import TopModel, run_isa, to_unsigned_bytes
+from ._sim import skip_without_yosys
+
+X_ADDR, F_ADDR, Y_ADDR, ZERO_ADDR = 0x1000, 0x20000, 0x40000, 0xF0000
+DIM = 4
 
 
-@pytest.fixture
-def config():
-    """Create a small test configuration."""
-    return SystolicConfig(
-        grid_rows=4,
-        grid_cols=4,
-        tile_rows=1,
-        tile_cols=1,
-        input_bits=8,
-        acc_bits=32,
+def config(**overrides):
+    fields = {"grid_rows": DIM, "grid_cols": DIM, "sp_capacity_kb": 4, "acc_capacity_kb": 4}
+    fields.update(overrides)
+    return SystolicConfig(**fields)
+
+
+def out_size(size, kernel, stride, pad, dilation):
+    return (size + 2 * pad - dilation * (kernel - 1) - 1) // stride + 1
+
+
+def reference(X, F, stride, pad, dilation):
+    batch, in_h, in_w, _ = X.shape
+    kh_n, kw_n, _, out_c = F.shape
+    oh_n = out_size(in_h, kh_n, stride[0], pad[0], dilation[0])
+    ow_n = out_size(in_w, kw_n, stride[1], pad[1], dilation[1])
+    Y = np.zeros((batch, oh_n, ow_n, out_c), dtype=np.int64)
+    for b in range(batch):
+        for oh in range(oh_n):
+            for ow in range(ow_n):
+                for kh in range(kh_n):
+                    for kw in range(kw_n):
+                        ih = oh * stride[0] + kh * dilation[0] - pad[0]
+                        iw = ow * stride[1] + kw * dilation[1] - pad[1]
+                        if 0 <= ih < in_h and 0 <= iw < in_w:
+                            Y[b, oh, ow] += X[b, ih, iw] @ F[kh, kw]
+    return Y
+
+
+def setup(
+    X_shape,
+    F_shape,
+    stride=(1, 1),
+    pad=(0, 0),
+    dilation=(1, 1),
+    *,
+    y_stride=0,
+    zero=True,
+    bias=0,
+    options=0,
+):
+    batch, in_h, in_w, in_c = X_shape
+    kh, kw, _, out_c = F_shape
+    oh = out_size(in_h, kh, stride[0], pad[0], dilation[0])
+    ow = out_size(in_w, kw, stride[1], pad[1], dilation[1])
+    cmds = [
+        (Conv2dCmd.CONFIG_INPUT_DIMS, batch | in_h << 8 | in_w << 24 | in_c << 40),
+        (Conv2dCmd.CONFIG_OUTPUT_DIMS, oh | ow << 16 | out_c << 32),
+        (Conv2dCmd.CONFIG_KERNEL_DIMS, kh | kw << 8),
+        (Conv2dCmd.CONFIG_STRIDE, stride[0] | stride[1] << 8),
+        (Conv2dCmd.CONFIG_PADDING, pad[0] | pad[1] << 8),
+        (Conv2dCmd.CONFIG_DILATION, dilation[0] | dilation[1] << 8),
+        (Conv2dCmd.CONFIG_X_ADDR, X_ADDR),
+        (Conv2dCmd.CONFIG_F_ADDR, F_ADDR),
+        (Conv2dCmd.CONFIG_Y_ADDR, Y_ADDR),
+        (Conv2dCmd.CONFIG_B_ADDR, bias),
+        (Conv2dCmd.CONFIG_Y_STRIDE, y_stride),
+        (Conv2dCmd.CONFIG_OPTIONS, options),
+    ]
+    if zero:
+        cmds.append((Conv2dCmd.CONFIG_ZERO_ADDR, ZERO_ADDR))
+    return cmds
+
+
+def y_stride_for(out_c):
+    """Bytes between output positions: whole N tiles of 32-bit results."""
+    return -(-out_c // DIM) * DIM * 4
+
+
+def check(X_shape, F_shape, stride=(1, 1), pad=(0, 0), dilation=(1, 1), seed=0):
+    rng = np.random.default_rng(seed)
+    X = rng.integers(-128, 128, X_shape)
+    F = rng.integers(-128, 128, F_shape)
+    expected = reference(X, F, stride, pad, dilation)
+    y_stride = y_stride_for(F_shape[3])
+
+    cfg = config()
+    isa = Conv2d(cfg, require_beat_aligned=False)
+    result = run_isa(
+        isa,
+        setup(X_shape, F_shape, stride, pad, dilation, y_stride=y_stride),
+        Conv2dCmd.START,
+        latency=0,
     )
+    assert result.done and not result.error, f"error {result.error_code:#x}"
+
+    model = TopModel(cfg)
+    model.write(X_ADDR, to_unsigned_bytes(X, 8))
+    model.write(F_ADDR, to_unsigned_bytes(F, 8))
+    model.run(result.commands)
+    positions = expected.shape[0] * expected.shape[1] * expected.shape[2]
+    out_c = F_shape[3]
+    got = np.array([model.read_elems(Y_ADDR + p * y_stride, 32, out_c) for p in range(positions)])
+    np.testing.assert_array_equal(got, expected.reshape(positions, out_c))
+    return result
+
+
+class TestNumerical:
+    def test_pointwise(self):
+        check((1, 3, 3, 3), (1, 1, 3, 4))
+
+    def test_3x3_same_padding_two_channel_chunks_two_n_tiles_two_batches(self):
+        """M tiles cross output rows and batches; K walks 9 offsets x 2 channel chunks."""
+        check((2, 5, 5, 6), (3, 3, 6, 6), pad=(1, 1), seed=1)
+
+    def test_stride_dilation_rectangular_kernel(self):
+        check((1, 9, 7, 2), (2, 3, 2, 3), stride=(2, 1), pad=(2, 1), dilation=(2, 2), seed=2)
+
+    def test_stride_two_no_padding(self):
+        check((1, 8, 8, 4), (3, 3, 4, 2), stride=(2, 2), seed=3)
+
+    def test_kernel_larger_than_padding_reach(self):
+        """Output positions whose whole window is padding read only zero rows."""
+        check((1, 2, 2, 1), (3, 3, 1, 1), pad=(3, 3), seed=4)
+
+
+class TestCommandStream:
+    def commands(self, **kw):
+        X_shape, F_shape = (1, 4, 4, 2), (3, 3, 2, 3)
+        cfg = config()
+        cmds = setup(X_shape, F_shape, pad=(1, 1), y_stride=y_stride_for(3), **kw)
+        return run_isa(
+            Conv2d(cfg, require_beat_aligned=False), cmds, Conv2dCmd.START, latency=0
+        ).commands
+
+    def test_structure(self):
+        cmds = self.commands()
+        assert (cmds[0].type, cmds[0].opcode, cmds[0].rs1) == (CTRL_EXEC, ExecOpcode.CONFIG, 1)
+        execs = [c.opcode for c in cmds[1:] if c.type == CTRL_EXEC]
+        # 16 positions = 4 M tiles, 1 N tile, 9 K tiles (3x3 kernel, 1 channel chunk)
+        per_m_tile = [ExecOpcode.PRELOAD, ExecOpcode.COMPUTE] + [
+            ExecOpcode.PRELOAD,
+            ExecOpcode.COMPUTE_ACCUMULATE,
+        ] * 8
+        assert execs == per_m_tile * 4
+        assert len([c for c in cmds if c.type == CTRL_STORE]) == 16
+        assert all(c.len == 1 for c in cmds if c.type in (CTRL_LOAD, CTRL_STORE))
+
+    def test_padding_rows_load_the_zero_row(self):
+        cmds = self.commands()
+        x_loads = [c for c in cmds if c.type == CTRL_LOAD and c.local_addr < DIM]
+        zero = [c for c in x_loads if c.dram_addr == ZERO_ADDR]
+        # Kernel offset (0, 0) of the first M tile (positions (0,0)..(0,3)) is all padding
+        assert all(c.dram_addr == ZERO_ADDR for c in x_loads[:4])
+        assert zero and len(zero) < len(x_loads)
+
+
+class TestErrors:
+    def run(self, cmds, aligned=False):
+        return run_isa(Conv2d(config(), require_beat_aligned=aligned), cmds, Conv2dCmd.START)
+
+    def test_start_without_config(self):
+        assert self.run([]).error_code == Conv2dError.CONFIG_INCOMPLETE
+
+    def test_padding_needs_zero_row(self):
+        cmds = setup((1, 4, 4, 4), (3, 3, 4, 4), pad=(1, 1), zero=False)
+        assert self.run(cmds).error_code == Conv2dError.CONFIG_INCOMPLETE
+
+    def test_zero_stride(self):
+        cmds = setup((1, 4, 4, 4), (1, 1, 4, 4))
+        cmds.append((Conv2dCmd.CONFIG_STRIDE, 0))
+        assert self.run(cmds).error_code == Conv2dError.INVALID_DIMS
+
+    def test_bias_is_unsupported(self):
+        cmds = setup((1, 4, 4, 4), (1, 1, 4, 4), bias=0x8000)
+        assert self.run(cmds).error_code == Conv2dError.UNSUPPORTED_BIAS
+
+    def test_accumulate_is_unsupported(self):
+        """Y is never loaded into the accumulator, so accumulating onto it would add stale rows."""
+        cmds = setup((1, 4, 4, 4), (1, 1, 4, 4), y_stride=y_stride_for(4), options=1)
+        result = self.run(cmds)
+        assert result.error_code == Conv2dError.UNSUPPORTED_ACCUMULATE
+        assert not result.commands
+
+    def test_dense_output_with_partial_n_tile(self):
+        """out_c = 5 needs 8 results per position (two N tiles); dense is 5: rejected."""
+        cmds = setup((1, 4, 4, 4), (1, 1, 4, 5))
+        result = self.run(cmds)
+        assert result.error_code == Conv2dError.UNSUPPORTED_LAYOUT
+        assert not result.commands
+
+    def test_default_rejects_layouts_the_dma_cannot_move(self):
+        cmds = setup((1, 4, 4, 4), (1, 1, 4, 4))
+        assert self.run(cmds, aligned=True).error_code == Conv2dError.UNSUPPORTED_LAYOUT
+
 
-
-@pytest.fixture
-def conv2d(config):
-    """Create a Conv2d instance."""
-    return Conv2d(config)
-
-
-class TestConv2dConfiguration:
-    """Test configuration interface."""
-
-    def test_config_input_dims(self, conv2d):
-        """Test input dimension configuration."""
-
-        def testbench():
-            # Configure input dimensions: batch=1, height=8, width=8, channels=3
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_INPUT_DIMS)
-            # Pack: in_c[55:40] | in_w[39:24] | in_h[23:8] | batch[7:0]
-            yield conv2d.cfg_data.eq((3 << 40) | (8 << 24) | (8 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-            yield Tick()
-
-            # Verify dimensions were latched
-            assert (yield conv2d.param_batch) == 1
-            assert (yield conv2d.param_in_h) == 8
-            assert (yield conv2d.param_in_w) == 8
-            assert (yield conv2d.param_in_c) == 3
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-    def test_config_output_dims(self, conv2d):
-        """Test output dimension configuration."""
-
-        def testbench():
-            # Configure output dimensions: out_h=6, out_w=6, out_c=16
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_OUTPUT_DIMS)
-            # Pack: out_c[47:32] | out_w[31:16] | out_h[15:0]
-            yield conv2d.cfg_data.eq((16 << 32) | (6 << 16) | 6)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-            yield Tick()
-
-            # Verify dimensions were latched
-            assert (yield conv2d.param_out_h) == 6
-            assert (yield conv2d.param_out_w) == 6
-            assert (yield conv2d.param_out_c) == 16
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-    def test_config_kernel_dims(self, conv2d):
-        """Test kernel dimension configuration."""
-
-        def testbench():
-            # Configure kernel dimensions: kernel_h=3, kernel_w=3
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_KERNEL_DIMS)
-            # Pack: kernel_w[15:8] | kernel_h[7:0]
-            yield conv2d.cfg_data.eq((3 << 8) | 3)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-            yield Tick()
-
-            # Verify dimensions were latched
-            assert (yield conv2d.param_kernel_h) == 3
-            assert (yield conv2d.param_kernel_w) == 3
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-    def test_config_addresses(self, conv2d):
-        """Test address configuration."""
-
-        def testbench():
-            # Configure X address
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_X_ADDR)
-            yield conv2d.cfg_data.eq(0x1000_0000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Configure F address
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_F_ADDR)
-            yield conv2d.cfg_data.eq(0x2000_0000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Configure Y address
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_Y_ADDR)
-            yield conv2d.cfg_data.eq(0x3000_0000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-
-class TestDimensionMapping:
-    """Test M, N, K dimension mapping from conv2d parameters."""
-
-    def test_dimension_calculation(self, conv2d):
-        """Test that M, N, K are calculated correctly after START."""
-
-        def testbench():
-            yield conv2d.cmd_ready.eq(1)
-
-            # Configure for a simple 8x8 input, 3x3 kernel, 16 output channels
-            # Input: batch=1, height=8, width=8, channels=3
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_INPUT_DIMS)
-            yield conv2d.cfg_data.eq((3 << 40) | (8 << 24) | (8 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Output: out_h=6, out_w=6, out_c=16 (valid padding)
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_OUTPUT_DIMS)
-            yield conv2d.cfg_data.eq((16 << 32) | (6 << 16) | 6)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Kernel: 3x3
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_KERNEL_DIMS)
-            yield conv2d.cfg_data.eq((3 << 8) | 3)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Addresses
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_X_ADDR)
-            yield conv2d.cfg_data.eq(0x1000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_F_ADDR)
-            yield conv2d.cfg_data.eq(0x2000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_Y_ADDR)
-            yield conv2d.cfg_data.eq(0x3000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Start execution
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.START)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-
-            # Wait for INIT and CALC_TILES to complete
-            for _ in range(5):
-                yield Tick()
-
-            # Verify M, N, K calculation:
-            # M = batch * out_h * out_w = 1 * 6 * 6 = 36
-            # N = out_c = 16
-            # K = kernel_h * kernel_w * in_c = 3 * 3 * 3 = 27
-            assert (yield conv2d.param_M) == 36
-            assert (yield conv2d.param_N) == 16
-            assert (yield conv2d.param_K) == 27
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-
-class TestDataflowSelection:
-    """Test automatic dataflow selection."""
-
-    def test_output_stationary_default(self, conv2d):
-        """Test that output-stationary is selected for balanced dimensions."""
-
-        def testbench():
-            yield conv2d.cmd_ready.eq(1)
-
-            # Configure for balanced dimensions
-            # Input: batch=1, height=16, width=16, channels=8
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_INPUT_DIMS)
-            yield conv2d.cfg_data.eq((8 << 40) | (16 << 24) | (16 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Output: out_h=16, out_w=16, out_c=8 (same padding)
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_OUTPUT_DIMS)
-            yield conv2d.cfg_data.eq((8 << 32) | (16 << 16) | 16)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Kernel: 1x1 (so K is small)
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_KERNEL_DIMS)
-            yield conv2d.cfg_data.eq((1 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Addresses
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_X_ADDR)
-            yield conv2d.cfg_data.eq(0x1000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_F_ADDR)
-            yield conv2d.cfg_data.eq(0x2000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_Y_ADDR)
-            yield conv2d.cfg_data.eq(0x3000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Start execution
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.START)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-
-            # Wait for initialization
-            for _ in range(5):
-                yield Tick()
-
-            # Should select output-stationary (0)
-            # M = 1 * 16 * 16 = 256, N = 8, K = 1 * 1 * 8 = 8
-            # K (8) is NOT > M (256) << 1, so should be OS
-            assert (yield conv2d.selected_dataflow) == 0
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-    def test_weight_stationary_large_kernel(self, conv2d):
-        """Test that weight-stationary is selected when K is large."""
-
-        def testbench():
-            yield conv2d.cmd_ready.eq(1)
-
-            # Configure for small spatial, large kernel
-            # Input: batch=1, height=4, width=4, channels=64
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_INPUT_DIMS)
-            yield conv2d.cfg_data.eq((64 << 40) | (4 << 24) | (4 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Output: out_h=2, out_w=2, out_c=4
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_OUTPUT_DIMS)
-            yield conv2d.cfg_data.eq((4 << 32) | (2 << 16) | 2)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Kernel: 3x3
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_KERNEL_DIMS)
-            yield conv2d.cfg_data.eq((3 << 8) | 3)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Addresses
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_X_ADDR)
-            yield conv2d.cfg_data.eq(0x1000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_F_ADDR)
-            yield conv2d.cfg_data.eq(0x2000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_Y_ADDR)
-            yield conv2d.cfg_data.eq(0x3000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Start execution
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.START)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-
-            # Wait for initialization
-            for _ in range(5):
-                yield Tick()
-
-            # M = 1 * 2 * 2 = 4, N = 4, K = 3 * 3 * 64 = 576
-            # K (576) > M (4) << 1 = 8, so should be WS (1)
-            assert (yield conv2d.selected_dataflow) == 1
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-
-class TestCommandEmission:
-    """Test command emission from state machine."""
-
-    def test_config_command_emitted(self, conv2d):
-        """Test that CONFIG command is emitted after START."""
-        from systars.isa.conv2d import InternalOpcode
-
-        commands_seen = []
-
-        def testbench():
-            yield conv2d.cmd_ready.eq(1)
-
-            # Configure for simple conv2d
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_INPUT_DIMS)
-            yield conv2d.cfg_data.eq((3 << 40) | (4 << 24) | (4 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_OUTPUT_DIMS)
-            yield conv2d.cfg_data.eq((4 << 32) | (4 << 16) | 4)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_KERNEL_DIMS)
-            yield conv2d.cfg_data.eq((1 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_X_ADDR)
-            yield conv2d.cfg_data.eq(0x1000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_F_ADDR)
-            yield conv2d.cfg_data.eq(0x2000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_Y_ADDR)
-            yield conv2d.cfg_data.eq(0x3000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Start execution
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.START)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-
-            # Collect commands for several cycles
-            for _ in range(15):
-                yield Tick()
-                valid = yield conv2d.cmd_valid
-                if valid:
-                    opcode = yield conv2d.cmd_opcode
-                    rs1 = yield conv2d.cmd_rs1
-                    rs2 = yield conv2d.cmd_rs2
-                    commands_seen.append((opcode, rs1, rs2))
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        # Verify we saw commands
-        assert len(commands_seen) > 0, "No commands were emitted"
-
-        # First command should be CONFIG
-        assert commands_seen[0][0] == InternalOpcode.EXEC_CONFIG
-
-        # Should see LOAD_X and LOAD_F
-        opcodes = [cmd[0] for cmd in commands_seen]
-        assert InternalOpcode.LOAD_X in opcodes
-        assert InternalOpcode.LOAD_F in opcodes
-
-
-class TestErrorHandling:
-    """Test error handling."""
-
-    def test_start_without_config(self, conv2d):
-        """Test that starting without configuration raises an error."""
-        from systars.isa.conv2d import Conv2dError
-
-        def testbench():
-            # Try to start without configuring anything
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.START)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-
-            # Check error immediately after START
-            yield Tick()
-            error_code = yield conv2d.error_code
-            assert error_code == Conv2dError.CONFIG_INCOMPLETE
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-    def test_partial_config_error(self, conv2d):
-        """Test that starting with partial configuration raises an error."""
-        from systars.isa.conv2d import Conv2dError
-
-        def testbench():
-            # Configure only input dimensions
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_INPUT_DIMS)
-            yield conv2d.cfg_data.eq((3 << 40) | (8 << 24) | (8 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Try to start without output dims, kernel dims, or addresses
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.START)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-
-            yield Tick()
-            error_code = yield conv2d.error_code
-            assert error_code == Conv2dError.CONFIG_INCOMPLETE
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-
-class TestBackpressure:
-    """Test backpressure handling for command interface."""
-
-    def test_stall_on_backpressure(self, conv2d):
-        """Test that state machine stalls when cmd_ready is low."""
-        from systars.isa.conv2d import InternalOpcode
-
-        def testbench():
-            # Start with cmd_ready low
-            yield conv2d.cmd_ready.eq(0)
-
-            # Full configuration
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_INPUT_DIMS)
-            yield conv2d.cfg_data.eq((3 << 40) | (4 << 24) | (4 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_OUTPUT_DIMS)
-            yield conv2d.cfg_data.eq((4 << 32) | (4 << 16) | 4)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_KERNEL_DIMS)
-            yield conv2d.cfg_data.eq((1 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_X_ADDR)
-            yield conv2d.cfg_data.eq(0x1000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_F_ADDR)
-            yield conv2d.cfg_data.eq(0x2000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_Y_ADDR)
-            yield conv2d.cfg_data.eq(0x3000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Start execution
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.START)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-
-            # Wait for INIT and CALC_TILES
-            yield Tick()
-            yield Tick()
-            yield Tick()
-
-            # Should be stuck in CONFIG state with cmd_valid high
-            valid = yield conv2d.cmd_valid
-            opcode = yield conv2d.cmd_opcode
-            assert valid == 1, "cmd_valid should be high in CONFIG state"
-            assert opcode == InternalOpcode.EXEC_CONFIG
-
-            # Run several cycles with cmd_ready=0 - should stay stuck
-            for _ in range(3):
-                yield Tick()
-                valid = yield conv2d.cmd_valid
-                opcode = yield conv2d.cmd_opcode
-                assert valid == 1
-                assert opcode == InternalOpcode.EXEC_CONFIG
-
-            # Assert cmd_ready - should advance
-            yield conv2d.cmd_ready.eq(1)
-            yield Tick()
-
-            # Should have moved to LOAD_X state
-            opcode = yield conv2d.cmd_opcode
-            assert opcode == InternalOpcode.LOAD_X
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-
-class TestDoubleBuffering:
-    """Test double buffering bank selection."""
-
-    def test_bank_toggling(self, conv2d):
-        """Test that scratchpad banks toggle after each K iteration."""
-        from systars.isa.conv2d import InternalOpcode
-
-        bank_history = []
-
-        def testbench():
-            yield conv2d.cmd_ready.eq(1)
-
-            # Configure for conv2d with multiple K tiles
-            # Input: batch=1, h=4, w=4, c=8 (K = 1*1*8 = 8, 2 tiles at dim=4)
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_INPUT_DIMS)
-            yield conv2d.cfg_data.eq((8 << 40) | (4 << 24) | (4 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_OUTPUT_DIMS)
-            yield conv2d.cfg_data.eq((4 << 32) | (4 << 16) | 4)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_KERNEL_DIMS)
-            yield conv2d.cfg_data.eq((1 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_X_ADDR)
-            yield conv2d.cfg_data.eq(0x1000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_F_ADDR)
-            yield conv2d.cfg_data.eq(0x2000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_Y_ADDR)
-            yield conv2d.cfg_data.eq(0x3000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Start execution
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.START)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-
-            # Collect bank values at each LOAD_X command
-            for _ in range(50):
-                yield Tick()
-                valid = yield conv2d.cmd_valid
-                opcode = yield conv2d.cmd_opcode
-                if valid and opcode == InternalOpcode.LOAD_X:
-                    bank_x = yield conv2d.dbg_sp_bank_X
-                    bank_f = yield conv2d.dbg_sp_bank_F
-                    bank_history.append((bank_x, bank_f))
-
-                done = yield conv2d.done
-                if done:
-                    break
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        # With K=8 and dim=4, we should have 2 K iterations
-        # First should use banks (0, 1), second should use (2, 3)
-        assert len(bank_history) >= 2, f"Expected at least 2 LOAD_X, got {len(bank_history)}"
-        assert bank_history[0] == (0, 1), (
-            f"First LOAD_X should use banks (0,1), got {bank_history[0]}"
-        )
-        assert bank_history[1] == (2, 3), (
-            f"Second LOAD_X should use banks (2,3), got {bank_history[1]}"
+class TestConstruction:
+    def test_requires_weight_stationary(self):
+        with pytest.raises(ValueError, match="weight-stationary"):
+            Conv2d(config(dataflow=Dataflow.OUTPUT_STATIONARY))
+
+    def test_requires_square_power_of_two(self):
+        with pytest.raises(ValueError, match="square"):
+            Conv2d(config(grid_cols=2))
+        with pytest.raises(ValueError, match="power-of-two"):
+            Conv2d(config(grid_rows=3, grid_cols=3))
+
+    def test_verilog(self):
+        skip_without_yosys()
+        from amaranth.back import verilog
+
+        assert "module Conv2d" in verilog.convert(Conv2d(config()), name="Conv2d")
+
+
+def test_m_tile_count_does_not_truncate():
+    """batch 8 x 224 x 224 = 401,408 positions = 100,352 M tiles: wider than 16 bits."""
+    from ._sim import run_sim
+
+    isa = Conv2d(config(), require_beat_aligned=False)
+    cmds = setup((8, 224, 224, 4), (1, 1, 4, 4), y_stride=y_stride_for(4))
+    seen = {}
+
+    async def testbench(ctx):
+        for cmd, data in [*cmds, (Conv2dCmd.START, 0)]:
+            ctx.set(isa.cfg_valid, 1)
+            ctx.set(isa.cfg_cmd, cmd)
+            ctx.set(isa.cfg_data, data)
+            await ctx.tick()
+        ctx.set(isa.cfg_valid, 0)
+        # The first command (CONFIG) is issued after the tile counts are computed
+        await ctx.tick().until(isa.cmd_valid)
+        seen.update(
+            M=ctx.get(isa.param_M), tiles=ctx.get(isa.dbg_tiles_M), error=ctx.get(isa.error)
         )
 
-
-class TestCompleteTiledConv2d:
-    """Test complete tiled conv2d execution."""
-
-    def test_simple_conv2d_execution(self, conv2d):
-        """Test execution of simple 4x4 conv2d with 1x1 kernel."""
-        from systars.isa.conv2d import InternalOpcode
-
-        command_sequence = []
-
-        def testbench():
-            yield conv2d.cmd_ready.eq(1)
-
-            # Configure for 4x4 input, 1x1 kernel, 4 output channels
-            # M = 1 * 4 * 4 = 16, N = 4, K = 1 * 1 * 3 = 3
-            # With dim=4: tiles_M=4, tiles_N=1, tiles_K=1
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_INPUT_DIMS)
-            yield conv2d.cfg_data.eq((3 << 40) | (4 << 24) | (4 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_OUTPUT_DIMS)
-            yield conv2d.cfg_data.eq((4 << 32) | (4 << 16) | 4)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_KERNEL_DIMS)
-            yield conv2d.cfg_data.eq((1 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_X_ADDR)
-            yield conv2d.cfg_data.eq(0x1000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_F_ADDR)
-            yield conv2d.cfg_data.eq(0x2000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_Y_ADDR)
-            yield conv2d.cfg_data.eq(0x3000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Start execution
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.START)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-
-            # Run until done
-            for _ in range(200):
-                yield Tick()
-                valid = yield conv2d.cmd_valid
-                if valid:
-                    opcode = yield conv2d.cmd_opcode
-                    command_sequence.append(opcode)
-
-                done = yield conv2d.done
-                if done:
-                    break
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        # Verify command sequence structure
-        # M=16, N=4, K=3 with dim=4: tiles_M=4, tiles_N=1, tiles_K=1
-        # Each output tile: LOAD_X, LOAD_F, PRELOAD, COMPUTE, STORE
-        # 4 output tiles total = 4 STORE_Y commands
-        store_count = sum(1 for op in command_sequence if op == InternalOpcode.STORE_Y)
-        assert store_count == 4, f"Expected 4 STORE_Y commands, got {store_count}"
-
-        # 4 LOAD_X commands (1 per tile * 4 tiles)
-        load_x_count = sum(1 for op in command_sequence if op == InternalOpcode.LOAD_X)
-        assert load_x_count == 4, f"Expected 4 LOAD_X commands, got {load_x_count}"
-
-    def test_with_bias(self, conv2d):
-        """Test execution with bias loading."""
-        from systars.isa.conv2d import InternalOpcode
-
-        load_b_count = 0
-
-        def testbench():
-            nonlocal load_b_count
-            yield conv2d.cmd_ready.eq(1)
-
-            # Configure for simple conv2d with bias
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_INPUT_DIMS)
-            yield conv2d.cfg_data.eq((3 << 40) | (4 << 24) | (4 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_OUTPUT_DIMS)
-            yield conv2d.cfg_data.eq((4 << 32) | (4 << 16) | 4)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_KERNEL_DIMS)
-            yield conv2d.cfg_data.eq((1 << 8) | 1)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_X_ADDR)
-            yield conv2d.cfg_data.eq(0x1000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_F_ADDR)
-            yield conv2d.cfg_data.eq(0x2000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_Y_ADDR)
-            yield conv2d.cfg_data.eq(0x3000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Set bias address (non-zero to enable bias loading)
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.CONFIG_B_ADDR)
-            yield conv2d.cfg_data.eq(0x4000)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-            yield Tick()
-
-            # Start execution
-            yield conv2d.cfg_valid.eq(1)
-            yield conv2d.cfg_cmd.eq(Conv2dCmd.START)
-            yield Tick()
-            yield conv2d.cfg_valid.eq(0)
-
-            # Run until done
-            for _ in range(200):
-                yield Tick()
-                valid = yield conv2d.cmd_valid
-                if valid:
-                    opcode = yield conv2d.cmd_opcode
-                    if opcode == InternalOpcode.LOAD_B:
-                        load_b_count += 1
-
-                done = yield conv2d.done
-                if done:
-                    break
-
-        sim = Simulator(conv2d)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        # Should have 4 LOAD_B commands (one per output tile)
-        assert load_b_count == 4, f"Expected 4 LOAD_B commands, got {load_b_count}"
+    run_sim(isa, testbench, max_cycles=200)
+    assert seen == {"M": 8 * 224 * 224, "tiles": 8 * 224 * 224 // DIM, "error": 0}

@@ -20,6 +20,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### The Matmul and Conv2d ISA instructions issue commands the tile executes (2026-11-01)
+
+Ported from branes-ai/embodied-ai-soc-generator#11, items 4–6 of #2. They emitted private
+opcodes (`EXEC_PRELOAD` 0x01 and `EXEC_COMPUTE` 0x02, which the execute controller does not
+decode, while their `LOAD_A` 0x10 is its `PRELOAD`), a CONFIG dataflow of 0/1/2 that the
+controller reads as 0/1, and scratchpad and accumulator addresses with the bank in
+`bank << 16`, where the memories decode it from the low bits. Now:
+
+- both issue on a shared command port (`isa/command.py`): the target controller (`cmd_type`)
+  and that controller's own opcode (`DmaOpcode`, `ExecOpcode`), with `SystolicTop`'s fields.
+  `connect_to_top` wires an instruction to a `SystolicTop`
+- they issue one command at a time and wait for its completion (`cmd_completed`), since the
+  accelerator has no dependency tracking
+- both run weight-stationary, loading one matrix row per scratchpad row at its exact address,
+  with tile buffers at consecutive `LocalAddr` rows
+- *Conv2d addressing*: the output position (batch, row, column) of each M-tile row was never
+  decoded, the kernel offsets were dropped, and stride, padding and dilation were never
+  applied. Conv2d is now an implicit GEMM: one K tile per kernel offset and chunk of input
+  channels, each row loading the input pixel that offset reads, or a zero row
+  (`CONFIG_ZERO_ADDR`) in the padding. Its M-tile counters are 40 bits wide
+  (`batch * out_h * out_w` overflowed 16)
+
+`tests/unit/test_matmul.py` and `tests/unit/test_conv2d.py` run the issued commands through a
+Python model of `SystolicTop` (`tests/unit/_isa.py`) and match numpy; Matmul also drives a real
+`SystolicTop` to a correct C. See [ISA instructions](docs/isa-instructions.md).
+
 #### SystolicTop computes a GEMM end to end (2026-11-01)
 
 Ported from branes-ai/embodied-ai-soc-generator#9, items 1–3 and 7 of #2. `SystolicTop` now
@@ -42,6 +68,15 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **ISA instructions**: `InternalOpcode` and the `dbg_sp_bank_*`/`dbg_acc_bank` ports are gone;
+  `cmd_rs1`/`cmd_rs2`/`cmd_rd` are 32-bit and carry execute operands only. START reports
+  `UNSUPPORTED_LAYOUT` when the DMA could not move a row (today N and K must each fit one tile
+  for Matmul, and real convolutions do not fit; `require_beat_aligned=False` skips the check),
+  and `UNSUPPORTED_BIAS` for a bias. `UNSUPPORTED_ACCUMULATE` rejects the accumulate option
+  (`CONFIG_OPTIONS` bit 0): C or Y is never loaded into the accumulator, so it would have added
+  stale rows from an earlier tile or instruction. Conv2d gains `CONFIG_ZERO_ADDR`, and `CONFIG_Y_STRIDE` is
+  the byte distance between output positions. The ISA examples (`examples/gemm/07_isa_matmul.py`,
+  `examples/conv/01_isa_conv2d.py`) are rewritten against the new port, with a cycle limit
 - **Execute semantics**: `COMPUTE` overwrites its destination rows and `COMPUTE_ACCUMULATE` adds
   to them. OS computes `C[R x C] = A[R x K] @ B[K x C]` from Aᵀ and B rows; WS computes
   `C[M x C] = A[M x R] @ W` with `W` loaded by `PRELOAD` (which no longer reads the accumulator,
@@ -88,13 +123,6 @@ repository's systolic stack. Each RTL fix has a test that fails on the previous 
   discovery no longer collects cocotb tests
 - **Tests**: PE tests now assert their results; new tests for accumulator row semantics,
   descriptor-engine transfers, the read scheduler, LocalAddr layout, and reader elaboration
-
-### Known issues
-
-- The Matmul and Conv2d ISA instructions do not yet issue commands the execute controller
-  decodes (opcodes and CONFIG dataflow values), encode the bank as `bank << 16` where the
-  memories decode it from the low bits, and Conv2d does not apply its input addressing (#2,
-  items 4–6). The GEMM execute path itself is fixed (see Fixed, above)
 
 ### Added
 

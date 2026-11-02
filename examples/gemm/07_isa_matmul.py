@@ -2,353 +2,181 @@
 """
 ISA-Level Matmul Instruction Demo.
 
-This example demonstrates how to use the Matmul ISA instruction, which
-automatically handles tiled matrix multiplication for matrices larger than
-the systolic array.
+The Matmul instruction takes a high-level description (dimensions, addresses,
+strides), tiles the multiply for the array, and issues the commands a host would
+issue to the systolic tile: LOAD (one per tile row), CONFIG, PRELOAD, COMPUTE,
+STORE (one per tile row). Each command names its target controller and that
+controller's own opcode, and is issued only after the previous one completed.
 
-The Matmul instruction:
-1. Accepts high-level configuration (dimensions, addresses, strides)
-2. Automatically selects optimal dataflow (OS, AS, BS)
-3. Tiles the computation to fit the array
-4. Generates internal command sequences (LOAD, PRELOAD, COMPUTE, STORE)
-5. Manages double buffering for latency hiding
+Here a stand-in controller accepts and completes every command, and the demo
+prints the command stream and checks its shape against the tiling.
 
-This is a higher level of abstraction than manual command sequencing -
-the user just configures the operation and issues START.
+By default the operands use the layout the tile's DMA can move (each row one bus
+beat apart, N and K within one tile). ``--any-layout`` uses dense row-major
+operands tiled in M, N and K, with Matmul's beat-alignment check turned off.
 
 Usage:
-    python 07_isa_matmul.py [--M rows] [--N cols] [--K inner] [--array-dim dim]
+    python 07_isa_matmul.py [--M rows] [--N cols] [--K inner] [--array-dim dim] [--any-layout]
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-# Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from amaranth.sim import Simulator, Tick
+from amaranth.sim import Simulator
 
 from systars.config import SystolicConfig
-from systars.isa.matmul import InternalOpcode, Matmul, MatmulCmd
+from systars.isa.command import CTRL_LOAD, CTRL_STORE
+from systars.isa.matmul import Matmul, MatmulCmd, MatmulError
+from systars.util.commands import ExecOpcode
+
+A_ADDR, B_ADDR, C_ADDR = 0x1000_0000, 0x2000_0000, 0x3000_0000
 
 
-def opcode_name(opcode: int) -> str:
-    """Convert opcode to human-readable name."""
-    names = {
-        InternalOpcode.EXEC_CONFIG: "CONFIG",
-        InternalOpcode.EXEC_PRELOAD: "PRELOAD",
-        InternalOpcode.EXEC_COMPUTE: "COMPUTE",
-        InternalOpcode.LOAD_A: "LOAD_A",
-        InternalOpcode.LOAD_B: "LOAD_B",
-        InternalOpcode.LOAD_D: "LOAD_D",
-        InternalOpcode.STORE_C: "STORE_C",
-    }
-    return names.get(opcode, f"UNKNOWN({opcode})")
+def command_name(ctype: int, opcode: int) -> str:
+    if ctype == CTRL_LOAD:
+        return "LOAD"
+    if ctype == CTRL_STORE:
+        return "STORE"
+    return ExecOpcode(opcode).name
 
 
-def run_matmul_demo(M: int, N: int, K: int, array_dim: int, verbose: bool = True):
-    """
-    Run the Matmul ISA instruction demonstration.
-
-    Args:
-        M: Number of rows in output matrix C
-        N: Number of columns in output matrix C
-        K: Inner dimension (cols of A, rows of B)
-        array_dim: Systolic array dimension (assumed square)
-        verbose: Print detailed output
-    """
+def run_matmul_demo(M, N, K, array_dim, any_layout=False, verbose=True):
     print("=" * 70)
-    print("ISA-Level Matmul Instruction Demo")
+    print(f"ISA Matmul: C[{M}x{N}] = A[{M}x{K}] @ B[{K}x{N}] on a {array_dim}x{array_dim} array")
     print("=" * 70)
-
-    # -------------------------------------------------------------------------
-    # 1. Problem Setup
-    # -------------------------------------------------------------------------
-    print("\n1. Problem Setup")
-    print("-" * 40)
-    print(f"   Computing: C[{M}x{N}] = A[{M}x{K}] @ B[{K}x{N}] + D[{M}x{N}]")
-
-    # Calculate tiling
-    tiles_M = (M + array_dim - 1) // array_dim
-    tiles_N = (N + array_dim - 1) // array_dim
-    tiles_K = (K + array_dim - 1) // array_dim
-    total_tiles = tiles_M * tiles_N
-    total_k_iterations = total_tiles * tiles_K
-
-    print(f"\n   Array dimension: {array_dim}x{array_dim}")
-    print(f"   Output tiles: {tiles_M} x {tiles_N} = {total_tiles} tiles")
-    print(f"   K iterations per tile: {tiles_K}")
-    print(f"   Total K iterations: {total_k_iterations}")
-
-    # -------------------------------------------------------------------------
-    # 2. Hardware Configuration
-    # -------------------------------------------------------------------------
-    print("\n2. Hardware Configuration")
-    print("-" * 40)
 
     config = SystolicConfig(
-        grid_rows=array_dim,
-        grid_cols=array_dim,
-        tile_rows=1,
-        tile_cols=1,
-        input_bits=8,
-        acc_bits=32,
+        grid_rows=array_dim, grid_cols=array_dim, sp_capacity_kb=4, acc_capacity_kb=4
     )
+    beat = config.dma_buswidth // 8
+    # Dense A and B, with C rows holding whole N tiles; or one row per DMA beat
+    dense = (K, N, -(-N // array_dim) * array_dim * 4)
+    strides = dense if any_layout else (beat, beat, beat)
+    print(f"   strides (bytes): A={strides[0]} B={strides[1]} C={strides[2]}; DMA beat = {beat}")
 
-    print(f"   Grid: {config.grid_rows}x{config.grid_cols}")
-    print(f"   Input bits: {config.input_bits}")
-    print(f"   Accumulator bits: {config.acc_bits}")
+    matmul = Matmul(config, require_beat_aligned=not any_layout)
+    trace, status = [], {}
 
-    # Create Matmul instruction instance
-    matmul = Matmul(config)
+    async def controller(ctx):
+        """Accept every command and complete it two cycles later."""
+        countdown = None
+        while True:
+            ready = countdown is None
+            ctx.set(matmul.cmd_ready, ready)
+            ctx.set(matmul.cmd_completed, countdown == 0)
+            _, _, valid, ctype, opcode, dram, local, rs1, rd, k_dim = await ctx.tick().sample(
+                matmul.cmd_valid, matmul.cmd_type, matmul.cmd_opcode, matmul.cmd_dram_addr,
+                matmul.cmd_local_addr, matmul.cmd_rs1, matmul.cmd_rd, matmul.cmd_k_dim,
+            )  # fmt: skip
+            if not ready:
+                countdown = None if countdown == 0 else countdown - 1
+            if valid and ready:
+                trace.append((command_name(ctype, opcode), dram, local, rs1, rd, k_dim))
+                countdown = 2
 
-    # -------------------------------------------------------------------------
-    # 3. Memory Layout
-    # -------------------------------------------------------------------------
-    print("\n3. Memory Layout")
-    print("-" * 40)
+    async def testbench(ctx):
+        config_cmds = [
+            (MatmulCmd.CONFIG_DIMS, M | N << 16 | K << 32),
+            (MatmulCmd.CONFIG_A_ADDR, A_ADDR),
+            (MatmulCmd.CONFIG_B_ADDR, B_ADDR),
+            (MatmulCmd.CONFIG_C_ADDR, C_ADDR),
+            (MatmulCmd.CONFIG_A_STRIDE, strides[0]),
+            (MatmulCmd.CONFIG_B_STRIDE, strides[1]),
+            (MatmulCmd.CONFIG_C_STRIDE, strides[2]),
+            (MatmulCmd.START, 0),
+        ]
+        for cmd, data in config_cmds:
+            ctx.set(matmul.cfg_valid, 1)
+            ctx.set(matmul.cfg_cmd, cmd)
+            ctx.set(matmul.cfg_data, data)
+            await ctx.tick()
+        ctx.set(matmul.cfg_valid, 0)
+        # Every command completes within a few cycles: bound the wait so a stalled
+        # handshake ends the demo instead of hanging it
+        rows = -(-M // array_dim) * -(-N // array_dim) * -(-K // array_dim)
+        for _ in range(1000 + 64 * rows * (3 * array_dim + 4)):
+            _, _, done, error, code = await ctx.tick().sample(
+                matmul.done, matmul.error, matmul.error_code
+            )
+            if done or error:
+                status.update(done=done, error=error, code=code)
+                return
 
-    # DRAM addresses
-    A_ADDR = 0x1000_0000
-    B_ADDR = 0x2000_0000
-    C_ADDR = 0x3000_0000
-    D_ADDR = 0x4000_0000  # Bias
-
-    # Strides (row stride in bytes)
-    input_bytes = config.input_bits // 8
-    acc_bytes = config.acc_bits // 8
-    A_STRIDE = K * input_bytes  # A is MxK
-    B_STRIDE = N * input_bytes  # B is KxN
-    C_STRIDE = N * acc_bytes  # C is MxN
-    D_STRIDE = N * acc_bytes  # D is MxN
-
-    print(f"   A: 0x{A_ADDR:08X} (stride={A_STRIDE} bytes)")
-    print(f"   B: 0x{B_ADDR:08X} (stride={B_STRIDE} bytes)")
-    print(f"   C: 0x{C_ADDR:08X} (stride={C_STRIDE} bytes)")
-    print(f"   D: 0x{D_ADDR:08X} (stride={D_STRIDE} bytes, bias)")
-
-    # -------------------------------------------------------------------------
-    # 4. Simulation
-    # -------------------------------------------------------------------------
-    print("\n4. Running Amaranth Simulation")
-    print("-" * 40)
-
-    commands_emitted = []
-    dataflow_selected = None
-    final_progress = None
-
-    def testbench():
-        nonlocal dataflow_selected, final_progress
-
-        # Always ready to accept commands
-        yield matmul.cmd_ready.eq(1)
-
-        # --- Configure dimensions ---
-        print("   Configuring dimensions...")
-        yield matmul.cfg_valid.eq(1)
-        yield matmul.cfg_cmd.eq(MatmulCmd.CONFIG_DIMS)
-        yield matmul.cfg_data.eq((K << 32) | (N << 16) | M)
-        yield Tick()
-        yield matmul.cfg_valid.eq(0)
-        yield Tick()
-
-        # --- Configure addresses ---
-        print("   Configuring addresses...")
-        for _name, cmd, addr in [
-            ("A", MatmulCmd.CONFIG_A_ADDR, A_ADDR),
-            ("B", MatmulCmd.CONFIG_B_ADDR, B_ADDR),
-            ("C", MatmulCmd.CONFIG_C_ADDR, C_ADDR),
-            ("D", MatmulCmd.CONFIG_D_ADDR, D_ADDR),
-        ]:
-            yield matmul.cfg_valid.eq(1)
-            yield matmul.cfg_cmd.eq(cmd)
-            yield matmul.cfg_data.eq(addr)
-            yield Tick()
-            yield matmul.cfg_valid.eq(0)
-            yield Tick()
-
-        # --- Configure strides ---
-        print("   Configuring strides...")
-        for _name, cmd, stride in [
-            ("A", MatmulCmd.CONFIG_A_STRIDE, A_STRIDE),
-            ("B", MatmulCmd.CONFIG_B_STRIDE, B_STRIDE),
-            ("C", MatmulCmd.CONFIG_C_STRIDE, C_STRIDE),
-            ("D", MatmulCmd.CONFIG_D_STRIDE, D_STRIDE),
-        ]:
-            yield matmul.cfg_valid.eq(1)
-            yield matmul.cfg_cmd.eq(cmd)
-            yield matmul.cfg_data.eq(stride)
-            yield Tick()
-            yield matmul.cfg_valid.eq(0)
-            yield Tick()
-
-        # --- Start execution ---
-        print("   Starting execution...")
-        yield matmul.cfg_valid.eq(1)
-        yield matmul.cfg_cmd.eq(MatmulCmd.START)
-        yield Tick()
-        yield matmul.cfg_valid.eq(0)
-
-        # --- Monitor execution ---
-        print("   Monitoring command generation...")
-        cycle = 0
-        max_cycles = 1000  # Safety limit
-
-        while cycle < max_cycles:
-            yield Tick()
-            cycle += 1
-
-            # Check for commands
-            valid = yield matmul.cmd_valid
-            if valid:
-                opcode = yield matmul.cmd_opcode
-                rs1 = yield matmul.cmd_rs1
-                rs2 = yield matmul.cmd_rs2
-                rd = yield matmul.cmd_rd
-
-                # Record command
-                commands_emitted.append(
-                    {
-                        "cycle": cycle,
-                        "opcode": opcode,
-                        "rs1": rs1,
-                        "rs2": rs2,
-                        "rd": rd,
-                    }
-                )
-
-                if verbose:
-                    name = opcode_name(opcode)
-                    print(f"      [{cycle:3d}] {name}: rs1=0x{rs1:X}, rs2=0x{rs2:X}")
-
-            # Check for completion
-            done = yield matmul.done
-            if done:
-                dataflow_selected = yield matmul.selected_dataflow
-                final_progress = (
-                    (yield matmul.progress_i),
-                    (yield matmul.progress_j),
-                    (yield matmul.progress_k),
-                )
-                print(f"   Completed in {cycle} cycles")
-                break
-
-        if cycle >= max_cycles:
-            print(f"   WARNING: Hit cycle limit ({max_cycles})")
-
-    # Run simulation
     sim = Simulator(matmul)
     sim.add_clock(1e-6)
     sim.add_testbench(testbench)
+    sim.add_process(controller)
     sim.run()
 
-    # -------------------------------------------------------------------------
-    # 5. Analysis
-    # -------------------------------------------------------------------------
-    print("\n5. Command Analysis")
-    print("-" * 40)
+    if not status:
+        print("\n   Matmul did not finish (cycle limit reached)")
+        return False
+    if status["error"]:
+        print(f"\n   Matmul reported {MatmulError(status['code']).name}")
+        if not any_layout:
+            print("   (the tile's DMA cannot move this layout; try --any-layout)")
+        return False
 
-    # Count commands by type
-    cmd_counts = {}
-    for cmd in commands_emitted:
-        name = opcode_name(cmd["opcode"])
-        cmd_counts[name] = cmd_counts.get(name, 0) + 1
+    if verbose:
+        print("\n   Command stream:")
+        for name, dram, local, rs1, rd, k_dim in trace:
+            if name in ("LOAD", "STORE"):
+                print(f"      {name:<18} dram=0x{dram:08X} local=0x{local:08X}")
+            else:
+                print(f"      {name:<18} rs1=0x{rs1:X} rd=0x{rd:X} k_dim={k_dim}")
 
-    print("   Commands generated:")
-    for name, count in sorted(cmd_counts.items()):
-        print(f"      {name}: {count}")
+    def tiles(n):
+        return [min(array_dim, n - s) for s in range(0, n, array_dim)]
 
-    # Dataflow selection
-    dataflow_names = {0: "Output-Stationary", 1: "A-Stationary", 2: "B-Stationary"}
-    print(f"\n   Dataflow selected: {dataflow_names.get(dataflow_selected, 'Unknown')}")
+    expected = {
+        "CONFIG": 1,
+        "LOAD": 0,
+        "STORE": 0,
+        "PRELOAD": 0,
+        "COMPUTE": 0,
+        "COMPUTE_ACCUMULATE": 0,
+    }
+    for tm in tiles(M):
+        for _tn in tiles(N):
+            for n, tk in enumerate(tiles(K)):
+                expected["LOAD"] += tm + tk
+                expected["PRELOAD"] += 1
+                expected["COMPUTE" if n == 0 else "COMPUTE_ACCUMULATE"] += 1
+            expected["STORE"] += tm
+    actual = {name: sum(1 for t in trace if t[0] == name) for name in expected}
 
-    # Verify expected counts
-    expected_stores = total_tiles
-    expected_load_a = total_k_iterations
-    expected_load_b = total_k_iterations
-    expected_load_d = total_tiles  # One bias load per output tile
-    expected_preload = total_tiles  # One preload per output tile
-    expected_compute = total_k_iterations
-
-    print("\n   Expected vs Actual:")
-    checks = [
-        ("STORE_C", expected_stores, cmd_counts.get("STORE_C", 0)),
-        ("LOAD_A", expected_load_a, cmd_counts.get("LOAD_A", 0)),
-        ("LOAD_B", expected_load_b, cmd_counts.get("LOAD_B", 0)),
-        ("LOAD_D", expected_load_d, cmd_counts.get("LOAD_D", 0)),
-        ("PRELOAD", expected_preload, cmd_counts.get("PRELOAD", 0)),
-        ("COMPUTE", expected_compute, cmd_counts.get("COMPUTE", 0)),
-    ]
-
-    all_pass = True
-    for name, expected, actual in checks:
-        status = "OK" if expected == actual else "MISMATCH"
-        if expected != actual:
-            all_pass = False
-        print(f"      {name}: expected={expected}, actual={actual} [{status}]")
-
-    # -------------------------------------------------------------------------
-    # Summary
-    # -------------------------------------------------------------------------
-    print("\n" + "=" * 70)
-    if all_pass:
-        print("Demo completed successfully!")
-    else:
-        print("Demo completed with mismatches - please investigate.")
-    print("=" * 70)
-
-    return all_pass
+    print("\n   Expected vs actual:")
+    ok = True
+    for name in expected:
+        match = expected[name] == actual[name]
+        ok &= match
+        print(
+            f"      {name:<18} {expected[name]:4d} {actual[name]:4d}  {'OK' if match else 'MISMATCH'}"
+        )
+    print("\n" + ("Demo completed successfully!" if ok else "Demo completed with mismatches."))
+    return ok
 
 
 def main():
-    """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="ISA-Level Matmul Instruction Demo",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--M", type=int, default=10, help="Rows of C (default: 10)")
+    parser.add_argument("--N", type=int, default=4, help="Columns of C (default: 4)")
+    parser.add_argument("--K", type=int, default=4, help="Inner dimension (default: 4)")
+    parser.add_argument("--array-dim", type=int, default=4, help="Array dimension (default: 4)")
+    parser.add_argument(
+        "--any-layout", action="store_true", help="Dense operands, alignment check off"
     )
     parser.add_argument(
-        "--M",
-        type=int,
-        default=8,
-        help="Rows in output matrix C (default: 8)",
+        "-q", "--quiet", action="store_true", help="Do not print the command stream"
     )
-    parser.add_argument(
-        "--N",
-        type=int,
-        default=8,
-        help="Columns in output matrix C (default: 8)",
-    )
-    parser.add_argument(
-        "--K",
-        type=int,
-        default=8,
-        help="Inner dimension (default: 8)",
-    )
-    parser.add_argument(
-        "--array-dim",
-        type=int,
-        default=4,
-        help="Systolic array dimension (default: 4)",
-    )
-    parser.add_argument(
-        "-q",
-        "--quiet",
-        action="store_true",
-        help="Reduce output verbosity",
-    )
-
     args = parser.parse_args()
-
-    success = run_matmul_demo(
-        M=args.M,
-        N=args.N,
-        K=args.K,
-        array_dim=args.array_dim,
-        verbose=not args.quiet,
-    )
-    sys.exit(0 if success else 1)
+    ok = run_matmul_demo(args.M, args.N, args.K, args.array_dim, args.any_layout, not args.quiet)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
