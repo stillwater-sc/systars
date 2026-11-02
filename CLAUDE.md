@@ -88,8 +88,8 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 - Scratchpad (two read ports) and Accumulator memory banks
 - Load/Execute/Store controllers, DMA engines (StreamReader/StreamWriter), and `SystolicTop`,
   which computes a verified GEMM end to end (`tests/unit/test_gemm_systolic.py`)
-- Matmul and Conv2d ISA instructions (`isa/`); their command encoding does not yet match
-  the execute controller (#2)
+- Matmul and Conv2d ISA instructions (`isa/`): tile an operation larger than the array and
+  issue `SystolicTop` commands one at a time (`isa/command.py`); see `docs/isa-instructions.md`
 
 ### Planned Components (see docs/plan/implementation.md)
 

@@ -1,5 +1,8 @@
 # ISA Instruction Implementation Plan
 
+> **Superseded.** This is the original implementation plan. What `Matmul` and `Conv2d`
+> do today is described in [ISA instructions](../isa-instructions.md).
+
 This document details the implementation plan for the `Matmul` and `Conv2d` ISA instructions, the final Phase 6 components needed to complete the SYSTARS RTL.
 
 ---

@@ -1,25 +1,32 @@
 """
-ISA Instructions for the SYSTARS accelerator.
+ISA instructions for the systolic tile.
 
-This module provides high-level ISA instructions that automatically handle
-tiling, scheduling, and command generation for operations that exceed the
-systolic array dimensions.
+High-level instructions that tile an operation larger than the array and issue
+the commands a host would issue to ``SystolicTop`` (LOAD, CONFIG, PRELOAD,
+COMPUTE, STORE), one at a time, on a shared command port (``command``):
 
-Instructions:
-    Matmul: Matrix multiply C = A @ B + D
-    Conv2d: 2D convolution Y = conv(X, F) + B
+    Matmul: C = A @ B
+    Conv2d: Y = conv2d(X, F), as an implicit GEMM
 
-The hardware automatically:
-- Selects optimal dataflow (output-stationary, A-stationary, B-stationary)
-- Tiles computations to fit array dimensions
-- Manages double buffering for latency hiding
-- Generates internal command sequences (LOAD, PRELOAD, COMPUTE, STORE)
+Both run weight-stationary. Both check at START that the DMA can move every row
+they load or store; see their modules for the layouts this allows today.
 """
 
-from .conv2d import Conv2d
-from .matmul import Matmul
+from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, command_ports, connect_to_top
+from .conv2d import Conv2d, Conv2dCmd, Conv2dError
+from .matmul import Matmul, MatmulCmd, MatmulError
 
 __all__ = [
+    "CTRL_EXEC",
+    "CTRL_LOAD",
+    "CTRL_STORE",
+    "CommandIssuer",
     "Conv2d",
+    "Conv2dCmd",
+    "Conv2dError",
     "Matmul",
+    "MatmulCmd",
+    "MatmulError",
+    "command_ports",
+    "connect_to_top",
 ]

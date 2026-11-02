@@ -25,9 +25,10 @@ nav:
     - DMA Descriptors: architecture/dma-descriptors.md
   - Guides:
     - Wavefront Animation: wavefront-animation.md
+    - ISA Instructions: isa-instructions.md
   - Planning:
     - Implementation Plan: plan/implementation.md
-    - ISA Instructions: plan/isa-instructions.md
+    - ISA Instructions (original plan): plan/isa-instructions.md
     - PolarFire Deployment: plan/polarfire-deployment.md
   - Session Logs:
     - 2025-12-18 ISA Matmul: sessions/2025-12-18-isa-matmul-instruction.md
