@@ -25,6 +25,8 @@ _FIELDS = {
     "dram_addr": 64,
     "local_addr": 32,
     "len": 16,
+    "stride": 32,
+    "row_bytes": 16,
     "rs1": 32,
     "rs2": 32,
     "rd": 32,

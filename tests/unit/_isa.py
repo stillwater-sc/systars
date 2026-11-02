@@ -5,8 +5,10 @@ Test helpers for the ISA instructions (Matmul, Conv2d).
   issues, standing in for ``SystolicTop`` (each command is accepted and
   completed after a few cycles).
 - ``TopModel`` executes those commands the way ``SystolicTop`` does (LOAD,
-  CONFIG, PRELOAD, COMPUTE[_ACCUMULATE], STORE), over a byte-addressed DRAM, so a
-  command stream can be checked numerically against numpy.
+  CONFIG, PRELOAD, COMPUTE[_ACCUMULATE], STORE), over a byte-addressed L3, so a
+  command stream can be checked numerically against numpy. LOAD and STORE move
+  ``len`` rows ``stride`` bytes apart (0 = one beat), ``row_bytes`` per row (0 = a
+  whole row): a loaded row is zero-filled past them, a stored row writes only them.
 """
 
 from __future__ import annotations
@@ -20,7 +22,10 @@ from systars.util.commands import ExecOpcode
 
 from ._sim import run_sim
 
-FIELDS = ("dram_addr", "local_addr", "len", "rs1", "rs2", "rd", "k_dim", "activation")
+FIELDS = (
+    "dram_addr", "local_addr", "len", "stride", "row_bytes", "rs1", "rs2", "rd", "k_dim",
+    "activation",
+)  # fmt: skip
 DATA_MASK = (1 << 29) - 1  # LocalAddr data bits (the flags are ignored by the memories)
 
 
@@ -32,6 +37,8 @@ class Command:
     dram_addr: int
     local_addr: int
     len: int
+    stride: int
+    row_bytes: int
     rs1: int
     rs2: int
     rd: int
@@ -128,14 +135,19 @@ class TopModel:
     def run(self, commands):
         cfg, dim = self.cfg, self.dim
         for c in commands:
+            stride = c.stride or self.beat
             if c.type == CTRL_LOAD:
+                row_bytes = c.row_bytes or dim * cfg.input_bits // 8
+                n_elems = min(dim, row_bytes * 8 // cfg.input_bits)
                 for n in range(c.len):
-                    row = self.read_elems(c.dram_addr + n * self.beat, cfg.input_bits, dim)
-                    self.sp[(c.local_addr & DATA_MASK) + n] = row
+                    row = self.read_elems(c.dram_addr + n * stride, cfg.input_bits, n_elems)
+                    self.sp[(c.local_addr & DATA_MASK) + n] = row + [0] * (dim - n_elems)
             elif c.type == CTRL_STORE:
+                row_bytes = c.row_bytes or dim * cfg.acc_bits // 8
                 for n in range(c.len):
                     row = self.acc.get((c.local_addr & DATA_MASK) + n, [0] * dim)
-                    self.write(c.dram_addr + n * self.beat, to_unsigned_bytes(row, cfg.acc_bits))
+                    data = to_unsigned_bytes(row, cfg.acc_bits)[:row_bytes]
+                    self.write(c.dram_addr + n * stride, data)
             elif c.type == CTRL_EXEC:
                 self.execute(c)
             else:

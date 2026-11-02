@@ -144,7 +144,7 @@ class SystolicConfig:
     # DMA Configuration
     # =========================================================================
     dma_maxbytes: int = 64
-    """Maximum bytes per DMA transaction (typically cache line size)."""
+    """Maximum bytes per DMA transaction."""
 
     dma_buswidth: int = 0
     """DMA bus width in bits. 0 (default) = automatic: the widest scratchpad or
@@ -299,8 +299,14 @@ class SystolicConfig:
         assert self.acc_bits >= self.input_bits + self.weight_bits, (
             "acc_bits should be >= input_bits + weight_bits to avoid overflow"
         )
-        assert self.sp_banks > 0, "sp_banks must be positive"
-        assert self.acc_banks > 0, "acc_banks must be positive"
+        # Banks are interleaved on the low address bits (LocalAddr), so consecutive
+        # rows walk the banks: a count that is not a power of two would map some
+        # addresses to banks that do not exist
+        for name in ("sp_banks", "acc_banks"):
+            banks = getattr(self, name)
+            assert banks > 0 and banks & (banks - 1) == 0, (
+                f"{name} must be a power of two (banks are the low address bits), got {banks}"
+            )
         assert self.sp_capacity_kb > 0, "sp_capacity_kb must be positive"
         assert self.acc_capacity_kb > 0, "acc_capacity_kb must be positive"
         # Derived row geometry: rows must be whole bytes, and every bank must hold

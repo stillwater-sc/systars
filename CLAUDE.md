@@ -88,6 +88,11 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 - Scratchpad (two read ports) and Accumulator memory banks
 - Load/Execute/Store controllers, DMA engines (StreamReader/StreamWriter), and `SystolicTop`,
   which computes a verified GEMM end to end (`tests/unit/test_gemm_systolic.py`)
+- `SystolicTop` is a systolic KPU compute tile following kpu-sim's CSP model: AXI = L3,
+  scratchpad = L2, array edge registers = L1; LOAD/STORE are the BlockMover (L3 <-> L2) and
+  the execute controller is the Streamer (L2 -> L1). A LOAD or STORE moves a whole tile from
+  or to any byte address (`cmd_stride`, `cmd_row_bytes`; `tests/unit/test_block_mover.py`).
+  Use KPU/CSP terms (credits, push, tile-ready tokens), never cache terminology
 - Matmul and Conv2d ISA instructions (`isa/`): tile an operation larger than the array and
   issue `SystolicTop` commands one at a time (`isa/command.py`); see `docs/isa-instructions.md`
 

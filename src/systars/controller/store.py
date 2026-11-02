@@ -1,20 +1,30 @@
 """
-StoreController - Orchestrates Accumulator -> DRAM transfers.
+StoreController - moves a result tile from the accumulator to L3 (the BlockMover's
+L2 -> L3 leg).
 
-The StoreController handles MEMCPY commands for storing data by:
-1. Accepting commands specifying accumulator source and DRAM destination
-2. Reading data from accumulator
-3. Issuing DMA write requests via StreamWriter
-4. Signaling completion
+In the KPU's CSP model (kpu-sim) the tile's AXI port is its link to L3. A STORE
+command moves one tile: ``len`` accumulator rows, row ``n`` written to L3 byte
+address ``dram_addr + n * stride``.
+
+- Any byte address, with byte strobes: only ``row_bytes`` bytes of each row are
+  written (0 = a whole accumulator row), so an edge N tile leaves the bytes past
+  it untouched and C can be dense. A row that spills into the next beat is a
+  2-beat burst.
+- ``stride`` 0 means rows one bus beat apart.
+- The activation (``cmd_activation``) is applied to each element.
 
 State Machine:
-    IDLE -> READ_ACC -> ISSUE_DMA -> SEND_DATA -> WAIT_DONE -> IDLE
+    IDLE -> NEXT -> ISSUE_BURST -> (READ_ACC -> WAIT_VALID -> SEND_STREAM)* -> WAIT_DONE
+                    (consecutive beats from a beat boundary: one burst of up to 256 rows)
+                 -> READ_ACC -> WAIT_VALID -> ISSUE_ROW -> SEND_LO [-> SEND_HI] -> WAIT_DONE
+                    (any other row)
+         -> (NEXT | DONE)
 
 Data Flow:
-    Accumulator --> StoreController --> StreamWriter --> DRAM
+    Accumulator --> StoreController --> StreamWriter --> L3
 """
 
-from amaranth import Module, Signal, signed
+from amaranth import Cat, Const, Module, Mux, Signal, signed
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
@@ -35,8 +45,10 @@ class StoreController(Component):
             cmd_ready: Controller ready to accept command
             cmd_opcode: Operation code (MEMCPY)
             cmd_acc_addr: Source address in accumulator (32-bit local format)
-            cmd_dram_addr: Destination address in DRAM (64-bit)
-            cmd_len: Transfer length in beats
+            cmd_dram_addr: Destination byte address of row 0 in L3 (64-bit, any alignment)
+            cmd_len: Rows to move (0 completes at once)
+            cmd_stride: Bytes between destination rows (0 = one bus beat)
+            cmd_row_bytes: Bytes written per row (0 = a whole accumulator row)
             cmd_id: Command ID for tracking
             cmd_activation: Activation function (0=none, 1=relu)
 
@@ -55,6 +67,7 @@ class StoreController(Component):
             dma_data_valid: Write data valid
             dma_data_ready: DMA ready for data
             dma_data: Write data (dma_buswidth bits)
+            dma_data_strb: Byte strobes of the beat
             dma_data_last: Last beat of burst
 
             dma_done: DMA write complete
@@ -78,6 +91,12 @@ class StoreController(Component):
                 f"set dma_buswidth >= {acc_width}"
             )
 
+        beat = buswidth // 8
+        if beat < 2 or beat & (beat - 1):
+            raise ValueError(
+                f"StoreController: dma_buswidth must be a power-of-two bytes, got {buswidth}"
+            )
+
         super().__init__(
             {
                 # Command interface
@@ -86,7 +105,9 @@ class StoreController(Component):
                 "cmd_opcode": In(8),
                 "cmd_acc_addr": In(32),
                 "cmd_dram_addr": In(64),
-                "cmd_len": In(16),  # Number of beats to transfer
+                "cmd_len": In(16),  # Rows to move
+                "cmd_stride": In(32),  # Bytes between destination rows (0 = one beat)
+                "cmd_row_bytes": In(16),  # Bytes written per row (0 = whole row)
                 "cmd_id": In(8),
                 "cmd_activation": In(4),  # Activation function
                 # Accumulator read interface
@@ -102,6 +123,7 @@ class StoreController(Component):
                 "dma_data_valid": Out(1),
                 "dma_data_ready": In(1),
                 "dma_data": Out(buswidth),
+                "dma_data_strb": Out(buswidth // 8),
                 "dma_data_last": Out(1),
                 "dma_done": In(1),
                 # Status
@@ -115,131 +137,184 @@ class StoreController(Component):
         m = Module()
         cfg = self.config
 
-        # State machine states
-        STATE_IDLE = 0
-        STATE_ISSUE_DMA = 1
-        STATE_READ_ACC = 2
-        STATE_WAIT_VALID = 3
-        STATE_SEND_DATA = 4
-        STATE_WAIT_DONE = 5
-        STATE_DONE = 6
-
-        state = Signal(3, init=STATE_IDLE)
+        W = cfg.dma_buswidth
+        beat = W // 8
+        acc_bytes = cfg.acc_width // 8
+        off_bits = (beat - 1).bit_length()
 
         # Registered command parameters
         acc_addr_reg = Signal(32)
-        dram_addr_reg = Signal(64)
+        row_addr = Signal(64)  # byte address of the current row
         len_reg = Signal(16)
+        stride_reg = Signal(32)
+        row_bytes = Signal(16)
         cmd_id_reg = Signal(8)
         activation_reg = Signal(4)
+        row = Signal(16)
 
-        # Beat counter for accumulator address increment
-        beat_count = Signal(16)
+        offset = Signal(off_bits)
+        two_beats = Signal()
+        m.d.comb += [
+            offset.eq(row_addr[:off_bits]),
+            two_beats.eq(offset + row_bytes > beat),
+        ]
 
-        # Data buffer for accumulator read
-        data_buffer = Signal(cfg.acc_width)
-        data_valid_buffer = Signal()
+        # The row and its strobes, shifted up to its byte offset across two beats
+        data_buf = Signal(2 * W)
+        strb_buf = Signal(2 * beat)
+        keep = Cat(*[i < row_bytes for i in range(acc_bytes)])
 
-        # Default outputs
         m.d.comb += [
             self.cmd_ready.eq(0),
             self.acc_read_req.eq(0),
             self.acc_read_addr.eq(0),
             self.dma_req_valid.eq(0),
-            self.dma_req_addr.eq(0),
             self.dma_req_len.eq(0),
             self.dma_data_valid.eq(0),
             self.dma_data.eq(0),
+            self.dma_data_strb.eq(0),
             self.dma_data_last.eq(0),
-            self.busy.eq(state != STATE_IDLE),
             self.completed.eq(0),
             self.completed_id.eq(0),
         ]
 
-        with m.Switch(state):
-            with m.Case(STATE_IDLE):
-                m.d.comb += self.cmd_ready.eq(1)
+        # Rows that are consecutive beats from a beat boundary stream as bursts of up
+        # to 256 beats; any other row is its own 1- or 2-beat burst
+        contiguous = (offset == 0) & (stride_reg == beat)
+        streaming = Signal()
+        burst_left = Signal(9)
+        remaining = Signal(16)
+        m.d.comb += remaining.eq(len_reg - row)
+        burst_rows = Signal(9)
+        m.d.comb += burst_rows.eq(Mux(remaining > 256, 256, remaining))
+        m.d.comb += self.dma_req_addr.eq(Cat(Const(0, off_bits), row_addr[off_bits:]))
 
-                # Accept MEMCPY commands for store operations
+        def activated_row():
+            # The latched activation applied to each acc_bits element (the
+            # accumulator's own read activation is disabled by SystolicTop, so this
+            # is the only one)
+            return activate_row(
+                self.acc_read_data, activation_reg, cfg.acc_bits, cfg.acc_width // cfg.acc_bits
+            )
+
+        with m.FSM(init="IDLE") as fsm:
+            with m.State("IDLE"):
+                m.d.comb += self.cmd_ready.eq(1)
                 with m.If(self.cmd_valid & (self.cmd_opcode == DmaOpcode.MEMCPY)):
                     m.d.sync += [
                         acc_addr_reg.eq(self.cmd_acc_addr),
-                        dram_addr_reg.eq(self.cmd_dram_addr),
+                        row_addr.eq(self.cmd_dram_addr),
                         len_reg.eq(self.cmd_len),
+                        stride_reg.eq(Mux(self.cmd_stride == 0, beat, self.cmd_stride)),
+                        row_bytes.eq(
+                            Mux(
+                                (self.cmd_row_bytes == 0) | (self.cmd_row_bytes > acc_bytes),
+                                acc_bytes,
+                                self.cmd_row_bytes,
+                            )
+                        ),
                         cmd_id_reg.eq(self.cmd_id),
                         activation_reg.eq(self.cmd_activation),
-                        beat_count.eq(0),
-                        data_valid_buffer.eq(0),
+                        row.eq(0),
                     ]
-                    m.d.sync += state.eq(STATE_ISSUE_DMA)
+                    with m.If(self.cmd_len == 0):
+                        m.next = "DONE"
+                    with m.Else():
+                        m.next = "NEXT"
 
-            with m.Case(STATE_ISSUE_DMA):
-                # Issue DMA write request to StreamWriter
-                m.d.comb += [
-                    self.dma_req_valid.eq(1),
-                    self.dma_req_addr.eq(dram_addr_reg),
-                    # AXI4 style: len=N means N+1 beats
-                    self.dma_req_len.eq(len_reg - 1),
-                ]
+            with m.State("NEXT"):
+                m.d.sync += streaming.eq(contiguous)
+                with m.If(contiguous):
+                    m.d.sync += burst_left.eq(burst_rows)
+                    m.next = "ISSUE_BURST"
+                with m.Else():
+                    m.next = "READ_ACC"
 
+            # --- Streaming: one burst, one beat per row ---
+            with m.State("ISSUE_BURST"):
+                m.d.comb += [self.dma_req_valid.eq(1), self.dma_req_len.eq(burst_left - 1)]
                 with m.If(self.dma_req_ready):
-                    m.d.sync += state.eq(STATE_READ_ACC)
+                    m.next = "READ_ACC"
 
-            with m.Case(STATE_READ_ACC):
-                # Request data from accumulator
+            # --- Read the row from the accumulator ---
+            with m.State("READ_ACC"):
                 m.d.comb += [
                     self.acc_read_req.eq(1),
-                    self.acc_read_addr.eq(acc_addr_reg + beat_count),
+                    self.acc_read_addr.eq(acc_addr_reg + row),
                 ]
-                m.d.sync += state.eq(STATE_WAIT_VALID)
+                m.next = "WAIT_VALID"
 
-            with m.Case(STATE_WAIT_VALID):  # noqa: SIM117
-                # Wait for accumulator read valid
-                with m.If(self.acc_read_valid):  # noqa: SIM117
-                    # Buffer the data, applying the latched activation to each
-                    # acc_bits element of the row (the accumulator's own read
-                    # activation is disabled by SystolicTop, so this is the only one)
-                    m.d.sync += data_buffer.eq(
-                        activate_row(
-                            self.acc_read_data,
-                            activation_reg,
-                            cfg.acc_bits,
-                            cfg.acc_width // cfg.acc_bits,
-                        )
-                    )
+            with m.State("WAIT_VALID"), m.If(self.acc_read_valid):
+                # Place the row at its byte offset (0 when streaming)
+                m.d.sync += [
+                    data_buf.eq(activated_row() << (offset * 8)),
+                    strb_buf.eq(keep << offset),
+                ]
+                with m.If(streaming):
+                    m.next = "SEND_STREAM"
+                with m.Else():
+                    m.next = "ISSUE_ROW"
 
-                    m.d.sync += data_valid_buffer.eq(1)
-                    m.d.sync += state.eq(STATE_SEND_DATA)
-
-            with m.Case(STATE_SEND_DATA):
-                # Send data to DMA
-                is_last = beat_count >= len_reg - 1
+            with m.State("SEND_STREAM"):
+                last = burst_left == 1
                 m.d.comb += [
                     self.dma_data_valid.eq(1),
-                    self.dma_data.eq(data_buffer),
-                    self.dma_data_last.eq(is_last),
+                    self.dma_data.eq(data_buf[:W]),
+                    self.dma_data_strb.eq(strb_buf[:beat]),
+                    self.dma_data_last.eq(last),
                 ]
-
                 with m.If(self.dma_data_ready):
-                    m.d.sync += beat_count.eq(beat_count + 1)
-                    m.d.sync += data_valid_buffer.eq(0)
-
-                    with m.If(is_last):
-                        m.d.sync += state.eq(STATE_WAIT_DONE)
+                    m.d.sync += [
+                        row.eq(row + 1),
+                        row_addr.eq(row_addr + beat),
+                        burst_left.eq(burst_left - 1),
+                    ]
+                    with m.If(last):
+                        m.next = "WAIT_DONE"
                     with m.Else():
-                        m.d.sync += state.eq(STATE_READ_ACC)
+                        m.next = "READ_ACC"
 
-            with m.Case(STATE_WAIT_DONE):  # noqa: SIM117
-                # Wait for DMA write to complete
-                with m.If(self.dma_done):  # noqa: SIM117
-                    m.d.sync += state.eq(STATE_DONE)
+            # --- One row: a 1- or 2-beat burst at its byte offset ---
+            with m.State("ISSUE_ROW"):
+                m.d.comb += [self.dma_req_valid.eq(1), self.dma_req_len.eq(two_beats)]
+                with m.If(self.dma_req_ready):
+                    m.next = "SEND_LO"
 
-            with m.Case(STATE_DONE):
-                # Signal completion
+            with m.State("SEND_LO"):
                 m.d.comb += [
-                    self.completed.eq(1),
-                    self.completed_id.eq(cmd_id_reg),
+                    self.dma_data_valid.eq(1),
+                    self.dma_data.eq(data_buf[:W]),
+                    self.dma_data_strb.eq(strb_buf[:beat]),
+                    self.dma_data_last.eq(~two_beats),
                 ]
-                m.d.sync += state.eq(STATE_IDLE)
+                with m.If(self.dma_data_ready):
+                    with m.If(two_beats):
+                        m.next = "SEND_HI"
+                    with m.Else():
+                        m.next = "WAIT_DONE"
 
+            with m.State("SEND_HI"):
+                m.d.comb += [
+                    self.dma_data_valid.eq(1),
+                    self.dma_data.eq(data_buf[W:]),
+                    self.dma_data_strb.eq(strb_buf[beat:]),
+                    self.dma_data_last.eq(1),
+                ]
+                with m.If(self.dma_data_ready):
+                    m.next = "WAIT_DONE"
+
+            with m.State("WAIT_DONE"), m.If(self.dma_done):
+                done_rows = Mux(streaming, row, row + 1)
+                with m.If(~streaming):
+                    m.d.sync += [row.eq(row + 1), row_addr.eq(row_addr + stride_reg)]
+                with m.If(done_rows >= len_reg):
+                    m.next = "DONE"
+                with m.Else():
+                    m.next = "NEXT"
+
+            with m.State("DONE"):
+                m.d.comb += [self.completed.eq(1), self.completed_id.eq(cmd_id_reg)]
+                m.next = "IDLE"
+
+        m.d.comb += self.busy.eq(~fsm.ongoing("IDLE"))
         return m

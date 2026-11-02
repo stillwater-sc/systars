@@ -1,20 +1,28 @@
 """
-LoadController - Orchestrates DRAM -> Scratchpad transfers.
+LoadController - moves a tile from L3 into the scratchpad (the BlockMover's L3 -> L2 leg).
 
-The LoadController handles MEMCPY commands for loading data by:
-1. Accepting commands specifying DRAM source and scratchpad destination
-2. Issuing DMA read requests via StreamReader
-3. Receiving data from StreamReader and writing to scratchpad
-4. Signaling completion
+In the KPU's CSP model (kpu-sim, docs/01-architecture/kpu-execution-model.md) the
+tile's AXI port is its link to L3: a memory tile in a SoC, the AXI memory model
+in tests. A LOAD command moves one tile: ``len`` rows, row ``n`` read from L3 byte
+address ``dram_addr + n * stride`` into scratchpad row ``sp_addr + n``.
 
-State Machine:
-    IDLE -> ISSUE_DMA -> RECV_DATA -> WRITE_SP -> CHECK_DONE -> IDLE
+- Any byte address: a row that starts mid-beat, or spills into the next beat, is
+  read as a 1- or 2-beat burst from the beat boundary and shifted into place.
+- ``row_bytes`` valid bytes per row (0 = a whole scratchpad row); the rest of
+  the scratchpad row is written with zeros.
+- ``stride`` 0 means rows one bus beat apart (consecutive beats).
+
+State Machine (per row):
+    IDLE -> ISSUE_DMA -> STREAM (consecutive beats from a beat boundary: one
+                             burst of up to 256 rows)
+                       -> RECV_LO [-> RECV_HI] -> WRITE_SP (any other row)
+         -> (next burst | DONE)
 
 Data Flow:
-    DRAM (via StreamReader) --> LoadController --> Scratchpad
+    L3 (via StreamReader) --> LoadController --> Scratchpad
 """
 
-from amaranth import Module, Signal
+from amaranth import Cat, Const, Module, Mux, Signal
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
@@ -33,9 +41,11 @@ class LoadController(Component):
             cmd_valid: Command available
             cmd_ready: Controller ready to accept command
             cmd_opcode: Operation code (MEMCPY)
-            cmd_dram_addr: Source address in DRAM (64-bit)
+            cmd_dram_addr: Source byte address of row 0 in L3 (64-bit, any alignment)
             cmd_sp_addr: Destination address in scratchpad (32-bit local format)
-            cmd_len: Transfer length in beats
+            cmd_len: Rows to move (0 completes at once)
+            cmd_stride: Bytes between source rows (0 = one bus beat)
+            cmd_row_bytes: Valid bytes per row (0 = a whole scratchpad row)
             cmd_id: Command ID for tracking
 
         DMA Interface (to StreamReader):
@@ -72,6 +82,11 @@ class LoadController(Component):
                 f"LoadController: scratchpad row ({sp_width} bits) is wider than "
                 f"dma_buswidth ({buswidth}); set dma_buswidth >= {sp_width}"
             )
+        beat = buswidth // 8
+        if beat < 2 or beat & (beat - 1):
+            raise ValueError(
+                f"LoadController: dma_buswidth must be a power-of-two bytes, got {buswidth}"
+            )
         mask_width = sp_width // 8
 
         super().__init__(
@@ -82,7 +97,9 @@ class LoadController(Component):
                 "cmd_opcode": In(8),
                 "cmd_dram_addr": In(64),
                 "cmd_sp_addr": In(32),
-                "cmd_len": In(16),  # Number of beats to transfer
+                "cmd_len": In(16),  # Rows to move
+                "cmd_stride": In(32),  # Bytes between source rows (0 = one beat)
+                "cmd_row_bytes": In(16),  # Valid bytes per row (0 = whole row)
                 "cmd_id": In(8),
                 # DMA interface (to StreamReader)
                 "dma_req_valid": Out(1),
@@ -109,94 +126,140 @@ class LoadController(Component):
         m = Module()
         cfg = self.config
 
-        # All bytes valid for full-width writes
-        mask_all_ones = (1 << (cfg.sp_width // 8)) - 1
-
-        # State machine states
-        STATE_IDLE = 0
-        STATE_ISSUE_DMA = 1
-        STATE_RECV_DATA = 2
-        STATE_DONE = 3
-
-        state = Signal(2, init=STATE_IDLE)
+        beat = cfg.dma_buswidth // 8
+        sp_bytes = cfg.sp_width // 8
+        off_bits = (beat - 1).bit_length()
 
         # Registered command parameters
-        dram_addr_reg = Signal(64)
+        row_addr = Signal(64)  # byte address of the current row
         sp_addr_reg = Signal(32)
         len_reg = Signal(16)
+        stride_reg = Signal(32)
+        row_bytes = Signal(16)
         cmd_id_reg = Signal(8)
+        row = Signal(16)
 
-        # Beat counter for scratchpad address increment
-        beat_count = Signal(16)
+        lo = Signal(cfg.dma_buswidth)  # first beat of the row
+        hi = Signal(cfg.dma_buswidth)  # second beat, when the row spills over
 
-        # Default outputs
+        offset = Signal(off_bits)  # row's byte offset within its first beat
+        two_beats = Signal()
+        m.d.comb += [
+            offset.eq(row_addr[:off_bits]),
+            two_beats.eq(offset + row_bytes > beat),
+        ]
+
+        # The row: shift the two beats down by the byte offset, keep row_bytes bytes
+        window = Signal(2 * cfg.dma_buswidth)
+        m.d.comb += window.eq(Cat(lo, hi) >> (offset * 8))
+        keep = Cat(*[Mux(i < row_bytes, Const(0xFF, 8), Const(0, 8)) for i in range(sp_bytes)])
+        row_data = Signal(cfg.sp_width)
+        m.d.comb += row_data.eq(window[: cfg.sp_width] & keep)
+
         m.d.comb += [
             self.cmd_ready.eq(0),
             self.dma_req_valid.eq(0),
-            self.dma_req_addr.eq(0),
             self.dma_req_len.eq(0),
             self.dma_resp_ready.eq(0),
             self.sp_write_en.eq(0),
             self.sp_write_addr.eq(0),
             self.sp_write_data.eq(0),
             self.sp_write_mask.eq(0),
-            self.busy.eq(state != STATE_IDLE),
             self.completed.eq(0),
             self.completed_id.eq(0),
         ]
 
-        with m.Switch(state):
-            with m.Case(STATE_IDLE):
-                m.d.comb += self.cmd_ready.eq(1)
+        # Rows that are consecutive beats from a beat boundary stream as bursts of up
+        # to 256 beats; any other row is its own 1- or 2-beat burst
+        contiguous = (offset == 0) & (stride_reg == beat)
+        remaining = Signal(16)
+        m.d.comb += remaining.eq(len_reg - row)
+        burst_rows = Mux(remaining > 256, 256, remaining)
+        m.d.comb += self.dma_req_addr.eq(Cat(Const(0, off_bits), row_addr[off_bits:]))
 
-                # Accept MEMCPY commands for load operations
+        with m.FSM(init="IDLE") as fsm:
+            with m.State("IDLE"):
+                m.d.comb += self.cmd_ready.eq(1)
                 with m.If(self.cmd_valid & (self.cmd_opcode == DmaOpcode.MEMCPY)):
                     m.d.sync += [
-                        dram_addr_reg.eq(self.cmd_dram_addr),
+                        row_addr.eq(self.cmd_dram_addr),
                         sp_addr_reg.eq(self.cmd_sp_addr),
                         len_reg.eq(self.cmd_len),
+                        stride_reg.eq(Mux(self.cmd_stride == 0, beat, self.cmd_stride)),
+                        row_bytes.eq(
+                            Mux(
+                                (self.cmd_row_bytes == 0) | (self.cmd_row_bytes > sp_bytes),
+                                sp_bytes,
+                                self.cmd_row_bytes,
+                            )
+                        ),
                         cmd_id_reg.eq(self.cmd_id),
-                        beat_count.eq(0),
+                        row.eq(0),
                     ]
-                    m.d.sync += state.eq(STATE_ISSUE_DMA)
+                    with m.If(self.cmd_len == 0):
+                        m.next = "DONE"
+                    with m.Else():
+                        m.next = "ISSUE_DMA"
 
-            with m.Case(STATE_ISSUE_DMA):
-                # Issue DMA request to StreamReader
+            with m.State("ISSUE_DMA"):
                 m.d.comb += [
                     self.dma_req_valid.eq(1),
-                    self.dma_req_addr.eq(dram_addr_reg),
-                    # AXI4 style: len=N means N+1 beats, so subtract 1
-                    # But we store actual beat count, so convert here
-                    self.dma_req_len.eq(len_reg - 1),
+                    self.dma_req_len.eq(Mux(contiguous, burst_rows - 1, two_beats)),
                 ]
-
                 with m.If(self.dma_req_ready):
-                    m.d.sync += state.eq(STATE_RECV_DATA)
+                    with m.If(contiguous):
+                        m.next = "STREAM"
+                    with m.Else():
+                        m.next = "RECV_LO"
 
-            with m.Case(STATE_RECV_DATA):
-                # Receive data from DMA and write to scratchpad
+            with m.State("STREAM"):
+                # One beat per row, written as it arrives
                 m.d.comb += self.dma_resp_ready.eq(1)
-
                 with m.If(self.dma_resp_valid):
-                    # Write to scratchpad
                     m.d.comb += [
                         self.sp_write_en.eq(1),
-                        self.sp_write_addr.eq(sp_addr_reg + beat_count),
-                        self.sp_write_data.eq(self.dma_resp_data),
-                        self.sp_write_mask.eq(mask_all_ones),
+                        self.sp_write_addr.eq(sp_addr_reg + row),
+                        self.sp_write_data.eq(self.dma_resp_data[: cfg.sp_width] & keep),
+                        self.sp_write_mask.eq((1 << sp_bytes) - 1),
                     ]
-
-                    m.d.sync += beat_count.eq(beat_count + 1)
-
+                    m.d.sync += [row.eq(row + 1), row_addr.eq(row_addr + beat)]
                     with m.If(self.dma_resp_last):
-                        m.d.sync += state.eq(STATE_DONE)
+                        with m.If(row + 1 >= len_reg):
+                            m.next = "DONE"
+                        with m.Else():
+                            m.next = "ISSUE_DMA"
 
-            with m.Case(STATE_DONE):
-                # Signal completion
+            with m.State("RECV_LO"):
+                m.d.comb += self.dma_resp_ready.eq(1)
+                with m.If(self.dma_resp_valid):
+                    m.d.sync += [lo.eq(self.dma_resp_data), hi.eq(0)]
+                    with m.If(two_beats):
+                        m.next = "RECV_HI"
+                    with m.Else():
+                        m.next = "WRITE_SP"
+
+            with m.State("RECV_HI"):
+                m.d.comb += self.dma_resp_ready.eq(1)
+                with m.If(self.dma_resp_valid):
+                    m.d.sync += hi.eq(self.dma_resp_data)
+                    m.next = "WRITE_SP"
+
+            with m.State("WRITE_SP"):
                 m.d.comb += [
-                    self.completed.eq(1),
-                    self.completed_id.eq(cmd_id_reg),
+                    self.sp_write_en.eq(1),
+                    self.sp_write_addr.eq(sp_addr_reg + row),
+                    self.sp_write_data.eq(row_data),
+                    self.sp_write_mask.eq((1 << sp_bytes) - 1),
                 ]
-                m.d.sync += state.eq(STATE_IDLE)
+                m.d.sync += [row.eq(row + 1), row_addr.eq(row_addr + stride_reg)]
+                with m.If(row + 1 >= len_reg):
+                    m.next = "DONE"
+                with m.Else():
+                    m.next = "ISSUE_DMA"
 
+            with m.State("DONE"):
+                m.d.comb += [self.completed.eq(1), self.completed_id.eq(cmd_id_reg)]
+                m.next = "IDLE"
+
+        m.d.comb += self.busy.eq(~fsm.ongoing("IDLE"))
         return m

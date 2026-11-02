@@ -12,27 +12,21 @@ and A tiles stream through them (COMPUTE).
 
 For each output tile (i, j), and each K tile k:
 
-- LOAD the A tile (rows of ``A[i*dim:, k*dim:]``) and the B tile
-  (rows of ``B[k*dim:, j*dim:]``), one command per row at its exact address;
+- LOAD the A tile (``A[i*dim:, k*dim:]``) and the B tile (``B[k*dim:, j*dim:]``),
+  one command per tile: the BlockMover moves its rows from any byte address,
+  ``stride`` bytes apart, with ``row_bytes`` valid bytes (an edge tile's rows are
+  zero-filled past them);
 - PRELOAD the B tile as weights, and COMPUTE (the first K tile overwrites the
   accumulator rows, later ones accumulate);
 
-then STORE the C tile, one command per row.
+then STORE the C tile, one command: its rows are written with byte strobes, so an
+edge N tile writes only its own columns and C can be dense.
 
-Layout requirements (checked at START; ``error_code`` UNSUPPORTED_LAYOUT
-otherwise): the DMA moves whole bus beats, so every row that is loaded or stored
-must start on a beat boundary. That means beat-aligned base addresses and
-strides, and tiles past the first in K or N only when a tile row is a whole
-number of beats. And whatever the DMA, the C stride must hold every N tile's
-full row, because a STORE writes a whole tile row (dim results). Bias (``CONFIG_D_ADDR``)
-and accumulating onto an existing C (``CONFIG_OPTIONS`` bit 0) both need a DMA into the
-accumulator, which the tile does not have: UNSUPPORTED_BIAS and UNSUPPORTED_ACCUMULATE.
-
-The tile's DMA beat is at least as wide as an accumulator row, so an int8 tile
-row is never a whole number of beats: today N and K must each fit in one tile,
-while M may span any number of tiles. ``require_beat_aligned=False`` skips the
-layout check, for a DMA that can address any byte (and to verify the tiling
-address arithmetic in N and K against a model).
+So A, B and C may be dense row-major at any address, with any M, N and K. Errors
+(``error_code``): UNSUPPORTED_LAYOUT for a zero stride, or a C stride below N
+results (rows would overlap). Bias (``CONFIG_D_ADDR``) and accumulating onto an
+existing C (``CONFIG_OPTIONS`` bit 0) both need a load into the accumulator, which
+the tile does not have yet: UNSUPPORTED_BIAS and UNSUPPORTED_ACCUMULATE.
 
 Usage: configure dimensions, addresses and strides, then issue START.
 """
@@ -71,7 +65,7 @@ class MatmulError(IntEnum):
     NONE = 0x00
     INVALID_DIMS = 0x01  # M, N or K is zero
     CONFIG_INCOMPLETE = 0x04  # START without dimensions and addresses
-    UNSUPPORTED_LAYOUT = 0x06  # A row would not start on a DMA beat boundary
+    UNSUPPORTED_LAYOUT = 0x06  # A zero stride, or C rows that would overlap
     UNSUPPORTED_BIAS = 0x07  # A bias (D) was configured
     UNSUPPORTED_ACCUMULATE = 0x08  # Accumulate onto C (C is not loaded into the accumulator)
 
@@ -90,12 +84,11 @@ class Matmul(Component):
         progress_i, progress_j, progress_k: Current tile
         selected_dataflow: 1 (weight-stationary)
         param_M, param_N, param_K: Configured dimensions
-        dbg_addr_A/B/C/D, dbg_tile_M/N/K: Current row addresses and tile sizes
+        dbg_addr_A/B/C/D, dbg_tile_M/N/K: Current tile addresses and tile sizes
     """
 
-    def __init__(self, config: SystolicConfig, *, require_beat_aligned: bool = True):
+    def __init__(self, config: SystolicConfig):
         self.config = config
-        self.require_beat_aligned = require_beat_aligned
         rows = config.grid_rows * config.tile_rows
         cols = config.grid_cols * config.tile_cols
         if rows != cols:
@@ -149,7 +142,6 @@ class Matmul(Component):
         dim_shift = (dim - 1).bit_length()
         in_bytes = cfg.input_bits // 8
         acc_bytes = cfg.acc_bits // 8
-        beat = cfg.dma_buswidth // 8
         issuer = CommandIssuer(m, self)
 
         reg_M, reg_N, reg_K = Signal(32), Signal(32), Signal(32)
@@ -162,7 +154,6 @@ class Matmul(Component):
 
         tiles_M, tiles_N, tiles_K = Signal(16), Signal(16), Signal(16)
         tile_i, tile_j, tile_k = Signal(16), Signal(16), Signal(16)
-        row = Signal(16)  # row within the tile being loaded or stored
 
         # Tile sizes (edge tiles are smaller)
         tile_M, tile_N, tile_K = Signal(16), Signal(16), Signal(16)
@@ -177,44 +168,22 @@ class Matmul(Component):
                 size.eq(Mux(remaining < dim, remaining[:16], dim)),
             ]
 
-        # Row addresses
-        a_row = Signal(64)
-        b_row = Signal(64)
-        c_row = Signal(64)
+        # Tile addresses (row 0 of the tile)
+        a_tile = Signal(64)
+        b_tile = Signal(64)
+        c_tile = Signal(64)
         m.d.comb += [
-            a_row.eq(
-                reg_A + ((tile_i << dim_shift) + row) * a_stride + (tile_k << dim_shift) * in_bytes
-            ),
-            b_row.eq(
-                reg_B + ((tile_k << dim_shift) + row) * b_stride + (tile_j << dim_shift) * in_bytes
-            ),
-            c_row.eq(
-                reg_C + ((tile_i << dim_shift) + row) * c_stride + (tile_j << dim_shift) * acc_bytes
-            ),
+            a_tile.eq(reg_A + (tile_i << dim_shift) * a_stride + (tile_k << dim_shift) * in_bytes),
+            b_tile.eq(reg_B + (tile_k << dim_shift) * b_stride + (tile_j << dim_shift) * in_bytes),
+            c_tile.eq(reg_C + (tile_i << dim_shift) * c_stride + (tile_j << dim_shift) * acc_bytes),
         ]
 
-        # Layout checks (see the module docstring)
-        def aligned(value):
-            return (value & (beat - 1)) == 0
-
+        # Layout check: rows a stride apart (0 would mean one bus beat to the
+        # BlockMover), and C rows that do not overlap
         layout_ok = Signal()
         m.d.comb += layout_ok.eq(
-            aligned(reg_A)
-            & aligned(reg_B)
-            & aligned(reg_C)
-            & aligned(a_stride)
-            & aligned(b_stride)
-            & aligned(c_stride)
-            & (a_stride != 0)
-            & (b_stride != 0)
-            & (c_stride != 0)
-            & ((tiles_K <= 1) | ((dim * in_bytes) % beat == 0))
-            & ((tiles_N <= 1) | (((dim * in_bytes) % beat == 0) & ((dim * acc_bytes) % beat == 0)))
+            (a_stride != 0) & (b_stride != 0) & (c_stride >= reg_N * acc_bytes)
         )
-        # A STORE writes a whole tile row (dim results), so C rows must hold every
-        # N tile in full, whatever the DMA
-        c_stride_ok = Signal()
-        m.d.comb += c_stride_ok.eq(c_stride >= (tiles_N << dim_shift) * acc_bytes)
 
         m.d.comb += [
             self.param_M.eq(reg_M),
@@ -224,9 +193,9 @@ class Matmul(Component):
             self.progress_i.eq(tile_i),
             self.progress_j.eq(tile_j),
             self.progress_k.eq(tile_k),
-            self.dbg_addr_A.eq(a_row),
-            self.dbg_addr_B.eq(b_row),
-            self.dbg_addr_C.eq(c_row),
+            self.dbg_addr_A.eq(a_tile),
+            self.dbg_addr_B.eq(b_tile),
+            self.dbg_addr_C.eq(c_tile),
             self.dbg_addr_D.eq(reg_D),
             self.dbg_tile_M.eq(tile_M),
             self.dbg_tile_N.eq(tile_N),
@@ -272,7 +241,6 @@ class Matmul(Component):
                                 tile_i.eq(0),
                                 tile_j.eq(0),
                                 tile_k.eq(0),
-                                row.eq(0),
                                 *issuer.reset(),
                             ]
                             m.next = "VALIDATE"
@@ -290,7 +258,7 @@ class Matmul(Component):
                 with m.Elif(reg_accumulate):
                     m.d.sync += self.error_code.eq(MatmulError.UNSUPPORTED_ACCUMULATE)
                     m.next = "ERROR"
-                with m.Elif(~c_stride_ok | (~layout_ok if self.require_beat_aligned else 0)):
+                with m.Elif(~layout_ok):
                     m.d.sync += self.error_code.eq(MatmulError.UNSUPPORTED_LAYOUT)
                     m.next = "ERROR"
                 with m.Else():
@@ -299,29 +267,17 @@ class Matmul(Component):
 
             issuer.state("CONFIG", "LOAD_A", CTRL_EXEC, ExecOpcode.CONFIG, rs1=WS)
 
-            # One LOAD per A tile row, then per B tile row
+            # One LOAD per tile: the A tile, then the B tile
             issuer.state(
-                "LOAD_A", "A_NEXT", CTRL_LOAD, DmaOpcode.MEMCPY,
-                dram_addr=a_row, local_addr=self.sp_a + row, len=1,
+                "LOAD_A", "LOAD_B", CTRL_LOAD, DmaOpcode.MEMCPY,
+                dram_addr=a_tile, local_addr=self.sp_a, len=tile_M,
+                stride=a_stride, row_bytes=tile_K * in_bytes,
             )  # fmt: skip
-            with m.State("A_NEXT"):
-                with m.If(row + 1 < tile_M):
-                    m.d.sync += row.eq(row + 1)
-                    m.next = "LOAD_A"
-                with m.Else():
-                    m.d.sync += row.eq(0)
-                    m.next = "LOAD_B"
             issuer.state(
-                "LOAD_B", "B_NEXT", CTRL_LOAD, DmaOpcode.MEMCPY,
-                dram_addr=b_row, local_addr=self.sp_b + row, len=1,
+                "LOAD_B", "PRELOAD", CTRL_LOAD, DmaOpcode.MEMCPY,
+                dram_addr=b_tile, local_addr=self.sp_b, len=tile_K,
+                stride=b_stride, row_bytes=tile_N * in_bytes,
             )  # fmt: skip
-            with m.State("B_NEXT"):
-                with m.If(row + 1 < tile_K):
-                    m.d.sync += row.eq(row + 1)
-                    m.next = "LOAD_B"
-                with m.Else():
-                    m.d.sync += row.eq(0)
-                    m.next = "PRELOAD"
 
             issuer.state(
                 "PRELOAD", "COMPUTE", CTRL_EXEC, ExecOpcode.PRELOAD, rs1=self.sp_b, k_dim=tile_K
@@ -340,18 +296,12 @@ class Matmul(Component):
                     m.d.sync += tile_k.eq(0)
                     m.next = "STORE"
 
-            # One STORE per C tile row
+            # One STORE per C tile, only its own columns
             issuer.state(
-                "STORE", "C_NEXT", CTRL_STORE, DmaOpcode.MEMCPY,
-                dram_addr=c_row, local_addr=self.acc_c + row, len=1, activation=reg_activation,
+                "STORE", "NEXT_IJ", CTRL_STORE, DmaOpcode.MEMCPY,
+                dram_addr=c_tile, local_addr=self.acc_c, len=tile_M,
+                stride=c_stride, row_bytes=tile_N * acc_bytes, activation=reg_activation,
             )  # fmt: skip
-            with m.State("C_NEXT"):
-                with m.If(row + 1 < tile_M):
-                    m.d.sync += row.eq(row + 1)
-                    m.next = "STORE"
-                with m.Else():
-                    m.d.sync += row.eq(0)
-                    m.next = "NEXT_IJ"
 
             with m.State("NEXT_IJ"):
                 with m.If(tile_j + 1 < tiles_N):

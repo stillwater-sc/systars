@@ -61,8 +61,8 @@ The loop order affects memory access patterns and reuse:
 
 | Loop Order | A Reuse | B Reuse | Best For |
 |------------|---------|---------|----------|
-| IJK | Low | High | B fits in cache, streaming A |
-| IKJ | High | Low | A fits in cache, streaming B |
+| IJK | Low | High | B fits in L2, streaming A |
+| IKJ | High | Low | A fits in L2, streaming B |
 | JIK | Low | High | Column-major C |
 | JKI | High | Low | Row-major C |
 | KIJ | Medium | Medium | Balanced |

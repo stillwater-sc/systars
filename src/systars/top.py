@@ -90,7 +90,9 @@ class SystolicTop(Component):
             "cmd_opcode": In(8),
             "cmd_dram_addr": In(64),  # For load/store: DRAM address
             "cmd_local_addr": In(32),  # For load: SP addr; store: ACC addr
-            "cmd_len": In(16),  # Transfer length in beats
+            "cmd_len": In(16),  # Load/store: rows to move
+            "cmd_stride": In(32),  # Load/store: bytes between L3 rows (0 = one beat)
+            "cmd_row_bytes": In(16),  # Load/store: bytes per row (0 = whole row)
             "cmd_id": In(8),
             # Execute-specific command fields
             "cmd_rs1": In(32),  # A address or preload source
@@ -189,6 +191,8 @@ class SystolicTop(Component):
             load_ctrl.cmd_dram_addr.eq(self.cmd_dram_addr),
             load_ctrl.cmd_sp_addr.eq(self.cmd_local_addr),
             load_ctrl.cmd_len.eq(self.cmd_len),
+            load_ctrl.cmd_stride.eq(self.cmd_stride),
+            load_ctrl.cmd_row_bytes.eq(self.cmd_row_bytes),
             load_ctrl.cmd_id.eq(self.cmd_id),
             # Store controller command
             store_ctrl.cmd_valid.eq(self.cmd_valid & (self.cmd_type == self.CTRL_STORE)),
@@ -196,6 +200,8 @@ class SystolicTop(Component):
             store_ctrl.cmd_acc_addr.eq(self.cmd_local_addr),
             store_ctrl.cmd_dram_addr.eq(self.cmd_dram_addr),
             store_ctrl.cmd_len.eq(self.cmd_len),
+            store_ctrl.cmd_stride.eq(self.cmd_stride),
+            store_ctrl.cmd_row_bytes.eq(self.cmd_row_bytes),
             store_ctrl.cmd_id.eq(self.cmd_id),
             store_ctrl.cmd_activation.eq(self.cmd_activation),
             # Execute controller command
@@ -260,6 +266,7 @@ class SystolicTop(Component):
             writer.data_valid.eq(store_ctrl.dma_data_valid),
             store_ctrl.dma_data_ready.eq(writer.data_ready),
             writer.data.eq(store_ctrl.dma_data),
+            writer.data_strb.eq(store_ctrl.dma_data_strb),
             writer.data_last.eq(store_ctrl.dma_data_last),
             store_ctrl.dma_done.eq(writer.done),
         ]
