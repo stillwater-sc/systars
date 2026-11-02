@@ -29,7 +29,8 @@ then STORE the output tile, one row per position. The commands go one at a time
 Errors (``error_code``): CONFIG_INCOMPLETE without the input, output and kernel
 dimensions and the X/F/Y addresses (or with padding but no zero row);
 INVALID_DIMS for a zero dimension, stride or dilation; UNSUPPORTED_BIAS for a
-bias; UNSUPPORTED_LAYOUT when output positions are too close for whole tile rows
+bias and UNSUPPORTED_ACCUMULATE for accumulating onto an existing Y (``CONFIG_OPTIONS``
+bit 0), which both need a DMA into the accumulator; UNSUPPORTED_LAYOUT when output positions are too close for whole tile rows
 (``y_stride`` below ``ceil(out_c / dim) * dim`` results) or, with
 ``require_beat_aligned`` (the default), when a loaded or stored row would not
 start on a DMA beat boundary. The tile's DMA moves whole beats, so the second
@@ -82,6 +83,7 @@ class Conv2dError(IntEnum):
     CONFIG_INCOMPLETE = 0x05  # Dimensions or addresses missing (or padding without a zero row)
     UNSUPPORTED_LAYOUT = 0x07  # See the module docstring
     UNSUPPORTED_BIAS = 0x08  # A bias (B) was configured
+    UNSUPPORTED_ACCUMULATE = 0x09  # Accumulate onto Y (Y is not loaded into the accumulator)
 
 
 WS = 1  # ExecuteController CONFIG rs1[0]
@@ -379,6 +381,9 @@ class Conv2d(Component):
                 with m.Elif(b_addr != 0):
                     m.d.sync += self.error_code.eq(Conv2dError.UNSUPPORTED_BIAS)
                     m.next = "ERROR"
+                with m.Elif(accumulate):
+                    m.d.sync += self.error_code.eq(Conv2dError.UNSUPPORTED_ACCUMULATE)
+                    m.next = "ERROR"
                 with m.Elif(~y_stride_ok | (~beat_ok if self.require_beat_aligned else 0)):
                     m.d.sync += self.error_code.eq(Conv2dError.UNSUPPORTED_LAYOUT)
                     m.next = "ERROR"
@@ -429,7 +434,7 @@ class Conv2d(Component):
             )
             issuer.state(
                 "COMPUTE", "NEXT_K", CTRL_EXEC,
-                Mux(first_k & ~accumulate, ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE),
+                Mux(first_k, ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE),
                 rs1=self.sp_x, rd=self.acc_y, k_dim=tile_M,
             )  # fmt: skip
 

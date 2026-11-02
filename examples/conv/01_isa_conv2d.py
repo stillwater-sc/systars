@@ -99,12 +99,17 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
             ctx.set(conv.cfg_data, data)
             await ctx.tick()
         ctx.set(conv.cfg_valid, 0)
-        done, error, code = (
-            await ctx.tick()
-            .sample(conv.done, conv.error, conv.error_code)
-            .until(conv.done | conv.error)
-        )
-        status.update(done=done, error=error, code=code)
+        # Every command completes within a few cycles: bound the wait so a stalled
+        # handshake ends the demo instead of hanging it
+        m_tiles = -(-(batch * out_h * out_w) // array_dim)
+        rows = m_tiles * -(-out_c // array_dim) * kernel * kernel * -(-in_c // array_dim)
+        for _ in range(1000 + 64 * rows * (3 * array_dim + 4)):
+            _, _, done, error, code = await ctx.tick().sample(
+                conv.done, conv.error, conv.error_code
+            )
+            if done or error:
+                status.update(done=done, error=error, code=code)
+                return
 
     sim = Simulator(conv)
     sim.add_clock(1e-6)
@@ -112,6 +117,9 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
     sim.add_process(controller)
     sim.run()
 
+    if not status:
+        print("\n   Conv2d did not finish (cycle limit reached)")
+        return False
     if status["error"]:
         print(f"\n   Conv2d reported {Conv2dError(status['code']).name}")
         return False

@@ -19,8 +19,9 @@ The DMA moves whole bus beats, so START rejects (`UNSUPPORTED_LAYOUT`) a layout 
 that does not start on a beat boundary. A beat is at least as wide as an accumulator row, so
 today Matmul needs N and K to fit one tile (M can be anything, with rows a whole number of
 beats apart), and real convolutions are rejected. `require_beat_aligned=False` skips the
-check, for a DMA that can address any byte. Bias needs a DMA into the accumulator, which the
-accelerator lacks (`UNSUPPORTED_BIAS`).
+check, for a DMA that can address any byte. Bias, and accumulating onto an existing C or Y
+(`CONFIG_OPTIONS` bit 0), need a DMA into the accumulator, which the accelerator lacks
+(`UNSUPPORTED_BIAS`, `UNSUPPORTED_ACCUMULATE`).
 
 ## Examples
 

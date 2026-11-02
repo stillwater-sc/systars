@@ -94,12 +94,16 @@ def run_matmul_demo(M, N, K, array_dim, any_layout=False, verbose=True):
             ctx.set(matmul.cfg_data, data)
             await ctx.tick()
         ctx.set(matmul.cfg_valid, 0)
-        done, error, code = (
-            await ctx.tick()
-            .sample(matmul.done, matmul.error, matmul.error_code)
-            .until(matmul.done | matmul.error)
-        )
-        status.update(done=done, error=error, code=code)
+        # Every command completes within a few cycles: bound the wait so a stalled
+        # handshake ends the demo instead of hanging it
+        rows = -(-M // array_dim) * -(-N // array_dim) * -(-K // array_dim)
+        for _ in range(1000 + 64 * rows * (3 * array_dim + 4)):
+            _, _, done, error, code = await ctx.tick().sample(
+                matmul.done, matmul.error, matmul.error_code
+            )
+            if done or error:
+                status.update(done=done, error=error, code=code)
+                return
 
     sim = Simulator(matmul)
     sim.add_clock(1e-6)
@@ -107,6 +111,9 @@ def run_matmul_demo(M, N, K, array_dim, any_layout=False, verbose=True):
     sim.add_process(controller)
     sim.run()
 
+    if not status:
+        print("\n   Matmul did not finish (cycle limit reached)")
+        return False
     if status["error"]:
         print(f"\n   Matmul reported {MatmulError(status['code']).name}")
         if not any_layout:

@@ -72,9 +72,11 @@ and weight-stationary. The previous execute path could not:
   `cmd_rs1`/`cmd_rs2`/`cmd_rd` are 32-bit and carry execute operands only. START reports
   `UNSUPPORTED_LAYOUT` when the DMA could not move a row (today N and K must each fit one tile
   for Matmul, and real convolutions do not fit; `require_beat_aligned=False` skips the check),
-  and `UNSUPPORTED_BIAS` for a bias. Conv2d gains `CONFIG_ZERO_ADDR`, and `CONFIG_Y_STRIDE` is
+  and `UNSUPPORTED_BIAS` for a bias. `UNSUPPORTED_ACCUMULATE` rejects the accumulate option
+  (`CONFIG_OPTIONS` bit 0): C or Y is never loaded into the accumulator, so it would have added
+  stale rows from an earlier tile or instruction. Conv2d gains `CONFIG_ZERO_ADDR`, and `CONFIG_Y_STRIDE` is
   the byte distance between output positions. The ISA examples (`examples/gemm/07_isa_matmul.py`,
-  `examples/conv/01_isa_conv2d.py`) are rewritten against the new port
+  `examples/conv/01_isa_conv2d.py`) are rewritten against the new port, with a cycle limit
 - **Execute semantics**: `COMPUTE` overwrites its destination rows and `COMPUTE_ACCUMULATE` adds
   to them. OS computes `C[R x C] = A[R x K] @ B[K x C]` from Aᵀ and B rows; WS computes
   `C[M x C] = A[M x R] @ W` with `W` loaded by `PRELOAD` (which no longer reads the accumulator,

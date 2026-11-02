@@ -52,7 +52,16 @@ def reference(X, F, stride, pad, dilation):
 
 
 def setup(
-    X_shape, F_shape, stride=(1, 1), pad=(0, 0), dilation=(1, 1), *, y_stride=0, zero=True, bias=0
+    X_shape,
+    F_shape,
+    stride=(1, 1),
+    pad=(0, 0),
+    dilation=(1, 1),
+    *,
+    y_stride=0,
+    zero=True,
+    bias=0,
+    options=0,
 ):
     batch, in_h, in_w, in_c = X_shape
     kh, kw, _, out_c = F_shape
@@ -70,6 +79,7 @@ def setup(
         (Conv2dCmd.CONFIG_Y_ADDR, Y_ADDR),
         (Conv2dCmd.CONFIG_B_ADDR, bias),
         (Conv2dCmd.CONFIG_Y_STRIDE, y_stride),
+        (Conv2dCmd.CONFIG_OPTIONS, options),
     ]
     if zero:
         cmds.append((Conv2dCmd.CONFIG_ZERO_ADDR, ZERO_ADDR))
@@ -125,7 +135,7 @@ class TestNumerical:
 
     def test_kernel_larger_than_padding_reach(self):
         """Output positions whose whole window is padding read only zero rows."""
-        check((1, 2, 2, 1), (3, 3, 1, 1), pad=(2, 2), seed=4)
+        check((1, 2, 2, 1), (3, 3, 1, 1), pad=(3, 3), seed=4)
 
 
 class TestCommandStream:
@@ -178,6 +188,13 @@ class TestErrors:
     def test_bias_is_unsupported(self):
         cmds = setup((1, 4, 4, 4), (1, 1, 4, 4), bias=0x8000)
         assert self.run(cmds).error_code == Conv2dError.UNSUPPORTED_BIAS
+
+    def test_accumulate_is_unsupported(self):
+        """Y is never loaded into the accumulator, so accumulating onto it would add stale rows."""
+        cmds = setup((1, 4, 4, 4), (1, 1, 4, 4), y_stride=y_stride_for(4), options=1)
+        result = self.run(cmds)
+        assert result.error_code == Conv2dError.UNSUPPORTED_ACCUMULATE
+        assert not result.commands
 
     def test_dense_output_with_partial_n_tile(self):
         """out_c = 5 needs 8 results per position (two N tiles); dense is 5: rejected."""

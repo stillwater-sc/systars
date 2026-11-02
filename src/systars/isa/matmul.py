@@ -24,8 +24,9 @@ otherwise): the DMA moves whole bus beats, so every row that is loaded or stored
 must start on a beat boundary. That means beat-aligned base addresses and
 strides, and tiles past the first in K or N only when a tile row is a whole
 number of beats. And whatever the DMA, the C stride must hold every N tile's
-full row, because a STORE writes a whole tile row (dim results). Bias (``CONFIG_D_ADDR``) needs a DMA into the accumulator, which the
-tile does not have: UNSUPPORTED_BIAS.
+full row, because a STORE writes a whole tile row (dim results). Bias (``CONFIG_D_ADDR``)
+and accumulating onto an existing C (``CONFIG_OPTIONS`` bit 0) both need a DMA into the
+accumulator, which the tile does not have: UNSUPPORTED_BIAS and UNSUPPORTED_ACCUMULATE.
 
 The tile's DMA beat is at least as wide as an accumulator row, so an int8 tile
 row is never a whole number of beats: today N and K must each fit in one tile,
@@ -72,6 +73,7 @@ class MatmulError(IntEnum):
     CONFIG_INCOMPLETE = 0x04  # START without dimensions and addresses
     UNSUPPORTED_LAYOUT = 0x06  # A row would not start on a DMA beat boundary
     UNSUPPORTED_BIAS = 0x07  # A bias (D) was configured
+    UNSUPPORTED_ACCUMULATE = 0x08  # Accumulate onto C (C is not loaded into the accumulator)
 
 
 WS = 1  # ExecuteController CONFIG rs1[0]
@@ -285,6 +287,9 @@ class Matmul(Component):
                 with m.Elif(reg_D != 0):
                     m.d.sync += self.error_code.eq(MatmulError.UNSUPPORTED_BIAS)
                     m.next = "ERROR"
+                with m.Elif(reg_accumulate):
+                    m.d.sync += self.error_code.eq(MatmulError.UNSUPPORTED_ACCUMULATE)
+                    m.next = "ERROR"
                 with m.Elif(~c_stride_ok | (~layout_ok if self.require_beat_aligned else 0)):
                     m.d.sync += self.error_code.eq(MatmulError.UNSUPPORTED_LAYOUT)
                     m.next = "ERROR"
@@ -323,7 +328,7 @@ class Matmul(Component):
             )
             issuer.state(
                 "COMPUTE", "NEXT_K", CTRL_EXEC,
-                Mux((tile_k == 0) & ~reg_accumulate, ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE),
+                Mux(tile_k == 0, ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE),
                 rs1=self.sp_a, rd=self.acc_c, k_dim=tile_M,
             )  # fmt: skip
 

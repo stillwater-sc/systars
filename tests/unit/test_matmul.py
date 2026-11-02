@@ -173,6 +173,13 @@ class TestErrors:
         result = self.run(config(), setup(4, 4, 4, beat, beat, beat, d_addr=0x4000))
         assert result.error_code == MatmulError.UNSUPPORTED_BIAS
 
+    def test_accumulate_is_unsupported(self):
+        """C is never loaded into the accumulator, so accumulating onto it would add stale rows."""
+        beat = config().dma_buswidth // 8
+        result = self.run(config(), setup(4, 4, 4, beat, beat, beat, options=1))
+        assert result.error_code == MatmulError.UNSUPPORTED_ACCUMULATE
+        assert not result.commands
+
     @pytest.mark.parametrize(
         "case",
         [
