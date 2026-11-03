@@ -158,13 +158,23 @@ class SystolicConfig:
     # Queue Depths
     # =========================================================================
     ld_queue_length: int = 8
-    """Load instruction queue depth."""
+    """Depth of the BlockMover's L3 -> L2 (LOAD) command queue in SystolicTop."""
 
     st_queue_length: int = 2
-    """Store instruction queue depth."""
+    """Depth of the BlockMover's accumulator -> L3 (STORE) command queue."""
 
     ex_queue_length: int = 8
-    """Execute instruction queue depth."""
+    """Depth of the Streamer's (execute) command queue."""
+
+    # =========================================================================
+    # Tile Buffers (credits and tile-ready tokens, controller/sync.py)
+    # =========================================================================
+    l2_slots: int = 4
+    """Tile slots in the scratchpad (L2), one credit each. Two per operand (A and
+    B) double-buffers. A slot is a tag: commands carry its address explicitly."""
+
+    acc_slots: int = 2
+    """Tile slots in the accumulator, one credit each."""
 
     # =========================================================================
     # Reservation Station Configuration
@@ -309,6 +319,13 @@ class SystolicConfig:
             )
         assert self.sp_capacity_kb > 0, "sp_capacity_kb must be positive"
         assert self.acc_capacity_kb > 0, "acc_capacity_kb must be positive"
+        # Slot tags are 4-bit fields of cmd_sync (controller/sync.py)
+        for name in ("l2_slots", "acc_slots"):
+            slots = getattr(self, name)
+            assert 1 <= slots <= 16, f"{name} must be 1..16 (a 4-bit tag), got {slots}"
+        # A queue of one entry would have a zero-width address in the generated RTL
+        for name in ("ld_queue_length", "ex_queue_length", "st_queue_length"):
+            assert getattr(self, name) >= 2, f"{name} must be at least 2"
         # Derived row geometry: rows must be whole bytes, and every bank must hold
         # at least one row (otherwise sp_width_bytes / bank depths are zero)
         assert self.sp_width % 8 == 0, (

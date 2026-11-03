@@ -3,7 +3,8 @@ ISA instructions for the systolic tile.
 
 High-level instructions that tile an operation larger than the array and issue
 the commands a host would issue to ``SystolicTop`` (LOAD, CONFIG, PRELOAD,
-COMPUTE, STORE), one at a time, on a shared command port (``command``):
+COMPUTE, STORE) on a shared command port (``command``), pushed ahead and ordered
+by credits and tile-ready tokens (``controller/sync.py``):
 
     Matmul: C = A @ B
     Conv2d: Y = conv2d(X, F), as an implicit GEMM

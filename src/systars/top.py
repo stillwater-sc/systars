@@ -12,9 +12,12 @@ This module wires together all major subsystems:
 - ExecuteController: Orchestrates Scratchpad → SystolicArray → Accumulator
 
 External Interfaces:
-- AXI memory interface (read and write channels)
-- Command interface for operation dispatch
-- Status/interrupt signals
+- AXI memory interface (read and write channels): the tile's link to L3
+- Command interface: commands are pushed into one in-order queue per process
+  (BlockMover LOAD, BlockMover STORE, Streamer), and a queue's head starts when its
+  credits and tile-ready tokens are there (``cmd_sync``, controller/sync.py)
+- Status/interrupt signals, per-process start and completion events, and the tile
+  slots' state
 
 Data Flow for Matrix Multiply C = A × B + D:
 1. Load A from DRAM → Scratchpad via LoadController + StreamReader
@@ -24,13 +27,15 @@ Data Flow for Matrix Multiply C = A × B + D:
 5. Store C from Accumulator → DRAM via StoreController + StreamWriter
 """
 
-from amaranth import Module
+from amaranth import Cat, Module, Signal
+from amaranth.lib.fifo import SyncFIFO
 from amaranth.lib.wiring import Component, In, Out
 
 from .config import SystolicConfig
 from .controller.execute import ExecuteController
 from .controller.load import LoadController
 from .controller.store import StoreController
+from .controller.sync import SlotPool, Sync
 from .core.systolic_array import SystolicArray
 from .dma.reader import StreamReader
 from .dma.writer import StreamWriter
@@ -48,10 +53,11 @@ class SystolicTop(Component):
     Ports:
         Command Interface (active controller select + parameters):
             cmd_valid: Command available
-            cmd_ready: Ready to accept command
+            cmd_ready: The target process's queue has room
             cmd_type: 0=load, 1=store, 2=execute
             cmd_opcode: Operation code
             cmd_* : Operation parameters
+            cmd_sync: Credits and tile-ready tokens (controller/sync.py; 0 = untracked)
 
         AXI Read Interface (to external memory):
             axi_ar*: Read address channel
@@ -63,11 +69,14 @@ class SystolicTop(Component):
             axi_b*: Write response channel
 
         Status:
-            busy: Any controller is busy
-            load_busy, store_busy, exec_busy: Individual status
+            busy: Any process is busy
+            load_busy, store_busy, exec_busy: A process runs a command or has commands queued
             completed: A command completed this cycle (one of possibly several)
             completed_type: Which controller completed (0=load, 1=store, 2=exec)
             {load,store,exec}_completed[_id]: Per-controller completions (lossless)
+            {load,store,exec}_started[_id]: A process started a command
+            l2_free, l2_ready, acc_free, acc_ready: Slot states (OWNED = neither)
+            sync_error: Sticky credit/token protocol error
             interrupt: Interrupt request
     """
 
@@ -100,6 +109,7 @@ class SystolicTop(Component):
             "cmd_rd": In(32),  # C destination
             "cmd_k_dim": In(16),  # Inner dimension
             "cmd_activation": In(4),  # Activation function (for store)
+            "cmd_sync": In(Sync.BITS),  # Credits and tokens (controller/sync.py); 0 = untracked
             # AXI Read Address Channel
             "axi_arvalid": Out(1),
             "axi_arready": In(1),
@@ -148,6 +158,21 @@ class SystolicTop(Component):
             "exec_completed": Out(1),
             "exec_completed_id": Out(8),
             "interrupt": Out(1),
+            # A process started a command (its queue's head was dispatched): the
+            # CSP action's start, matching {load,store,exec}_completed
+            "load_started": Out(1),
+            "load_started_id": Out(8),
+            "store_started": Out(1),
+            "store_started_id": Out(8),
+            "exec_started": Out(1),
+            "exec_started_id": Out(8),
+            # Tile slots (controller/sync.py): FREE / READY bits per slot (OWNED =
+            # neither), and a sticky protocol error
+            "l2_free": Out(config.l2_slots),
+            "l2_ready": Out(config.l2_slots),
+            "acc_free": Out(config.acc_slots),
+            "acc_ready": Out(config.acc_slots),
+            "sync_error": Out(1),
         }
 
         super().__init__(ports)
@@ -180,50 +205,128 @@ class SystolicTop(Component):
         m.submodules.exec_ctrl = exec_ctrl = ExecuteController(cfg)
 
         # =====================================================================
-        # Command Dispatch
+        # Command Queues, Credits and Tile-Ready Tokens (controller/sync.py)
         # =====================================================================
 
-        # Route commands to appropriate controller based on cmd_type
+        # Slot pools: L2 (LOAD fills, PRELOAD/COMPUTE read) and the accumulator
+        # (COMPUTE fills, STORE reads)
+        m.submodules.l2_slots = l2 = SlotPool(cfg.l2_slots)
+        m.submodules.acc_slots = acc = SlotPool(cfg.acc_slots)
+
+        # One in-order queue per process: the host (or an ISA instruction) pushes
+        # commands ahead, and a queue's head is dispatched when its credits and
+        # tokens are there and its controller is idle. Each entry maps the
+        # controller's command ports to SystolicTop's command fields.
+        processes = {
+            self.CTRL_LOAD: (
+                "load", load_ctrl, cfg.ld_queue_length,
+                {"opcode": "opcode", "dram_addr": "dram_addr", "sp_addr": "local_addr",
+                 "len": "len", "stride": "stride", "row_bytes": "row_bytes", "id": "id"},
+            ),
+            self.CTRL_STORE: (
+                "store", store_ctrl, cfg.st_queue_length,
+                {"opcode": "opcode", "acc_addr": "local_addr", "dram_addr": "dram_addr",
+                 "len": "len", "stride": "stride", "row_bytes": "row_bytes", "id": "id",
+                 "activation": "activation"},
+            ),
+            self.CTRL_EXEC: (
+                "exec", exec_ctrl, cfg.ex_queue_length,
+                {"opcode": "opcode", "rs1": "rs1", "rs2": "rs2", "rd": "rd",
+                 "k_dim": "k_dim", "id": "id"},
+            ),
+        }  # fmt: skip
+
+        queues = {}
+
+        def gate(ctrl_type, ok_for):
+            """Queue a process's commands; dispatch the head when ``ok_for(head)`` holds
+            and the controller is idle. Returns the dispatch strobe, the head's sync
+            fields and the in-flight command's (applied when the controller completes).
+            """
+            name, ctrl, depth, ports = processes[ctrl_type]
+            sources = [getattr(self, f"cmd_{f}") for f in ports.values()] + [self.cmd_sync]
+            queue = SyncFIFO(width=sum(len(v) for v in sources), depth=depth)
+            m.submodules[f"{name}_queue"] = queues[ctrl_type] = queue
+            m.d.comb += [
+                queue.w_data.eq(Cat(*sources)),
+                queue.w_en.eq(self.cmd_valid & (self.cmd_type == ctrl_type)),
+            ]
+            offset = 0
+            for port, src in zip(ports, sources[:-1], strict=True):
+                m.d.comb += getattr(ctrl, f"cmd_{port}").eq(queue.r_data[offset:][: len(src)])
+                offset += len(src)
+            head = Signal(Sync.BITS, name=f"{name}_head_sync")
+            inflight = Signal(Sync.BITS, name=f"{name}_inflight_sync")
+            dispatch = Signal(name=f"{name}_dispatch")
+            m.d.comb += head.eq(queue.r_data[offset:][: Sync.BITS])
+            ok = ok_for(Sync.fields(head))
+            m.d.comb += [
+                ctrl.cmd_valid.eq(queue.r_rdy & ok),
+                dispatch.eq(queue.r_rdy & ok & ctrl.cmd_ready),
+                queue.r_en.eq(dispatch),
+            ]
+            with m.If(dispatch):
+                m.d.sync += inflight.eq(head)
+            m.d.comb += [
+                getattr(self, f"{name}_started").eq(dispatch),
+                getattr(self, f"{name}_started_id").eq(ctrl.cmd_id),
+            ]
+            return dispatch, Sync.fields(head), Sync.fields(inflight)
+
+        # BlockMover, L3 -> L2: takes the L2 slot's credit; emits its token when done
+        ld_go, ld_head, ld_done = gate(self.CTRL_LOAD, lambda h: ~h.acquire | l2.prod_credit)
         m.d.comb += [
-            # Load controller command
-            load_ctrl.cmd_valid.eq(self.cmd_valid & (self.cmd_type == self.CTRL_LOAD)),
-            load_ctrl.cmd_opcode.eq(self.cmd_opcode),
-            load_ctrl.cmd_dram_addr.eq(self.cmd_dram_addr),
-            load_ctrl.cmd_sp_addr.eq(self.cmd_local_addr),
-            load_ctrl.cmd_len.eq(self.cmd_len),
-            load_ctrl.cmd_stride.eq(self.cmd_stride),
-            load_ctrl.cmd_row_bytes.eq(self.cmd_row_bytes),
-            load_ctrl.cmd_id.eq(self.cmd_id),
-            # Store controller command
-            store_ctrl.cmd_valid.eq(self.cmd_valid & (self.cmd_type == self.CTRL_STORE)),
-            store_ctrl.cmd_opcode.eq(self.cmd_opcode),
-            store_ctrl.cmd_acc_addr.eq(self.cmd_local_addr),
-            store_ctrl.cmd_dram_addr.eq(self.cmd_dram_addr),
-            store_ctrl.cmd_len.eq(self.cmd_len),
-            store_ctrl.cmd_stride.eq(self.cmd_stride),
-            store_ctrl.cmd_row_bytes.eq(self.cmd_row_bytes),
-            store_ctrl.cmd_id.eq(self.cmd_id),
-            store_ctrl.cmd_activation.eq(self.cmd_activation),
-            # Execute controller command
-            exec_ctrl.cmd_valid.eq(self.cmd_valid & (self.cmd_type == self.CTRL_EXEC)),
-            exec_ctrl.cmd_opcode.eq(self.cmd_opcode),
-            exec_ctrl.cmd_rs1.eq(self.cmd_rs1),
-            exec_ctrl.cmd_rs2.eq(self.cmd_rs2),
-            exec_ctrl.cmd_rd.eq(self.cmd_rd),
-            exec_ctrl.cmd_k_dim.eq(self.cmd_k_dim),
-            exec_ctrl.cmd_id.eq(self.cmd_id),
+            l2.prod_slot.eq(ld_head.dst),
+            l2.prod_acquire.eq(ld_head.acquire),
+            l2.prod_take.eq(ld_go & ld_head.acquire),
+            l2.prod_signal.eq(load_ctrl.completed & ld_done.signal),
+            l2.prod_signal_slot.eq(ld_done.dst),
         ]
 
-        # Command ready: ready if target controller is ready
+        # Streamer: starts when its L2 tile is ready and its accumulator slot is free
+        # (and then runs to the end); returns the L2 credit and emits the result
+        # token when done
+        ex_go, ex_head, ex_done = gate(
+            self.CTRL_EXEC,
+            lambda h: (~h.wait | l2.cons_ready) & (~h.acquire | acc.prod_credit),
+        )
+        m.d.comb += [
+            l2.cons_slot.eq(ex_head.src),
+            l2.cons_wait.eq(ex_head.wait),
+            l2.cons_release.eq(exec_ctrl.completed & ex_done.release),
+            l2.cons_release_slot.eq(ex_done.src),
+            acc.prod_slot.eq(ex_head.dst),
+            acc.prod_acquire.eq(ex_head.acquire),
+            acc.prod_take.eq(ex_go & ex_head.acquire),
+            acc.prod_signal.eq(exec_ctrl.completed & ex_done.signal),
+            acc.prod_signal_slot.eq(ex_done.dst),
+        ]
+
+        # BlockMover, accumulator -> L3: fires on the result token; returns the
+        # accumulator credit when done
+        _, st_head, st_done = gate(self.CTRL_STORE, lambda h: ~h.wait | acc.cons_ready)
+        m.d.comb += [
+            acc.cons_slot.eq(st_head.src),
+            acc.cons_wait.eq(st_head.wait),
+            acc.cons_release.eq(store_ctrl.completed & st_done.release),
+            acc.cons_release_slot.eq(st_done.src),
+        ]
+
+        # Command ready: the target queue has room
         with m.Switch(self.cmd_type):
-            with m.Case(self.CTRL_LOAD):
-                m.d.comb += self.cmd_ready.eq(load_ctrl.cmd_ready)
-            with m.Case(self.CTRL_STORE):
-                m.d.comb += self.cmd_ready.eq(store_ctrl.cmd_ready)
-            with m.Case(self.CTRL_EXEC):
-                m.d.comb += self.cmd_ready.eq(exec_ctrl.cmd_ready)
+            for ctrl_type, queue in queues.items():
+                with m.Case(ctrl_type):
+                    m.d.comb += self.cmd_ready.eq(queue.w_rdy)
             with m.Default():
                 m.d.comb += self.cmd_ready.eq(0)
+
+        m.d.comb += [
+            self.l2_free.eq(l2.free),
+            self.l2_ready.eq(l2.ready),
+            self.acc_free.eq(acc.free),
+            self.acc_ready.eq(acc.ready),
+            self.sync_error.eq(l2.error | acc.error),
+        ]
 
         # =====================================================================
         # LoadController <-> StreamReader <-> Scratchpad
@@ -372,10 +475,11 @@ class SystolicTop(Component):
         # =====================================================================
 
         m.d.comb += [
-            self.load_busy.eq(load_ctrl.busy),
-            self.store_busy.eq(store_ctrl.busy),
-            self.exec_busy.eq(exec_ctrl.busy),
-            self.busy.eq(load_ctrl.busy | store_ctrl.busy | exec_ctrl.busy),
+            # A process is busy while it runs a command or has commands queued
+            self.load_busy.eq(load_ctrl.busy | (queues[self.CTRL_LOAD].w_level != 0)),
+            self.store_busy.eq(store_ctrl.busy | (queues[self.CTRL_STORE].w_level != 0)),
+            self.exec_busy.eq(exec_ctrl.busy | (queues[self.CTRL_EXEC].w_level != 0)),
+            self.busy.eq(self.load_busy | self.store_busy | self.exec_busy),
         ]
 
         # Per-controller completions (lossless)

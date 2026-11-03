@@ -14,6 +14,7 @@ import pytest
 from amaranth import Elaboratable, Module
 
 from systars.config import Dataflow, SystolicConfig
+from systars.controller.sync import Sync
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.matmul import Matmul, MatmulCmd, MatmulError
 from systars.top import SystolicTop
@@ -56,17 +57,20 @@ def read_back(model, base, rows, cols, stride, bits):
     return np.array([model.read_elems(base + r * stride, bits, cols) for r in range(rows)])
 
 
-def check_numerically(cfg, M, N, K, a_stride, b_stride, c_stride, *, a_addr=A_ADDR, seed=0):
+def check_numerically(
+    cfg, M, N, K, a_stride, b_stride, c_stride, *, a_addr=A_ADDR, seed=0, buffers=2
+):
     rng = np.random.default_rng(seed)
     A = rng.integers(-128, 128, (M, K))
     B = rng.integers(-128, 128, (K, N))
     cmds = setup(M, N, K, a_stride, b_stride, c_stride, a_addr=a_addr)
-    result = run_isa(Matmul(cfg), cmds, MatmulCmd.START)
+    result = run_isa(Matmul(cfg, buffers=buffers), cmds, MatmulCmd.START)
     assert result.done and not result.error, f"error {result.error_code:#x}"
     model = TopModel(cfg)
     place(model, a_addr, A, a_stride, 8)
     place(model, B_ADDR, B, b_stride, 8)
-    model.run(result.commands)
+    model.run(result.commands)  # also checks the credits and tokens
+    model.assert_all_free()
     np.testing.assert_array_equal(read_back(model, C_ADDR, M, N, c_stride, 32), A @ B)
     return result
 
@@ -123,13 +127,58 @@ class TestCommandStream:
         assert [(c.dram_addr, c.row_bytes) for c in stores] == [(C_ADDR, 16), (C_ADDR + 16, 8)]
 
     def test_scratchpad_addresses_use_low_bank_bits(self):
-        """Tile rows are consecutive local addresses (banks in the low bits), not bank << 16."""
+        """Tile rows are consecutive local addresses (banks in the low bits), not bank << 16.
+
+        Two K tiles use the two A/B slot pairs: A slots at rows 0 and dim, B slots at
+        rows 2*dim and 3*dim."""
         cfg = config()
-        cmds = run_isa(Matmul(cfg), setup(4, 4, 4, 4, 4, 16), MatmulCmd.START).commands
+        cmds = run_isa(Matmul(cfg), setup(4, 4, 8, 8, 4, 16), MatmulCmd.START).commands
         loads = [c.local_addr for c in cmds if c.type == CTRL_LOAD]
-        assert loads == [0, 4]  # the A tile at row 0, the B tile at row dim
-        preload = next(c for c in cmds if c.opcode == ExecOpcode.PRELOAD and c.type == CTRL_EXEC)
-        assert preload.rs1 == 4 and preload.k_dim == 4
+        assert loads == [0, 8, 4, 12]
+        preloads = [c for c in cmds if c.opcode == ExecOpcode.PRELOAD and c.type == CTRL_EXEC]
+        assert [(c.rs1, c.k_dim) for c in preloads] == [(8, 4), (12, 4)]
+
+    def test_credits_and_tokens(self):
+        """Each tile is a slot: LOAD takes its credit and emits its token; PRELOAD and
+        COMPUTE wait for the token and return the credit; COMPUTE takes the accumulator
+        credit on the first K tile and emits the result token on the last; STORE waits
+        for it and returns the credit."""
+        cfg = config()
+        # Two K tiles, two N tiles: the slot pairs and accumulator slots rotate
+        cmds = run_isa(Matmul(cfg), setup(4, 8, 8, 8, 8, 32), MatmulCmd.START).commands[1:]
+        W, R, A, S = Sync.WAIT, Sync.RELEASE, Sync.ACQUIRE, Sync.SIGNAL
+
+        def load(dst):
+            return (CTRL_LOAD, dst << Sync.DST | A | S)
+
+        def preload(src):
+            return (CTRL_EXEC, src | W | R)
+
+        def compute(src, acc, flags):
+            return (CTRL_EXEC, src | acc << Sync.DST | W | R | flags)
+
+        def store(acc):
+            return (CTRL_STORE, acc | W | R)
+
+        expected = []
+        for n_tile in range(2):
+            for k in range(2):
+                expected += [load(k), load(2 + k), preload(2 + k)]
+                expected += [compute(k, n_tile, (A if k == 0 else 0) | (S if k == 1 else 0))]
+            expected += [store(n_tile)]
+        assert [(c.type, c.sync) for c in cmds] == expected
+
+    def test_one_buffer_gives_the_same_results(self):
+        cfg = config()
+        beat = cfg.dma_buswidth // 8
+        for buffers in (1, 2):
+            check_numerically(cfg, 9, 6, 10, 2 * beat, beat, 6 * 4, buffers=buffers)
+
+    def test_buffers_must_fit(self):
+        with pytest.raises(ValueError, match="L2 slots"):
+            Matmul(config(), buffers=3)
+        with pytest.raises(ValueError, match="scratchpad rows"):
+            Matmul(config(grid=16, sp_capacity_kb=1, l2_slots=16, acc_slots=8), buffers=8)
 
     def test_activation_reaches_store(self):
         cfg = config()

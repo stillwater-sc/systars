@@ -64,19 +64,17 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
     trace, status = [], {}
 
     async def controller(ctx):
-        countdown = None
+        """Accept every command as it is pushed; report each STORE done a cycle later."""
+        store_done = False
         while True:
-            ready = countdown is None
-            ctx.set(conv.cmd_ready, ready)
-            ctx.set(conv.cmd_completed, countdown == 0)
+            ctx.set(conv.cmd_ready, 1)
+            ctx.set(conv.cmd_store_completed, store_done)
             _, _, valid, ctype, opcode, dram = await ctx.tick().sample(
                 conv.cmd_valid, conv.cmd_type, conv.cmd_opcode, conv.cmd_dram_addr
             )
-            if not ready:
-                countdown = None if countdown == 0 else countdown - 1
-            if valid and ready:
+            store_done = bool(valid and ctype == CTRL_STORE)
+            if valid:
                 trace.append((ctype, opcode, dram))
-                countdown = 0
 
     async def testbench(ctx):
         cmds = [

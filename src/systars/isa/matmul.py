@@ -22,6 +22,13 @@ For each output tile (i, j), and each K tile k:
 then STORE the C tile, one command: its rows are written with byte strobes, so an
 edge N tile writes only its own columns and C can be dense.
 
+The commands are pushed without waiting for each other (``isa.command``): credits
+and tile-ready tokens order them in ``SystolicTop``. Each K tile uses the next A/B
+pair of L2 slots and each C tile the next accumulator slot, in ring order
+(``TileBuffers``), so with ``buffers=2`` (the default) the BlockMover loads the next
+tiles while the Streamer works on the current ones; ``buffers=1`` serializes them,
+with the same results. The instruction is done when its last STORE completes.
+
 So A, B and C may be dense row-major at any address, with any M, N and K. Errors
 (``error_code``): UNSUPPORTED_LAYOUT for a zero stride, or a C stride below N
 results (rows would overlap). Bias (``CONFIG_D_ADDR``) and accumulating onto an
@@ -37,9 +44,8 @@ from amaranth import Module, Mux, Signal
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import Dataflow, SystolicConfig
-from ..memory.local_addr import LocalAddr
 from ..util.commands import DmaOpcode, ExecOpcode
-from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, command_ports
+from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, TileBuffers, command_ports
 
 
 class MatmulCmd(IntEnum):
@@ -87,7 +93,7 @@ class Matmul(Component):
         dbg_addr_A/B/C/D, dbg_tile_M/N/K: Current tile addresses and tile sizes
     """
 
-    def __init__(self, config: SystolicConfig):
+    def __init__(self, config: SystolicConfig, buffers: int = 2):
         self.config = config
         rows = config.grid_rows * config.tile_rows
         cols = config.grid_cols * config.tile_cols
@@ -99,14 +105,7 @@ class Matmul(Component):
             raise ValueError(f"Matmul requires a power-of-two array dimension, got {self.dim}")
         if not config.dataflow & Dataflow.B_STATIONARY:
             raise ValueError("Matmul issues weight-stationary commands: the array must support WS")
-        if config.sp_total_rows < 2 * self.dim or config.acc_total_rows < self.dim:
-            raise ValueError("Matmul needs 2 * dim scratchpad rows and dim accumulator rows")
-
-        addr = LocalAddr(config)
-        # Scratchpad: A tile rows [0, dim), B tile rows [dim, 2*dim); accumulator: C rows [0, dim)
-        self.sp_a = addr.make_sp_addr(0, 0)
-        self.sp_b = addr.make_sp_addr(self.dim % config.sp_banks, self.dim // config.sp_banks)
-        self.acc_c = addr.make_acc_addr(0, 0)
+        self.tiles = TileBuffers(config, self.dim, buffers, "Matmul")
 
         ports = {
             "cfg_valid": In(1),
@@ -143,6 +142,7 @@ class Matmul(Component):
         in_bytes = cfg.input_bits // 8
         acc_bytes = cfg.acc_bits // 8
         issuer = CommandIssuer(m, self)
+        bufs = self.tiles.build(m)
 
         reg_M, reg_N, reg_K = Signal(32), Signal(32), Signal(32)
         reg_A, reg_B, reg_C, reg_D = (Signal(64, name=f"reg_{n}_addr") for n in "ABCD")
@@ -242,6 +242,7 @@ class Matmul(Component):
                                 tile_j.eq(0),
                                 tile_k.eq(0),
                                 *issuer.reset(),
+                                *bufs.reset(),
                             ]
                             m.next = "VALIDATE"
                         with m.Else():
@@ -270,22 +271,25 @@ class Matmul(Component):
             # One LOAD per tile: the A tile, then the B tile
             issuer.state(
                 "LOAD_A", "LOAD_B", CTRL_LOAD, DmaOpcode.MEMCPY,
-                dram_addr=a_tile, local_addr=self.sp_a, len=tile_M,
-                stride=a_stride, row_bytes=tile_K * in_bytes,
+                dram_addr=a_tile, local_addr=bufs.a_addr, len=tile_M,
+                stride=a_stride, row_bytes=tile_K * in_bytes, sync=bufs.load(bufs.a_slot),
             )  # fmt: skip
             issuer.state(
                 "LOAD_B", "PRELOAD", CTRL_LOAD, DmaOpcode.MEMCPY,
-                dram_addr=b_tile, local_addr=self.sp_b, len=tile_K,
-                stride=b_stride, row_bytes=tile_N * in_bytes,
+                dram_addr=b_tile, local_addr=bufs.b_addr, len=tile_K,
+                stride=b_stride, row_bytes=tile_N * in_bytes, sync=bufs.load(bufs.b_slot),
             )  # fmt: skip
 
             issuer.state(
-                "PRELOAD", "COMPUTE", CTRL_EXEC, ExecOpcode.PRELOAD, rs1=self.sp_b, k_dim=tile_K
-            )
+                "PRELOAD", "COMPUTE", CTRL_EXEC, ExecOpcode.PRELOAD,
+                rs1=bufs.b_addr, k_dim=tile_K, sync=bufs.preload(),
+            )  # fmt: skip
             issuer.state(
                 "COMPUTE", "NEXT_K", CTRL_EXEC,
                 Mux(tile_k == 0, ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE),
-                rs1=self.sp_a, rd=self.acc_c, k_dim=tile_M,
+                rs1=bufs.a_addr, rd=bufs.acc_addr, k_dim=tile_M,
+                sync=bufs.compute(first_k=tile_k == 0, last_k=tile_k + 1 >= tiles_K),
+                then=bufs.next_l2(),
             )  # fmt: skip
 
             with m.State("NEXT_K"):
@@ -299,8 +303,9 @@ class Matmul(Component):
             # One STORE per C tile, only its own columns
             issuer.state(
                 "STORE", "NEXT_IJ", CTRL_STORE, DmaOpcode.MEMCPY,
-                dram_addr=c_tile, local_addr=self.acc_c, len=tile_M,
+                dram_addr=c_tile, local_addr=bufs.acc_addr, len=tile_M,
                 stride=c_stride, row_bytes=tile_N * acc_bytes, activation=reg_activation,
+                sync=bufs.store(), then=bufs.next_acc(),
             )  # fmt: skip
 
             with m.State("NEXT_IJ"):
@@ -311,7 +316,11 @@ class Matmul(Component):
                     m.d.sync += [tile_i.eq(tile_i + 1), tile_j.eq(0)]
                     m.next = "LOAD_A"
                 with m.Else():
-                    m.next = "DONE"
+                    m.next = "DRAIN"
+
+            # Done when the last C tile is in L3
+            with m.State("DRAIN"), m.If(issuer.drained()):
+                m.next = "DONE"
 
             with m.State("DONE"):
                 m.d.comb += self.done.eq(1)

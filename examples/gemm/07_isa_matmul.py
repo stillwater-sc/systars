@@ -59,12 +59,11 @@ def run_matmul_demo(M, N, K, array_dim, verbose=True):
     trace, status = [], {}
 
     async def controller(ctx):
-        """Accept every command and complete it two cycles later."""
-        countdown = None
+        """Accept every command as it is pushed; report each STORE done a cycle later."""
+        store_done = False
         while True:
-            ready = countdown is None
-            ctx.set(matmul.cmd_ready, ready)
-            ctx.set(matmul.cmd_completed, countdown == 0)
+            ctx.set(matmul.cmd_ready, 1)
+            ctx.set(matmul.cmd_store_completed, store_done)
             _, _, valid, ctype, opcode, dram, local, rows, stride, row_bytes, rs1, rd, k_dim = (
                 await ctx.tick().sample(
                     matmul.cmd_valid, matmul.cmd_type, matmul.cmd_opcode, matmul.cmd_dram_addr,
@@ -72,9 +71,8 @@ def run_matmul_demo(M, N, K, array_dim, verbose=True):
                     matmul.cmd_row_bytes, matmul.cmd_rs1, matmul.cmd_rd, matmul.cmd_k_dim,
                 )
             )  # fmt: skip
-            if not ready:
-                countdown = None if countdown == 0 else countdown - 1
-            if valid and ready:
+            store_done = bool(valid and ctype == CTRL_STORE)
+            if valid:
                 trace.append(
                     (
                         command_name(ctype, opcode),
@@ -88,7 +86,6 @@ def run_matmul_demo(M, N, K, array_dim, verbose=True):
                         k_dim,
                     )
                 )
-                countdown = 2
 
     async def testbench(ctx):
         config_cmds = [

@@ -25,9 +25,16 @@ weight-stationary. For each output tile (M tile, N tile), and each K tile:
   overwrites, later ones accumulate);
 
 then STORE the output tile, one command: rows ``y_stride`` bytes apart, only the
-tile's own channels written (byte strobes), so Y can be dense. The commands go one
-at a time (see ``isa.command``). The tile's BlockMover moves rows from and to any
-byte address, so X, F and Y need no alignment.
+tile's own channels written (byte strobes), so Y can be dense. The tile's
+BlockMover moves rows from and to any byte address, so X, F and Y need no alignment.
+
+The commands are pushed without waiting for each other (``isa.command``): credits
+and tile-ready tokens order them in ``SystolicTop``. A K tile's X rows fill one A
+slot (the first row's LOAD takes the slot's credit, the last emits its tile-ready
+token), its filter tile the paired B slot; each K tile uses the next A/B pair and
+each output tile the next accumulator slot, in ring order (``TileBuffers``,
+``buffers=2`` by default; 1 serializes the processes). The instruction is done
+when its last STORE completes.
 
 Errors (``error_code``): CONFIG_INCOMPLETE without the input, output and kernel
 dimensions and the X/F/Y addresses (or with padding but no zero row);
@@ -47,9 +54,8 @@ from amaranth import Module, Mux, Signal, signed
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import Dataflow, SystolicConfig
-from ..memory.local_addr import LocalAddr
 from ..util.commands import DmaOpcode, ExecOpcode
-from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, command_ports
+from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, TileBuffers, command_ports
 
 
 class Conv2dCmd(IntEnum):
@@ -106,7 +112,7 @@ class Conv2d(Component):
         dbg_addr_X/F/Y/B, dbg_tile_M/N/K: Current X row, F and Y tile addresses; tile sizes
     """
 
-    def __init__(self, config: SystolicConfig):
+    def __init__(self, config: SystolicConfig, buffers: int = 2):
         self.config = config
         rows = config.grid_rows * config.tile_rows
         cols = config.grid_cols * config.tile_cols
@@ -117,14 +123,8 @@ class Conv2d(Component):
             raise ValueError(f"Conv2d requires a power-of-two array dimension, got {self.dim}")
         if not config.dataflow & Dataflow.B_STATIONARY:
             raise ValueError("Conv2d issues weight-stationary commands: the array must support WS")
-        if config.sp_total_rows < 2 * self.dim or config.acc_total_rows < self.dim:
-            raise ValueError("Conv2d needs 2 * dim scratchpad rows and dim accumulator rows")
-
-        addr = LocalAddr(config)
-        # Scratchpad: X rows [0, dim), F rows [dim, 2*dim); accumulator: Y rows [0, dim)
-        self.sp_x = addr.make_sp_addr(0, 0)
-        self.sp_f = addr.make_sp_addr(self.dim % config.sp_banks, self.dim // config.sp_banks)
-        self.acc_y = addr.make_acc_addr(0, 0)
+        # X tiles in the A slots, filter tiles in the B slots, Y tiles in the accumulator slots
+        self.tiles = TileBuffers(config, self.dim, buffers, "Conv2d")
 
         ports = {
             "cfg_valid": In(1),
@@ -283,6 +283,8 @@ class Conv2d(Component):
         ]
 
         first_k = (kh == 0) & (kw == 0) & (chunk == 0)
+        last_k = (chunk + 1 >= tiles_C) & (kw + 1 >= kernel_w) & (kh + 1 >= kernel_h)
+        bufs = self.tiles.build(m)
 
         with m.FSM(init="IDLE") as fsm:
             with m.State("IDLE"):
@@ -331,6 +333,7 @@ class Conv2d(Component):
                                 tile_m.eq(0), tile_n.eq(0), kh.eq(0), kw.eq(0), chunk.eq(0), row.eq(0),
                                 base_b.eq(0), base_oh.eq(0), base_ow.eq(0),
                                 *issuer.reset(),
+                                *bufs.reset(),
                             ]  # fmt: skip
                             m.next = "TILES"
                         with m.Else():
@@ -381,7 +384,8 @@ class Conv2d(Component):
 
             issuer.state(
                 "LOAD_X", "X_NEXT", CTRL_LOAD, DmaOpcode.MEMCPY,
-                dram_addr=x_row, local_addr=self.sp_x + row, len=1, row_bytes=tile_K * in_bytes,
+                dram_addr=x_row, local_addr=bufs.a_addr + row, len=1, row_bytes=tile_K * in_bytes,
+                sync=bufs.load(bufs.a_slot, first=row == 0, last=row + 1 >= tile_M),
             )  # fmt: skip
             with m.State("X_NEXT"):
                 m.d.sync += [pos_b.eq(succ_b), pos_oh.eq(succ_oh), pos_ow.eq(succ_ow)]
@@ -401,17 +405,19 @@ class Conv2d(Component):
             # The filter tile, one command: rows out_c elements apart
             issuer.state(
                 "LOAD_F", "PRELOAD", CTRL_LOAD, DmaOpcode.MEMCPY,
-                dram_addr=f_tile, local_addr=self.sp_f, len=tile_K,
+                dram_addr=f_tile, local_addr=bufs.b_addr, len=tile_K, sync=bufs.load(bufs.b_slot),
                 stride=out_c * in_bytes, row_bytes=tile_N * in_bytes,
             )  # fmt: skip
 
             issuer.state(
-                "PRELOAD", "COMPUTE", CTRL_EXEC, ExecOpcode.PRELOAD, rs1=self.sp_f, k_dim=tile_K
-            )
+                "PRELOAD", "COMPUTE", CTRL_EXEC, ExecOpcode.PRELOAD,
+                rs1=bufs.b_addr, k_dim=tile_K, sync=bufs.preload(),
+            )  # fmt: skip
             issuer.state(
                 "COMPUTE", "NEXT_K", CTRL_EXEC,
                 Mux(first_k, ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE),
-                rs1=self.sp_x, rd=self.acc_y, k_dim=tile_M,
+                rs1=bufs.a_addr, rd=bufs.acc_addr, k_dim=tile_M,
+                sync=bufs.compute(first_k=first_k, last_k=last_k), then=bufs.next_l2(),
             )  # fmt: skip
 
             # K tiles: input-channel chunk, then kernel column, then kernel row
@@ -432,8 +438,9 @@ class Conv2d(Component):
             # The output tile, one command: only its own channels
             issuer.state(
                 "STORE", "NEXT_MN", CTRL_STORE, DmaOpcode.MEMCPY,
-                dram_addr=y_tile, local_addr=self.acc_y, len=tile_M,
+                dram_addr=y_tile, local_addr=bufs.acc_addr, len=tile_M,
                 stride=y_stride, row_bytes=tile_N * acc_bytes, activation=activation,
+                sync=bufs.store(), then=bufs.next_acc(),
             )  # fmt: skip
 
             with m.State("NEXT_MN"):
@@ -447,7 +454,11 @@ class Conv2d(Component):
                     ]  # fmt: skip
                     m.next = "K_TILE"
                 with m.Else():
-                    m.next = "DONE"
+                    m.next = "DRAIN"
+
+            # Done when the last output tile is in L3
+            with m.State("DRAIN"), m.If(issuer.drained()):
+                m.next = "DONE"
 
             with m.State("DONE"):
                 m.d.comb += self.done.eq(1)

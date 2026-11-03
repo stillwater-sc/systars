@@ -93,8 +93,12 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
   the execute controller is the Streamer (L2 -> L1). A LOAD or STORE moves a whole tile from
   or to any byte address (`cmd_stride`, `cmd_row_bytes`; `tests/unit/test_block_mover.py`).
   Use KPU/CSP terms (credits, push, tile-ready tokens), never cache terminology
+- Credits and tile-ready tokens (`controller/sync.py`): `SystolicTop` queues each process's
+  commands and starts one only when its whole-tile slot credits and tokens are there
+  (`cmd_sync`; `tests/unit/test_credits.py`)
 - Matmul and Conv2d ISA instructions (`isa/`): tile an operation larger than the array and
-  issue `SystolicTop` commands one at a time (`isa/command.py`); see `docs/isa-instructions.md`
+  push `SystolicTop` commands ahead, double-buffered (`isa/command.py`); see
+  `docs/isa-instructions.md`
 
 ### Planned Components (see docs/plan/implementation.md)
 
