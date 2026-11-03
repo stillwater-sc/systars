@@ -1,0 +1,311 @@
+"""
+Credits and tile-ready tokens (controller/sync.py, SystolicTop's command queues).
+
+- ``SlotPool`` on its own: the FREE -> OWNED -> READY -> FREE cycle, and the sticky
+  protocol error.
+- Matmul and Conv2d on a real ``SystolicTop``, with a monitor that replays the
+  observable events (commands pushed, ``*_started``, ``*_completed``) through an
+  independent slot model, every cycle:
+  - credit conservation: the slot state bits always match the model, so every slot
+    is in exactly one state and credits plus occupied slots equal capacity;
+  - no tile is consumed before its TILE_READY, and no credit is taken twice;
+  - every slot is free at the end, and the protocol error never fires;
+  - results equal numpy, and are identical with one buffer per operand (the
+    processes serialized) and with two (double buffering);
+  - with two buffers the BlockMover fills the next tile's slot while the Streamer
+    works (measured cycles), and L3 backpressure does not change values.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+
+import numpy as np
+import pytest
+from amaranth import Elaboratable, Module
+
+from systars.config import SystolicConfig
+from systars.controller.sync import SlotPool, SlotState, Sync
+from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
+from systars.isa.conv2d import Conv2d, Conv2dCmd
+from systars.isa.matmul import Matmul, MatmulCmd
+from systars.top import SystolicTop
+
+from ._axi import axi_memory
+from ._isa import from_bytes, to_unsigned_bytes
+from ._sim import run_sim
+from .test_conv2d import F_ADDR, X_ADDR, Y_ADDR, ZERO_ADDR, reference
+from .test_conv2d import setup as conv_setup
+
+FREE, OWNED, READY = SlotState.FREE, SlotState.OWNED, SlotState.READY
+
+
+# =============================================================================
+# SlotPool
+# =============================================================================
+
+
+def test_slot_pool_cycle_and_errors():
+    pool = SlotPool(2)
+
+    async def testbench(ctx):
+        def state():
+            free, ready = ctx.get(pool.free), ctx.get(pool.ready)
+            return [FREE if free >> s & 1 else READY if ready >> s & 1 else OWNED for s in (0, 1)]
+
+        async def pulse(port, slot_port=None, slot=0):
+            if slot_port is not None:
+                ctx.set(slot_port, slot)
+            ctx.set(port, 1)
+            await ctx.tick()
+            ctx.set(port, 0)
+
+        assert state() == [FREE, FREE]
+        ctx.set(pool.prod_slot, 1)
+        assert ctx.get(pool.prod_credit)
+        await pulse(pool.prod_take)
+        assert state() == [FREE, OWNED] and not ctx.get(pool.prod_credit)
+        ctx.set(pool.cons_slot, 1)
+        assert not ctx.get(pool.cons_ready)
+        await pulse(pool.prod_signal, pool.prod_signal_slot, 1)
+        assert state() == [FREE, READY] and ctx.get(pool.cons_ready)
+        await pulse(pool.cons_release, pool.cons_release_slot, 1)
+        assert state() == [FREE, FREE] and not ctx.get(pool.error)
+        # Releasing a slot that holds no tile is a protocol error (sticky)
+        await pulse(pool.cons_release, pool.cons_release_slot, 0)
+        assert state() == [FREE, FREE] and ctx.get(pool.error)
+        await ctx.tick()
+        assert ctx.get(pool.error)
+
+    run_sim(pool, testbench)
+
+
+def test_slot_pool_rejects_out_of_range_tags():
+    pool = SlotPool(3)
+
+    async def testbench(ctx):
+        ctx.set(pool.prod_slot, 3)
+        ctx.set(pool.prod_acquire, 1)
+        assert not ctx.get(pool.prod_credit)  # never dispatched: the queue would stall
+        await ctx.tick()
+        assert ctx.get(pool.error)
+
+    run_sim(pool, testbench)
+
+
+def test_sync_encoding():
+    value = Sync.encode(src=3, dst=5, wait=True, signal=True)
+    assert value == 3 | 5 << 4 | Sync.WAIT | Sync.SIGNAL
+    with pytest.raises(ValueError):
+        Sync.encode(dst=16)
+
+
+# =============================================================================
+# SystolicTop: an independent replay of the observable events
+# =============================================================================
+
+PROCESSES = {CTRL_LOAD: "load", CTRL_STORE: "store", CTRL_EXEC: "exec"}
+
+
+class Monitor:
+    """Replays pushed / started / completed events through a slot model."""
+
+    def __init__(self, cfg: SystolicConfig):
+        self.pools = {"l2": [FREE] * cfg.l2_slots, "acc": [FREE] * cfg.acc_slots}
+        # Which pool each process fills (dst) and reads (src)
+        self.produces = {CTRL_LOAD: "l2", CTRL_EXEC: "acc"}
+        self.consumes = {CTRL_EXEC: "l2", CTRL_STORE: "acc"}
+        self.queued = {t: deque() for t in PROCESSES}
+        self.inflight = dict.fromkeys(PROCESSES)
+        self.active = dict.fromkeys(PROCESSES, False)
+        self.cycles = 0
+        self.overlap = 0  # cycles with the BlockMover's LOAD and the Streamer both running
+
+    def signals(self, top):
+        sigs = [top.cmd_valid, top.cmd_ready, top.cmd_type, top.cmd_sync]
+        for name in PROCESSES.values():
+            sigs += [getattr(top, f"{name}_started"), getattr(top, f"{name}_completed")]
+        return [*sigs, top.l2_free, top.l2_ready, top.acc_free, top.acc_ready, top.sync_error]
+
+    def check_state(self, name, free, ready):
+        for s, expected in enumerate(self.pools[name]):
+            bits = (free >> s & 1, ready >> s & 1)
+            assert bits == {FREE: (1, 0), OWNED: (0, 0), READY: (0, 1)}[expected], (
+                f"cycle {self.cycles}: {name} slot {s} is {bits} (free, ready), model {expected}"
+            )
+
+    def step(self, values):
+        valid, ready, ctype, sync, *rest = values
+        events, (l2_free, l2_ready, acc_free, acc_ready, error) = rest[:6], rest[6:]
+        assert not error, f"cycle {self.cycles}: protocol error"
+        # The state this cycle reflects every earlier cycle's events
+        self.check_state("l2", l2_free, l2_ready)
+        self.check_state("acc", acc_free, acc_ready)
+        if valid and ready:
+            self.queued[ctype].append(sync)
+
+        moves = []
+        for i, t in enumerate(PROCESSES):
+            started, completed = events[2 * i], events[2 * i + 1]
+            if started:
+                s = self.queued[t].popleft()
+                src, dst = s & 0xF, s >> Sync.DST & 0xF
+                if s & Sync.WAIT:
+                    pool = self.pools[self.consumes[t]]
+                    assert pool[src] == READY, (
+                        f"cycle {self.cycles}: {PROCESSES[t]} started before slot {src}'s token"
+                    )
+                if s & Sync.ACQUIRE:
+                    moves.append((self.produces[t], dst, FREE, OWNED))
+                self.inflight[t] = s
+                self.active[t] = True
+            if completed:
+                s = self.inflight[t]
+                assert s is not None, f"cycle {self.cycles}: {PROCESSES[t]} completed unstarted"
+                src, dst = s & 0xF, s >> Sync.DST & 0xF
+                if s & Sync.RELEASE:
+                    moves.append((self.consumes[t], src, READY, FREE))
+                if s & Sync.SIGNAL:
+                    moves.append((self.produces[t], dst, OWNED, READY))
+                self.inflight[t] = None
+        if self.active[CTRL_LOAD] and self.active[CTRL_EXEC]:
+            self.overlap += 1
+        for t in PROCESSES:
+            if events[2 * list(PROCESSES).index(t) + 1]:
+                self.active[t] = False
+        for pool, slot, frm, to in moves:
+            assert self.pools[pool][slot] == frm, (
+                f"cycle {self.cycles}: {pool} slot {slot} is {self.pools[pool][slot]}, not {frm}"
+            )
+            self.pools[pool][slot] = to
+        self.cycles += 1
+
+    def assert_drained(self):
+        assert all(s == FREE for pool in self.pools.values() for s in pool), self.pools
+        assert all(not q for q in self.queued.values())
+
+
+class OnTop(Elaboratable):
+    def __init__(self, cfg, isa):
+        self.top = SystolicTop(cfg)
+        self.isa = isa
+
+    def elaborate(self, _platform):
+        m = Module()
+        m.submodules.top = self.top
+        m.submodules.isa = self.isa
+        connect_to_top(m, self.isa, self.top)
+        return m
+
+
+def run_on_top(cfg, isa, config_cmds, start, memory, *, stall=0.0, max_cycles=400_000):
+    dut = OnTop(cfg, isa)
+    monitor = Monitor(cfg)
+    status = {}
+
+    async def watch(ctx):
+        while True:
+            values = await ctx.tick().sample(*monitor.signals(dut.top))
+            monitor.step(values[2:])
+
+    async def testbench(ctx):
+        for cmd, data in [*config_cmds, (start, 0)]:
+            ctx.set(isa.cfg_valid, 1)
+            ctx.set(isa.cfg_cmd, cmd)
+            ctx.set(isa.cfg_data, data)
+            await ctx.tick()
+        ctx.set(isa.cfg_valid, 0)
+        done, error = await ctx.tick().sample(isa.done, isa.error).until(isa.done | isa.error)
+        status.update(done=done, error=error)
+
+    beat = cfg.dma_buswidth // 8
+    memory_process = axi_memory(dut.top, memory, beat, stall=stall, seed=len(memory))
+    run_sim(dut, testbench, processes=[memory_process, watch], max_cycles=max_cycles)
+    assert status == {"done": 1, "error": 0}
+    monitor.assert_drained()
+    return monitor
+
+
+def config(grid=4):
+    return SystolicConfig(
+        grid_rows=grid, grid_cols=grid, sp_capacity_kb=4, acc_capacity_kb=4
+    )  # 2 A/B slot pairs and 2 accumulator slots by default
+
+
+A_ADDR, B_ADDR, C_ADDR = 0x1001, 0x4007, 0x8003
+
+
+def matmul_on_top(M, N, K, *, buffers=2, stall=0.0, seed=0):
+    cfg = config()
+    rng = np.random.default_rng(seed)
+    A = rng.integers(-128, 128, (M, K))
+    B = rng.integers(-128, 128, (K, N))
+    memory = bytearray(rng.integers(0, 256, 1 << 16, dtype=np.uint8).tobytes())
+    memory[A_ADDR : A_ADDR + M * K] = to_unsigned_bytes(A, 8)
+    memory[B_ADDR : B_ADDR + K * N] = to_unsigned_bytes(B, 8)
+    cmds = [
+        (MatmulCmd.CONFIG_DIMS, M | N << 16 | K << 32),
+        (MatmulCmd.CONFIG_A_ADDR, A_ADDR),
+        (MatmulCmd.CONFIG_B_ADDR, B_ADDR),
+        (MatmulCmd.CONFIG_C_ADDR, C_ADDR),
+        (MatmulCmd.CONFIG_A_STRIDE, K),
+        (MatmulCmd.CONFIG_B_STRIDE, N),
+        (MatmulCmd.CONFIG_C_STRIDE, 4 * N),
+    ]
+    monitor = run_on_top(
+        cfg, Matmul(cfg, buffers=buffers), cmds, MatmulCmd.START, memory, stall=stall
+    )
+    C = np.array(from_bytes(memory[C_ADDR : C_ADDR + M * N * 4], 32, M * N)).reshape(M, N)
+    np.testing.assert_array_equal(C, A @ B)
+    return C, monitor
+
+
+class TestMatmul:
+    SHAPE = (8, 8, 16)  # 2 x 2 output tiles, 4 K tiles each, on a 4 x 4 array
+
+    def test_double_buffering_overlaps_load_and_compute(self):
+        C1, one = matmul_on_top(*self.SHAPE, buffers=1)
+        C2, two = matmul_on_top(*self.SHAPE, buffers=2)
+        np.testing.assert_array_equal(C1, C2)  # bit-identical to the serialized run
+        # With one slot per operand a LOAD into the A slot waits for the COMPUTE
+        # that reads it; with two, the next K tile's tiles load during the COMPUTE
+        assert two.overlap > one.overlap
+        # Measured 1091 -> 686 cycles (0.63x): the run is bound by data movement, so
+        # hiding the LOADs behind the COMPUTEs is most of the gain
+        assert two.overlap > 0.3 * two.cycles and one.overlap < 0.01 * one.cycles
+        assert two.cycles < 0.7 * one.cycles, (one.cycles, two.cycles)
+
+    @pytest.mark.parametrize("buffers", [1, 2])
+    def test_l3_backpressure_does_not_change_values(self, buffers):
+        C, fast = matmul_on_top(5, 9, 7, buffers=buffers, seed=1)
+        C_slow, slow = matmul_on_top(5, 9, 7, buffers=buffers, seed=1, stall=0.4)
+        np.testing.assert_array_equal(C, C_slow)
+        assert slow.cycles > fast.cycles
+
+
+@pytest.mark.parametrize("buffers", [1, 2])
+def test_conv2d_credits_on_top(buffers):
+    """Conv2d's X tiles are filled by one LOAD per position: the credit is taken by
+    the first, the token emitted by the last, and the Streamer waits for it."""
+    cfg = config()
+    X_shape, F_shape, stride, pad = (1, 4, 4, 3), (3, 3, 3, 5), (1, 1), (1, 1)
+    rng = np.random.default_rng(7)
+    X = rng.integers(-128, 128, X_shape)
+    F = rng.integers(-128, 128, F_shape)
+    expected = reference(X, F, stride, pad, (1, 1))
+    memory = bytearray(rng.integers(0, 256, 1 << 20, dtype=np.uint8).tobytes())
+    memory[X_ADDR : X_ADDR + X.size] = to_unsigned_bytes(X, 8)
+    memory[F_ADDR : F_ADDR + F.size] = to_unsigned_bytes(F, 8)
+    beat = cfg.dma_buswidth // 8
+    memory[ZERO_ADDR : ZERO_ADDR + beat] = bytes(beat)
+    run_on_top(
+        cfg,
+        Conv2d(cfg, buffers=buffers),
+        conv_setup(X_shape, F_shape, stride, pad),
+        Conv2dCmd.START,
+        memory,
+        stall=0.2,
+        max_cycles=600_000,
+    )
+    Y = np.array(from_bytes(memory[Y_ADDR : Y_ADDR + expected.size * 4], 32, expected.size))
+    np.testing.assert_array_equal(Y.reshape(expected.shape), expected)

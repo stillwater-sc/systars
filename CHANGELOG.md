@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Credits and tile-ready tokens** (#9, 2026-11-02; ported from
+  branes-ai/embodied-ai-soc-generator#16). `SystolicTop` queues each process's commands
+  (BlockMover LOAD and STORE, Streamer) and dispatches a queue's head only when its credits and
+  tokens are there (`controller/sync.py`: `SlotPool`, `Sync`). L2 and the accumulator hold
+  whole tiles in slots (`l2_slots`, `acc_slots`), one credit each; a command's `cmd_sync`
+  acquires and signals the slot it fills and waits for and releases the slot it reads. Matmul
+  and Conv2d push their commands ahead with no completion round trip, double-buffered
+  (`buffers=2`): an 8x8x16 Matmul on a 4x4 array drops from 1091 to 686 cycles with
+  bit-identical results. New ports: `cmd_sync`, `{load,store,exec}_started[_id]`, the slot
+  state bits and `sync_error`. `tests/unit/test_credits.py`
+
 - **The BlockMover moves a tile from or to any byte address** (#8, 2026-11-02; ported from
   branes-ai/embodied-ai-soc-generator#14). Following the KPU's CSP model (kpu-sim), the AXI
   port is `SystolicTop`'s link to L3 and LOAD/STORE are the BlockMover's two legs. A LOAD or
@@ -46,8 +57,8 @@ controller reads as 0/1, and scratchpad and accumulator addresses with the bank 
 - both issue on a shared command port (`isa/command.py`): the target controller (`cmd_type`)
   and that controller's own opcode (`DmaOpcode`, `ExecOpcode`), with `SystolicTop`'s fields.
   `connect_to_top` wires an instruction to a `SystolicTop`
-- they issue one command at a time and wait for its completion (`cmd_completed`), since the
-  accelerator has no dependency tracking
+- they issued one command at a time and waited for its completion (`cmd_completed`); since #9
+  they push commands ahead, ordered by credits and tokens
 - both run weight-stationary, loading one matrix row per scratchpad row at its exact address,
   with tile buffers at consecutive `LocalAddr` rows
 - *Conv2d addressing*: the output position (batch, row, column) of each M-tile row was never
@@ -82,6 +93,13 @@ and weight-stationary. The previous execute path could not:
   column through a shift chain, bottom row first
 
 ### Changed
+
+- **ISA command port** (#9): `cmd_completed` is replaced by `cmd_store_completed` (an
+  instruction only needs to know its STOREs are done) and the port gains `cmd_sync`.
+  `SystolicTop.cmd_ready` now means the target process's queue has room, not that its
+  controller is idle, and `{load,store,exec}_busy` include queued commands. Matmul and Conv2d
+  place tiles in ring-ordered slots (`isa.command.TileBuffers`) instead of fixed scratchpad
+  rows, and take `buffers` (default 2)
 
 - **ISA layout check** (#8): `require_beat_aligned` is gone from `Matmul` and `Conv2d`, and
   START reports `UNSUPPORTED_LAYOUT` only for a zero stride or output rows that would overlap.

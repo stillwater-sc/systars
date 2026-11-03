@@ -14,6 +14,7 @@ import pytest
 from amaranth import Elaboratable, Module
 
 from systars.config import Dataflow, SystolicConfig
+from systars.controller.sync import Sync
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.conv2d import Conv2d, Conv2dCmd, Conv2dError
 from systars.top import SystolicTop
@@ -31,6 +32,13 @@ def config(**overrides):
     fields = {"grid_rows": DIM, "grid_cols": DIM, "sp_capacity_kb": 4, "acc_capacity_kb": 4}
     fields.update(overrides)
     return SystolicConfig(**fields)
+
+
+def x_and_f_loads(cmds):
+    """The X row LOADs (into the A slots, 0 and 1) and the filter LOADs (B slots, 2 and 3)."""
+    loads = [c for c in cmds if c.type == CTRL_LOAD]
+    x = [c for c in loads if (c.sync >> Sync.DST) & 0xF < 2]
+    return x, [c for c in loads if (c.sync >> Sync.DST) & 0xF >= 2]
 
 
 def out_size(size, kernel, stride, pad, dilation):
@@ -111,7 +119,8 @@ def check(X_shape, F_shape, stride=(1, 1), pad=(0, 0), dilation=(1, 1), seed=0, 
     model = TopModel(cfg)
     model.write(X_ADDR, to_unsigned_bytes(X, 8))
     model.write(F_ADDR, to_unsigned_bytes(F, 8))
-    model.run(result.commands)
+    model.run(result.commands)  # also checks the credits and tokens
+    model.assert_all_free()
     positions = expected.shape[0] * expected.shape[1] * expected.shape[2]
     out_c = F_shape[3]
     got = np.array([model.read_elems(Y_ADDR + p * row_stride, 32, out_c) for p in range(positions)])
@@ -165,15 +174,26 @@ class TestCommandStream:
             (Y_ADDR + m * 4 * 12, 4, 12, 12) for m in range(4)
         ]
         # Per K tile: one LOAD per output position (len 1, its 2 channels), one per filter tile
-        x_loads = [c for c in cmds if c.type == CTRL_LOAD and c.local_addr < DIM]
-        f_loads = [c for c in cmds if c.type == CTRL_LOAD and c.local_addr >= DIM]
+        x_loads, f_loads = x_and_f_loads(cmds)
         assert {(c.len, c.row_bytes) for c in x_loads} == {(1, 2)}
         assert {(c.len, c.stride, c.row_bytes) for c in f_loads} == {(2, 3, 3)}
         assert len(f_loads) == 9 * 4
 
+    def test_x_rows_fill_one_slot(self):
+        """A K tile's X rows share an A slot: the first LOAD takes its credit, the last
+        emits its token; the slot pairs alternate between K tiles."""
+        x_loads, f_loads = x_and_f_loads(self.commands())
+        first = [(c.sync >> Sync.DST) & 0xF for c in f_loads[:4]]
+        assert first == [2, 3, 2, 3]  # B slots of the two pairs
+        tile = x_loads[:4]  # the first K tile's 4 positions
+        assert [(c.sync >> Sync.DST) & 0xF for c in tile] == [0] * 4
+        assert [bool(c.sync & Sync.ACQUIRE) for c in tile] == [True, False, False, False]
+        assert [bool(c.sync & Sync.SIGNAL) for c in tile] == [False, False, False, True]
+        assert [c.local_addr for c in x_loads[4:8]] == [DIM, DIM + 1, DIM + 2, DIM + 3]
+
     def test_padding_rows_load_the_zero_row(self):
         cmds = self.commands()
-        x_loads = [c for c in cmds if c.type == CTRL_LOAD and c.local_addr < DIM]
+        x_loads, _ = x_and_f_loads(cmds)
         zero = [c for c in x_loads if c.dram_addr == ZERO_ADDR]
         # Kernel offset (0, 0) of the first M tile (positions (0,0)..(0,3)) is all padding
         assert all(c.dram_addr == ZERO_ADDR for c in x_loads[:4])
