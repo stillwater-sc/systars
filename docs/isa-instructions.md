@@ -8,8 +8,16 @@ that `isa.command.connect_to_top` wires to `SystolicTop`:
   soon as the process's queue has room, never waiting for a completion: credits and tile-ready
   tokens order the commands ([below](#credits-and-tile-ready-tokens)). An instruction is done
   when its last STORE completes (`cmd_store_completed`);
-- both run weight-stationary: per K tile, LOAD the operand tiles, PRELOAD the weights,
-  COMPUTE (the first K tile overwrites, the rest accumulate); then STORE the output tile;
+- Matmul runs OS, WS or IS (`CONFIG_DATAFLOW`; OS by default when the array has it, else WS,
+  else IS), and the LOADs' corner turns lay each tile out as the Streamer streams it. OS: per
+  K tile, LOAD A (row-major) and B (TRANSPOSE: column-major), one COMPUTE, the K tiles chained
+  into one reduction in the PEs. WS: LOAD A (TRANSPOSE) and B, PRELOAD B, COMPUTE A (later K
+  tiles accumulate). IS: the same loads, PRELOAD A, COMPUTE B, and the STORE's corner turn
+  writes C from the Cᵀ the accumulator holds. Then STORE the C tile;
+- Conv2d runs OS: its per-position LOADs write the A tile row-major, which only OS streams
+  (WS and IS stream A column-major), and the filter tile is corner-turned. An array without
+  OS cannot run Conv2d yet (a column-write LOAD is the follow-up,
+  branes-ai/embodied-ai-soc-generator#25);
 - Conv2d walks one K tile per kernel offset (kh, kw) and chunk of input channels. Each output
   position loads the input pixel that offset reads, with stride, dilation and padding applied,
   or the zero row at `CONFIG_ZERO_ADDR` in the padding.
@@ -19,7 +27,7 @@ that `isa.command.connect_to_top` wires to `SystolicTop`:
 Systars follows the KPU's CSP model ([kpu-sim](https://github.com/stillwater-sc/kpu-sim),
 `docs/01-architecture/kpu-execution-model.md`): `SystolicTop` is a systolic KPU compute tile.
 Its AXI port is its link to **L3** (a memory tile in a SoC; the AXI memory model in tests), the
-scratchpad is **L2**, and the array's edge registers are **L1**. LOAD and STORE are the
+scratchpad is **L2**, and the stream and result buffers at the array's edges are **L1**. LOAD and STORE are the
 **BlockMover**'s two legs (L3 → L2, and accumulator → L3); the execute controller is the
 **Streamer** (L2 → L1).
 
@@ -33,6 +41,85 @@ as bursts of up to 256 beats. *Limitation:* bursts are not yet split at 4 KB bou
 AXI forbids crossing; a long streamed burst, or a 2-beat row burst at the end of a 4 KB region,
 can cross one (#11).
 
+## Corner turns
+
+A LOAD or STORE with opcode `TRANSPOSE` (`DmaOpcode`, 0x04) is a MEMCPY that turns one tile's
+rows into its columns, for the layouts the Streamer reads: each L2 row fills one L1 stream
+buffer. The LOAD leg collects the tile's L3 rows in a corner-turn buffer (`lanes` rows of
+`lanes` elements of `input_bits`, `lanes = sp_width // input_bits`), then writes scratchpad
+row `sp_addr + j` with element `j` of every L3 row: one row per element of an L3 row, zero
+past the `len`-th element. The STORE leg reads the tile's accumulator rows into its own
+buffer, back to back, and writes L3 row `i` with element `i` of each: the results an
+input-stationary schedule produces as columns of C reach L3 as its rows. The rows still move
+as a MEMCPY's do (any address, stride, partial rows, bursts), and STORE's activation applies
+per element. A TRANSPOSE moves at most one tile: `len` is clamped to `lanes`. The buffers are
+never cleared, since each turn leaves nothing that a later one could write.
+
+## The fabric, L1 and the Streamer
+
+`R` and `C` are the array's rows and columns in PEs (`grid_rows * tile_rows`,
+`grid_cols * tile_cols`), and `KB` the longest stream block (an L2 row: `sp_width /
+input_bits` elements). An accumulator row holds `C` results.
+
+**The fabric.** Every PE has an input register on each of its links, so a value moves one PE
+per clock in every direction and a PEArray is only a structural grouping (it scales to 8x8
+up to 64x64 PEs). A moves east with three markers (`valid`, `first`, `last`); B and partial
+sums move south; OS results move north. Two modes, set by `CONFIG`:
+
+- **Output-stationary (OS).** A PE accumulates `c += a * b`; `first` overwrites, so a
+  reduction needs no clear and may span several commands. On `last` it writes `c + a * b`
+  into the `c_up` register of the PE to its north, and the results move north one PE per
+  clock into the column's L1 result buffer: PE(i, j)'s result leaves the north edge in clock
+  `s + K + j + 2i`, so a column receives one every other clock.
+- **Stationary (WS and IS).** One stationary register per PE, loaded through a registered
+  chain down each column; the streamed operand moves east and `psum + a * w` moves south. WS
+  holds B and streams A; IS holds Aᵀ and streams B, producing Cᵀ. They are one fabric mode:
+  only the operand layouts differ.
+
+**L1** (`memory/stream_buffer.py`). One stream buffer per array row (A) and per column (B),
+each one block (an L2 row) with one credit. The Streamer writes a block in parallel; the
+buffer streams it out one element per clock and takes the next block in the clock its last
+element leaves. The buffers are loaded one per clock, so buffer `i` starts one clock after
+buffer `i - 1`: that stagger is the skew, and the array has no skew or deskew registers. At
+the edge the results leave (north for OS, south for stationary), one result buffer per
+column turns the columns back into row-major rows for the accumulator.
+
+**The Streamer** (`controller/execute.py`) reads one L2 row per clock on each of the
+scratchpad's two read ports into L1:
+
+| Command (`ExecOpcode`) | OS | Stationary (WS, IS) |
+|---|---|---|
+| `CONFIG` | `rs1` = 0 selects OS; 1 (WS) or 2 (IS) selects the stationary mode | |
+| `PRELOAD` | does nothing | the stationary tile, row-major, from `rs1`: `k_dim` rows (at most `R`), zero below |
+| `COMPUTE` | an A tile row-major at `rs1` (`R` rows), a B tile column-major at `rs2` (`C` rows), `K = k_dim <= KB`; `cmd_chain` chains K tiles into one reduction | a streamed tile column-major at `rs1` (`R` rows), `M = k_dim <= KB`; `M` result rows |
+| `COMPUTE_ACCUMULATE` | as `COMPUTE`, adding the result rows to the accumulator | |
+
+`cmd_chain` (a `SystolicTop` port): bit 0 = continues the previous command's reduction, bit 1
+= continues into the next (no results yet); 0 is a whole reduction. A command starts only
+when the fabric can take it on schedule and never stalls:
+
+- a command's reads take `I = max(K, R, C)` clocks (stationary: `max(M, R)`), and the next
+  command starts `I` clocks later. With `K >= R, C` the next tile's blocks reach L1 in the
+  clock the previous ones finish: no bubbles between tiles;
+- **the OS drain**: a command that ends a reduction starts so that its results leave `2R - 1`
+  clocks after the previous reduction's, so results never meet on a north link (a collision
+  flag checks it). With `K >= 2R - 1` (chained K tiles count) this is free;
+- `PRELOAD` waits until the previous stationary stream has left the array.
+
+Two in-order events carry each command's `cmd_sync`: **completed** when its last block is in
+L1 (`SystolicTop` returns the L2 credit, so the BlockMover can refill the slot early) and
+**result** (`exec_result`) when its results are in the accumulator (the result token). An
+untracked command (`cmd_sync` 0) runs alone and completes with its results, so a host can
+issue one command at a time. `l1_error` (sticky) reports a schedule violation, which a valid
+schedule never raises.
+
+Verified by `tests/unit/test_systolic_array.py` and `test_pe*.py` (the result clocks, back to
+back tiles, the `2R - 2` collision), `test_stream_buffer.py`, `test_execute_controller.py`
+(no bubbles within or between tiles, the drain spacing, the events) and
+`test_gemm_systolic.py` (LOAD → COMPUTE → STORE through `SystolicTop`: OS with chained K
+tiles, WS, and IS with a STORE corner turn). The L2 behind the Streamer is still the
+idealized two-read-port scratchpad; the banked L2 that sustains two vectors per clock is #17.
+
 ## Credits and tile-ready tokens
 
 `SystolicTop` has an in-order command queue per process (`ld_queue_length`,
@@ -41,19 +128,23 @@ and tokens are there (`controller/sync.py`, after kpu-sim's `credit_pool` and `t
 and the accumulator hold whole tiles in slots (`l2_slots`, default 4; `acc_slots`, default 2),
 one credit per slot: there are no row or burst credits, since the BlockMover sequences its own
 bursts inside a tile. A slot is FREE (its credit is available), OWNED (a producer is filling
-it) or READY (its tile-ready token waits for the consumer). Each command's `cmd_sync` names the
+it), READY (its tile-ready token waits for the consumer) or READING (a consumer took the token
+at its start and is reading the tile, so the next consumer of the slot waits for the next
+tile's token). Each command's `cmd_sync` names the
 slot it reads (`src`) and the slot it fills (`dst`), with four flags:
 
 | Flag | Effect |
 |---|---|
 | `ACQUIRE` | start only when `dst` is FREE, and take its credit |
 | `SIGNAL` | on completion, emit `dst`'s token |
-| `WAIT` | start only when `src` is READY |
-| `RELEASE` | on completion, return `src`'s credit |
+| `WAIT` | start only when `src` is READY (with `RELEASE`: take the token, READY → READING) |
+| `RELEASE` | on completion, return `src`'s credit (the Streamer: once the tile's last block is in L1) |
 
-A LOAD acquires and signals its L2 slot (Conv2d: the first of a tile's per-position LOADs
-acquires, the last signals); PRELOAD and COMPUTE wait for and release their L2 tile; COMPUTE
-acquires the accumulator slot on a C tile's first K step and signals it on the last; STORE
+A LOAD acquires and signals its L2 slot (a tile filled by several LOADs: the first acquires,
+the last signals; an OS COMPUTE reads both tiles of its pair, so an OS pair is one slot,
+acquired by the A tile's LOAD and signalled by the B tile's); PRELOAD and COMPUTE wait for and
+release their L2 tile; COMPUTE acquires the accumulator slot on a C tile's first K step and
+signals it (on its result event) on the last; STORE
 waits for and releases it. `cmd_sync = 0` is an untracked command, which starts when its
 process is idle, as before. New ports: `cmd_sync`, `{load,store,exec}_started[_id]` (the CSP
 action starts, matching `*_completed`), the slot state bits (`l2_free`, `l2_ready`,
@@ -63,8 +154,7 @@ Matmul and Conv2d use the slots in ring order (`isa.command.TileBuffers`): with 
 pairs and two accumulator slots (`buffers=2`, the default) the BlockMover fills the next
 tile's slot while the Streamer works on the current one, and STOREs overlap the next C tile.
 Issuing in program order cannot deadlock, since every credit a command waits for is returned
-by a command issued earlier. Pipelining tiles through the fabric itself, with L1 stream
-buffers, is #15.
+by a command issued earlier.
 
 ## Layouts
 
@@ -99,8 +189,10 @@ byte untouched.
 
 `tests/unit/test_credits.py` replays every command's push, start and completion through an
 independent slot model each cycle (credit conservation, no tile consumed before its token, no
-credit taken twice, every slot free at the end) and measures the overlap: an 8x8x16 Matmul on
-a 4x4 array takes 686 cycles with two buffers against 1091 with one, bit-identical, and L3
-backpressure changes no value.
+credit taken twice, every slot free at the end; the Streamer's events matched to their
+commands by ID) and measures the overlap: an 8x8x16 Matmul on a 4x4 array takes 744 cycles
+with two buffers against 907 with one (OS; WS and IS measure the same), bit-identical, and L3
+backpressure changes no value. The Streamer returns a tile's L2 credit a few clocks after it
+starts, so the run is bound by the BlockMover's L3 traffic.
 
 [The original implementation plan](plan/isa-instructions.md) is superseded by this page.

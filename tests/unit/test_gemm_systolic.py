@@ -1,22 +1,34 @@
 """
-End-to-end GEMM through SystolicTop: LOAD A and B from DRAM, run the matmul on
-the systolic array, STORE C to DRAM, and check C against ``A @ B``.
+End-to-end GEMM through SystolicTop: LOAD the operand tiles from L3, run the
+matmul through L1 and the fabric, STORE C to L3, and check C against ``A @ B``.
 
-Runs output-stationary and weight-stationary, on 2x2 and 4x4 arrays, with
-PEArrays of 1x1 and 2x2 PEs, and the default (multi-cycle) scratchpad and
-accumulator latencies.
+Runs output-stationary, weight-stationary and input-stationary, on 2x2 and 4x4
+arrays, with PEArrays of 1x1 and 2x2 PEs, and the default (multi-cycle)
+scratchpad and accumulator latencies. The commands are untracked (``cmd_sync`` 0):
+the host issues one at a time and waits for each completion.
+
+The host lays each L2 tile out in L3 as the Streamer reads it (one L2 row per
+block, ``controller/execute.py``) and moves it with MEMCPY:
+
+- OS: per K tile, A row-major (row ``i`` = ``A[i, k0:k0+KB]``) and B column-major
+  (row ``j`` = ``B[k0:k0+KB, j]``); the K tiles are one reduction (``cmd_chain``).
+- WS: B row-major (PRELOAD); per M tile, A column-major (row ``k`` = ``A[m0:, k]``).
+- IS: A column-major (PRELOAD: the stationary tile is Aᵀ); B row-major streamed
+  (row ``k`` = ``B[k, n0:]``); the accumulator holds Cᵀ and STORE TRANSPOSE writes C.
 """
 
 import numpy as np
 import pytest
 
 from systars.config import SystolicConfig
+from systars.controller.execute import CHAIN_CONTINUES, CHAIN_MORE
 from systars.top import SystolicTop
 from systars.util.commands import DmaOpcode, ExecOpcode
 
+from ._axi import axi_memory
 from ._sim import run_sim
 
-OS, WS = 0, 1
+OS, WS, IS = 0, 1, 2
 
 # (grid_rows, grid_cols, tile_rows, tile_cols): 2x2 and 4x4 PE arrays
 SHAPES = [(2, 2, 1, 1), (1, 1, 2, 2), (4, 4, 1, 1), (2, 2, 2, 2)]
@@ -50,71 +62,6 @@ def unpack(word, bits, n):
     return out
 
 
-def axi_dram(dut, memory, beat_bytes):
-    """AXI slave over ``memory`` (beat-aligned byte address -> beat value)."""
-
-    async def process(ctx):
-        reads = []  # [address, beats left]
-        write = None  # [address, beat index]
-        bresp_pending = False
-        while True:
-            ctx.set(dut.axi_arready, 1)
-            ctx.set(dut.axi_awready, write is None and not bresp_pending)
-            ctx.set(dut.axi_wready, write is not None)
-            ctx.set(dut.axi_bvalid, bresp_pending)
-            if reads:
-                addr, left = reads[0]
-                ctx.set(dut.axi_rvalid, 1)
-                ctx.set(dut.axi_rdata, memory.get(addr, 0))
-                ctx.set(dut.axi_rlast, left == 1)
-            else:
-                ctx.set(dut.axi_rvalid, 0)
-                ctx.set(dut.axi_rlast, 0)
-            (
-                _,
-                _,
-                arvalid,
-                araddr,
-                arlen,
-                rready,
-                awvalid,
-                awaddr,
-                wvalid,
-                wdata,
-                wlast,
-                bready,
-            ) = await ctx.tick().sample(
-                dut.axi_arvalid,
-                dut.axi_araddr,
-                dut.axi_arlen,
-                dut.axi_rready,
-                dut.axi_awvalid,
-                dut.axi_awaddr,
-                dut.axi_wvalid,
-                dut.axi_wdata,
-                dut.axi_wlast,
-                dut.axi_bready,
-            )
-            if reads and rready:
-                reads[0][0] += beat_bytes
-                reads[0][1] -= 1
-                if reads[0][1] == 0:
-                    reads.pop(0)
-            if arvalid:
-                reads.append([araddr, arlen + 1])
-            if bresp_pending and bready:
-                bresp_pending = False
-            if write is not None and wvalid:
-                memory[write[0] + write[1] * beat_bytes] = wdata
-                write[1] += 1
-                if wlast:
-                    write, bresp_pending = None, True
-            elif write is None and not bresp_pending and awvalid:
-                write = [awaddr, 0]
-
-    return process
-
-
 class Host:
     """Issues SystolicTop commands and waits for their completions."""
 
@@ -123,6 +70,9 @@ class Host:
         SystolicTop.CTRL_STORE: "store_completed",
         SystolicTop.CTRL_EXEC: "exec_completed",
     }
+    FIELDS = ("dram_addr", "local_addr", "len", "rs1", "rs2", "rd", "k_dim", "chain",
+              "activation")  # fmt: skip
+    OPTIONAL = ("stride", "row_bytes")  # left as the caller set them unless given
 
     def __init__(self, ctx, dut):
         self.ctx, self.dut, self.next_id = ctx, dut, 1
@@ -130,9 +80,12 @@ class Host:
     async def run(self, cmd_type, opcode, **fields):
         ctx, dut = self.ctx, self.dut
         cmd_id = self.next_id
-        self.next_id += 1
-        for name in ("dram_addr", "local_addr", "len", "rs1", "rs2", "rd", "k_dim", "activation"):
+        self.next_id = self.next_id % 255 + 1
+        for name in self.FIELDS:
             ctx.set(getattr(dut, f"cmd_{name}"), fields.get(name, 0))
+        for name in self.OPTIONAL:
+            if name in fields:
+                ctx.set(getattr(dut, f"cmd_{name}"), fields[name])
         ctx.set(dut.cmd_type, cmd_type)
         ctx.set(dut.cmd_opcode, opcode)
         ctx.set(dut.cmd_id, cmd_id)
@@ -142,70 +95,128 @@ class Host:
         done = getattr(dut, self.COMPLETED[cmd_type])
         *_, completed_id = await ctx.tick().sample(getattr(dut, f"{done.name}_id")).until(done)
         assert completed_id == cmd_id
+        assert ctx.get(dut.l1_error) == 0
 
-    async def load(self, dram_addr, sp_addr, rows):
-        await self.run(
-            SystolicTop.CTRL_LOAD,
-            DmaOpcode.MEMCPY,
-            dram_addr=dram_addr,
-            local_addr=sp_addr,
-            len=rows,
-        )
+    async def load(self, l3_addr, sp_addr, rows, row_bytes=None):
+        """MEMCPY ``rows`` L3 rows (``row_bytes`` apart, when given) into L2."""
+        layout = {} if row_bytes is None else {"stride": row_bytes, "row_bytes": row_bytes}
+        await self.run(SystolicTop.CTRL_LOAD, DmaOpcode.MEMCPY, dram_addr=l3_addr,
+                       local_addr=sp_addr, len=rows, **layout)  # fmt: skip
 
-    async def store(self, acc_addr, dram_addr, rows):
-        await self.run(
-            SystolicTop.CTRL_STORE,
-            DmaOpcode.MEMCPY,
-            dram_addr=dram_addr,
-            local_addr=acc_addr,
-            len=rows,
-        )
+    async def store(self, acc_addr, l3_addr, rows, row_bytes=None, *, opcode=DmaOpcode.MEMCPY):
+        layout = {} if row_bytes is None else {"stride": row_bytes, "row_bytes": row_bytes}
+        await self.run(SystolicTop.CTRL_STORE, opcode, dram_addr=l3_addr,
+                       local_addr=acc_addr, len=rows, **layout)  # fmt: skip
 
     async def execute(self, opcode, **fields):
         await self.run(SystolicTop.CTRL_EXEC, opcode, **fields)
 
 
-A_DRAM, B_DRAM, C_DRAM = 0x1000, 0x2000, 0x3000
-A_SP, B_SP = 0, 64
+A_L3, B_L3, C_L3 = 0x1000, 0x4000, 0x8000
+A_SP, B_SP = 0, 128
 
 
-def gemm(cfg, dataflow, A, B, *, weight_rows=None, repeat=1):
-    """Run ``A @ B`` through SystolicTop and return C as read back from DRAM.
+class Layout:
+    """L2 rows as the host lays them out in L3, and moved to L2 with one LOAD."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.rows = cfg.grid_rows * cfg.tile_rows
+        self.cols = cfg.grid_cols * cfg.tile_cols
+        self.kb = min(cfg.sp_width // cfg.input_bits, cfg.sp_width // cfg.weight_bits)
+        self.row_bytes = cfg.sp_width // 8
+
+    def image(self, l2_rows, bits):
+        """Bytes of ``l2_rows`` (each a list of at most KB elements, zero-padded)."""
+        out = bytearray()
+        for row in l2_rows:
+            out += pack(row, bits).to_bytes(self.row_bytes, "little")
+        return out
+
+
+def tiles(n, size):
+    """``(start, length)`` of the ``size``-element pieces of ``range(n)``."""
+    return [(s, min(size, n - s)) for s in range(0, n, size)]
+
+
+def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1):
+    """Run ``A @ B`` through SystolicTop and return C as read back from L3.
 
     OS: A is R x K and B is K x C. WS: A is M x K and B is K x C with K <= R.
-    With ``repeat`` > 1 the COMPUTE is issued again as COMPUTE_ACCUMULATE.
+    IS: A is M x K and B is K x N with K <= R and M, N <= C. With ``repeat`` > 1
+    the computation is issued again with COMPUTE_ACCUMULATE.
     """
-    rows = cfg.grid_rows * cfg.tile_rows
-    cols = cfg.grid_cols * cfg.tile_cols
+    lay = Layout(cfg)
+    R, C, KB = lay.rows, lay.cols, lay.kb
     beat = cfg.dma_buswidth // 8
-    memory = {}
+    acc_bytes = cfg.acc_width // 8
+    memory = bytearray(1 << 16)
+    exec_cmds = []  # (opcode, fields) per repeat-independent command
+    if mode == OS:
+        a_rows, b_rows = [], []
+        k_tiles = tiles(A.shape[1], KB)
+        for k0, kn in k_tiles:
+            a_rows += [list(A[i, k0 : k0 + kn]) for i in range(R)]
+            b_rows += [list(B[k0 : k0 + kn, j]) for j in range(C)]
+        for t, (_, kn) in enumerate(k_tiles):
+            chain = (CHAIN_CONTINUES if t else 0) | (CHAIN_MORE if t < len(k_tiles) - 1 else 0)
+            exec_cmds.append(
+                {"rs1": A_SP + t * R, "rs2": B_SP + t * C, "rd": 0, "k_dim": kn, "chain": chain}
+            )
+        preload, out_rows = None, R
+    elif mode == WS:
+        b_rows = [list(row) for row in B]
+        a_rows = []
+        m_tiles = tiles(A.shape[0], KB)
+        for m0, mn in m_tiles:
+            a_rows += [list(A[m0 : m0 + mn, k]) if k < A.shape[1] else [0] * mn for k in range(R)]
+        for t, (m0, mn) in enumerate(m_tiles):
+            exec_cmds.append({"rs1": A_SP + t * R, "rd": m0, "k_dim": mn})
+        preload, out_rows = weight_rows or B.shape[0], A.shape[0]
+    else:  # IS: the stationary tile is Aᵀ (row k = A[:, k]); B rows stream
+        b_rows = [list(A[:, k]) for k in range(A.shape[1])]
+        a_rows = []
+        n_tiles = tiles(B.shape[1], KB)
+        for n0, nn in n_tiles:
+            a_rows += [list(B[k, n0 : n0 + nn]) if k < B.shape[0] else [0] * nn for k in range(R)]
+        for t, (n0, nn) in enumerate(n_tiles):
+            exec_cmds.append({"rs1": A_SP + t * R, "rd": n0, "k_dim": nn})
+        preload, out_rows = A.shape[1], A.shape[0]
 
-    # A rows as stored: OS keeps Aᵀ (row k = column k of A), WS keeps A
-    a_rows = A.T if dataflow == OS else A
-    for n, row in enumerate(a_rows):
-        memory[A_DRAM + n * beat] = pack(row, cfg.input_bits)
-    for n, row in enumerate(B):
-        memory[B_DRAM + n * beat] = pack(row, cfg.weight_bits)
-    out_rows = rows if dataflow == OS else A.shape[0]
-
+    a_image = lay.image(a_rows, cfg.input_bits)
+    b_image = lay.image(b_rows, cfg.weight_bits)
+    memory[A_L3 : A_L3 + len(a_image)] = a_image
+    memory[B_L3 : B_L3 + len(b_image)] = b_image
     dut = SystolicTop(cfg)
 
     async def testbench(ctx):
         host = Host(ctx, dut)
-        await host.load(A_DRAM, A_SP, len(a_rows))
-        await host.load(B_DRAM, B_SP, len(B))
-        await host.execute(ExecOpcode.CONFIG, rs1=dataflow)
-        if dataflow == WS:
-            await host.execute(ExecOpcode.PRELOAD, rs1=B_SP, k_dim=weight_rows or len(B))
+        await host.load(A_L3, A_SP, len(a_rows), lay.row_bytes)
+        await host.load(B_L3, B_SP, len(b_rows), lay.row_bytes)
+        await host.execute(ExecOpcode.CONFIG, rs1=mode)
+        if preload is not None:
+            await host.execute(ExecOpcode.PRELOAD, rs1=B_SP, k_dim=preload)
         for n in range(repeat):
             opcode = ExecOpcode.COMPUTE if n == 0 else ExecOpcode.COMPUTE_ACCUMULATE
-            await host.execute(opcode, rs1=A_SP, rs2=B_SP, rd=0, k_dim=len(a_rows))
-        await host.store(0, C_DRAM, out_rows)
+            for fields in exec_cmds:
+                await host.execute(opcode, **fields)
+        if mode == IS:
+            # N accumulator rows of M results (Cᵀ) -> M L3 rows of N results (C)
+            n_cols = B.shape[1]
+            await host.store(0, C_L3, out_rows, 4 * n_cols, opcode=DmaOpcode.TRANSPOSE)
+        else:
+            await host.store(0, C_L3, out_rows, acc_bytes)
 
-    run_sim(dut, testbench, processes=[axi_dram(dut, memory, beat)], max_cycles=10_000)
+    run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat)], max_cycles=20_000)
+    width = B.shape[1] if mode == IS else C
+    row = 4 * width if mode == IS else acc_bytes
     return np.array(
-        [unpack(memory.get(C_DRAM + n * beat, 0), cfg.acc_bits, cols) for n in range(out_rows)]
-    )
+        [
+            unpack(int.from_bytes(memory[C_L3 + n * row : C_L3 + (n + 1) * row], "little"),
+                   cfg.acc_bits, width)
+            for n in range(out_rows)
+        ]
+    )  # fmt: skip
 
 
 def operands(rng, rows_a, k, cols):
@@ -217,16 +228,23 @@ def operands(rng, rows_a, k, cols):
 @pytest.mark.parametrize("shape", SHAPES, ids=SHAPE_IDS)
 class TestGemm:
     def test_output_stationary(self, shape):
+        """K = 7: a reduction chained across several K tiles."""
         cfg = make_config(*shape)
-        rows, cols = cfg.grid_rows * cfg.tile_rows, cfg.grid_cols * cfg.tile_cols
-        A, B = operands(np.random.default_rng(1), rows, 7, cols)
+        lay = Layout(cfg)
+        A, B = operands(np.random.default_rng(1), lay.rows, 7, lay.cols)
         np.testing.assert_array_equal(gemm(cfg, OS, A, B), A @ B)
 
     def test_weight_stationary(self, shape):
         cfg = make_config(*shape)
-        rows, cols = cfg.grid_rows * cfg.tile_rows, cfg.grid_cols * cfg.tile_cols
-        A, B = operands(np.random.default_rng(2), 5, rows, cols)
+        lay = Layout(cfg)
+        A, B = operands(np.random.default_rng(2), 5, lay.rows, lay.cols)
         np.testing.assert_array_equal(gemm(cfg, WS, A, B), A @ B)
+
+    def test_input_stationary(self, shape):
+        cfg = make_config(*shape)
+        lay = Layout(cfg)
+        A, B = operands(np.random.default_rng(3), lay.cols, lay.rows, lay.cols)
+        np.testing.assert_array_equal(gemm(cfg, IS, A, B), A @ B)
 
 
 class TestGemmOptions:
@@ -255,3 +273,22 @@ class TestGemmOptions:
         A = np.full((2, 4), -128)
         B = np.full((4, 2), -128)
         np.testing.assert_array_equal(gemm(cfg, OS, A, B), A @ B)
+
+    def test_is_narrow_tile(self):
+        """IS with M, N < C and K < R: edge tiles."""
+        cfg = make_config(4, 4, 1, 1)
+        A, B = operands(np.random.default_rng(6), 3, 2, 2)
+        np.testing.assert_array_equal(gemm(cfg, IS, A, B), A @ B)
+
+
+@pytest.mark.parametrize("dim", [8, 16])
+@pytest.mark.parametrize("mode", [OS, WS, IS], ids=["os", "ws", "is"])
+def test_larger_arrays(dim, mode):
+    """8x8 and 16x16 arrays: OS with two K tiles chained, WS and IS one full tile."""
+    cfg = SystolicConfig(grid_rows=dim, grid_cols=dim, sp_capacity_kb=16, acc_capacity_kb=16)
+    rng = np.random.default_rng(dim + mode)
+    if mode == OS:
+        A, B = operands(rng, dim, 2 * dim, dim)
+    else:
+        A, B = operands(rng, dim, dim, dim)
+    np.testing.assert_array_equal(gemm(cfg, mode, A, B), A @ B)

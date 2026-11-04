@@ -20,7 +20,7 @@ just test
 ## Features
 
 - **Configurable Systolic Array**: Parameterized grid dimensions, data types, and dataflows
-- **Dual Dataflow Support**: Output-stationary (OS) and weight-stationary (WS) modes
+- **Dataflow Support**: Output-stationary (OS), weight-stationary (WS) and input-stationary (IS) schedules, through L1 stream buffers with no bubbles between tiles
 - **Modern Python**: Clean, type-hinted Python 3.10+ codebase
 - **Amaranth HDL**: Leverage Python's expressiveness for hardware design
 

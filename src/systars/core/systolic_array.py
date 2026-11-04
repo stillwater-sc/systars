@@ -1,169 +1,85 @@
 """
-SystolicArray - a pipelined grid of PEArrays.
+SystolicArray - the compute fabric: a grid of PEArrays.
 
-The array is ``grid_rows x grid_cols`` PEArrays. Every signal that crosses a
-PEArray boundary passes through exactly one pipeline register: A going right;
-B, the partial sum and the control (``valid``, ``last``) going down or right.
-So PEArray ``(ti, tj)`` sees the control presented at the array inputs in cycle
-``t`` in cycle ``t + ti + tj``.
+The array is ``grid_rows x grid_cols`` PEArrays of ``tile_rows x tile_cols`` PEs,
+so ``R = grid_rows * tile_rows`` PE rows and ``C = grid_cols * tile_cols`` PE
+columns. Every PE registers its inputs, so a value moves one PE per clock in
+every direction, across PEArray boundaries as inside them (see ``PE``).
 
-The array skews its own inputs and deskews its outputs, so callers present
-unskewed vectors:
+The array has no skew or deskew registers. Its callers, the L1 stream buffers,
+stagger their streams themselves: stream buffer ``i`` starts one clock after
+buffer ``i - 1``, which is the skew. At the far edges the L1 result buffers turn
+the results back into rows.
 
-- A lane ``i`` (PEArray row ``ti = i // tile_rows``) is delayed by ``ti``, and B
-  lane ``j`` (PEArray column ``tj = j // tile_cols``) by ``tj``. A[i, k] and
-  B[k, j] presented in the same cycle then meet at every PE(i, j), together
-  with their ``valid``.
-- The WS partial sums leave the bottom edge with column ``j`` ``tj`` cycles late;
-  each is delayed by ``grid_cols - 1 - tj`` so that a whole row leaves together.
+Edges (``i`` is a PE row, ``j`` a PE column):
 
-Timing contract (``latency = (grid_rows - 1) + (grid_cols - 1)``):
+- West, per row: ``in_a_i`` with ``in_valid_i``, ``in_first_i``, ``in_last_i``.
+- North, per column: ``in_b_j`` (OS), ``in_w_j`` (the stationary chain), and the
+  OS results ``out_c_j`` with ``out_c_valid_j``.
+- South, per column: the partial sums ``out_psum_j`` (stationary), valid with
+  ``out_valid_j`` of the bottom row (the A markers in the bottom row's PEs).
 
-- ``out_psum_*`` (WS) for the A vector presented in cycle ``t`` is valid in
-  cycle ``t + latency``, together with that vector's ``out_valid`` and
-  ``out_last``.
-- In OS, the PE at the bottom-right accumulates the last product in the cycle
-  ``out_last`` is high, so every result is complete from the next cycle.
-- The shift chain (``in_shift``, ``in_d_*`` -> ``out_c_*``) is not pipelined:
-  it is one register per PE row, shifted everywhere in the same cycle.
-  ``out_c_*`` is the bottom row's chain register.
+Timing (all from the clock a value is on an input edge):
+
+- A presented on row ``i`` in clock ``t`` is in PE(i, j)'s register in clock
+  ``t + 1 + j``; B presented on column ``j`` in clock ``t`` is in PE(i, j)'s in
+  ``t + 1 + i``. So with row ``i`` streaming ``A[i, k]`` from clock ``s + i`` and
+  column ``j`` streaming ``B[k, j]`` from ``s + j``, PE(i, j) multiplies
+  ``A[i, k] * B[k, j]`` in clock ``s + 1 + i + j + k``.
+- OS: PE(i, j) launches its result in the clock it multiplies the product marked
+  ``last``; the result is on ``out_c_j`` ``i`` clocks later. For a reduction of
+  ``K`` products starting as above: clock ``s + K + j + 2 i``.
+- Stationary: with row ``k`` streaming element ``m`` in clock ``s + k + m``, the
+  partial sum over all ``R`` rows for element ``m`` is on ``out_psum_j`` in clock
+  ``s + R + j + m``.
+- The stationary chain: while ``in_shift`` is high every PE's ``w`` loads the
+  ``w`` of the PE to the north, and the top row loads ``in_w_j``. ``R`` shifts load
+  ``R`` rows, last row first.
+
+``out_collision`` is high in a clock where any PE launches a result while a
+result from the south is passing it: never, in a valid schedule.
 """
 
-from amaranth import Module, Signal, signed
-from amaranth.lib.wiring import Component, In, Out
+from amaranth import Module
+from amaranth.lib.wiring import Component
 
 from ..config import SystolicConfig
-from .pe_array import PEArray
-
-
-def _delayed(m: Module, value, cycles: int, name: str):
-    """``value`` delayed by ``cycles`` registers (the value itself for 0)."""
-    for stage in range(cycles):
-        reg = Signal.like(value, name=f"{name}_d{stage}")
-        m.d.sync += reg.eq(value)
-        value = reg
-    return value
+from .pe_array import PEArray, edge_ports, pe_array_port, wire_mesh
 
 
 class SystolicArray(Component):
     """
-    Pipelined grid of PEArrays with input skew and output deskew.
+    Grid of PEArrays with a register on every PE-to-PE link.
 
-    Ports:
-        in_a_i: A lane per array row (unskewed)
-        in_b_j: B lane per array column (OS operand, unskewed)
-        in_d_j: Shift-chain input per column (top edge)
-        in_valid, in_last: Control, pipelined with the data
-        in_shift: Shift the chain this cycle (broadcast)
-        in_control_dataflow: 0 = OS, 1 = WS (static during an operation)
-
-        out_psum_j: WS partial sums at the bottom edge (deskewed)
-        out_c_j: Bottom row's shift-chain register (OS results, WS weights)
-        out_valid, out_last: Control as it reaches the bottom-right PEArray
+    Ports: see the module docstring; the port names are those of ``PEArray``
+    (``core.pe_array.edge_ports``) for ``R`` rows and ``C`` columns.
 
     Attributes:
-        latency: Cycles from ``in_valid`` to ``out_valid``
+        rows, cols: PE rows and columns (``R`` and ``C``)
     """
 
     def __init__(self, config: SystolicConfig):
         self.config = config
-        self.latency = (config.grid_rows - 1) + (config.grid_cols - 1)
-        total_rows = config.grid_rows * config.tile_rows
-        total_cols = config.grid_cols * config.tile_cols
+        self.rows = config.grid_rows * config.tile_rows
+        self.cols = config.grid_cols * config.tile_cols
+        super().__init__(edge_ports(config, self.rows, self.cols))
 
-        ports = {}
-        for i in range(total_rows):
-            ports[f"in_a_{i}"] = In(signed(config.input_bits))
-        for j in range(total_cols):
-            ports[f"in_b_{j}"] = In(signed(config.weight_bits))
-            ports[f"in_d_{j}"] = In(signed(config.acc_bits))
-        ports["in_valid"] = In(1)
-        ports["in_last"] = In(1)
-        ports["in_shift"] = In(1)
-        ports["in_control_dataflow"] = In(1)
-        for j in range(total_cols):
-            ports[f"out_psum_{j}"] = Out(signed(config.acc_bits))
-            ports[f"out_c_{j}"] = Out(signed(config.acc_bits))
-        ports["out_valid"] = Out(1)
-        ports["out_last"] = Out(1)
-        super().__init__(ports)
+    @staticmethod
+    def os_result_clock(s: int, k_len: int, i: int, j: int) -> int:
+        """Clock PE(i, j)'s OS result is on ``out_c_j`` (streams started as documented)."""
+        return s + k_len + j + 2 * i
+
+    def stationary_result_clock(self, s: int, m: int, j: int) -> int:
+        """Clock element ``m``'s partial sum is on ``out_psum_j``."""
+        return s + self.rows + j + m
 
     def elaborate(self, _platform):
         m = Module()
         cfg = self.config
-        grid_rows, grid_cols = cfg.grid_rows, cfg.grid_cols
-        tile_rows, tile_cols = cfg.tile_rows, cfg.tile_cols
-
-        tiles = [[PEArray(cfg) for _ in range(grid_cols)] for _ in range(grid_rows)]
+        tiles = [[PEArray(cfg) for _ in range(cfg.grid_cols)] for _ in range(cfg.grid_rows)]
         self.pe_arrays = tiles  # the PEArrays of the last elaboration (``wavefront`` tracing)
-        for tr in range(grid_rows):
-            for tc in range(grid_cols):
+        for tr in range(cfg.grid_rows):
+            for tc in range(cfg.grid_cols):
                 m.submodules[f"pe_array_{tr}_{tc}"] = tiles[tr][tc]
-
-        # Control: enters PEArray (0, 0) unregistered, then one register per hop,
-        # down the first column and right along each row.
-        valid = [[None] * grid_cols for _ in range(grid_rows)]
-        last = [[None] * grid_cols for _ in range(grid_rows)]
-        for tr in range(grid_rows):
-            for tc in range(grid_cols):
-                if tr == 0 and tc == 0:
-                    v, lst = self.in_valid, self.in_last
-                else:
-                    src = (tr - 1, 0) if tc == 0 else (tr, tc - 1)
-                    v = _delayed(m, valid[src[0]][src[1]], 1, f"valid_{tr}_{tc}")
-                    lst = _delayed(m, last[src[0]][src[1]], 1, f"last_{tr}_{tc}")
-                valid[tr][tc], last[tr][tc] = v, lst
-                m.d.comb += [
-                    tiles[tr][tc].in_valid.eq(v),
-                    tiles[tr][tc].in_shift.eq(self.in_shift),
-                    tiles[tr][tc].in_control_dataflow.eq(self.in_control_dataflow),
-                ]
-        m.d.comb += [
-            self.out_valid.eq(valid[grid_rows - 1][grid_cols - 1]),
-            self.out_last.eq(last[grid_rows - 1][grid_cols - 1]),
-        ]
-
-        # A: skewed by PEArray row, then registered at each column boundary
-        for tr in range(grid_rows):
-            for r in range(tile_rows):
-                lane = tr * tile_rows + r
-                a = _delayed(m, getattr(self, f"in_a_{lane}"), tr, f"skew_a_{lane}")
-                for tc in range(grid_cols):
-                    if tc > 0:
-                        a = _delayed(
-                            m, getattr(tiles[tr][tc - 1], f"out_a_{r}"), 1, f"a_{tr}_{tc}_{r}"
-                        )
-                    m.d.comb += getattr(tiles[tr][tc], f"in_a_{r}").eq(a)
-
-        # B and partial sums: B skewed by PEArray column, both registered at each
-        # row boundary. The shift chain crosses boundaries unregistered.
-        for tc in range(grid_cols):
-            for c in range(tile_cols):
-                lane = tc * tile_cols + c
-                for tr in range(grid_rows):
-                    tile = tiles[tr][tc]
-                    if tr == 0:
-                        b = _delayed(m, getattr(self, f"in_b_{lane}"), tc, f"skew_b_{lane}")
-                        psum = 0
-                        d = getattr(self, f"in_d_{lane}")
-                    else:
-                        above = tiles[tr - 1][tc]
-                        b = _delayed(m, getattr(above, f"out_b_{c}"), 1, f"b_{tr}_{tc}_{c}")
-                        psum = _delayed(
-                            m, getattr(above, f"out_psum_{c}"), 1, f"psum_{tr}_{tc}_{c}"
-                        )
-                        d = getattr(above, f"out_c_{c}")
-                    m.d.comb += [
-                        getattr(tile, f"in_b_{c}").eq(b),
-                        getattr(tile, f"in_psum_{c}").eq(psum),
-                        getattr(tile, f"in_d_{c}").eq(d),
-                    ]
-                bottom = tiles[grid_rows - 1][tc]
-                psum_out = _delayed(
-                    m, getattr(bottom, f"out_psum_{c}"), grid_cols - 1 - tc, f"deskew_{lane}"
-                )
-                m.d.comb += [
-                    getattr(self, f"out_psum_{lane}").eq(psum_out),
-                    getattr(self, f"out_c_{lane}").eq(getattr(bottom, f"out_c_{c}")),
-                ]
+        wire_mesh(m, self, tiles, pe_array_port, cfg.tile_rows, cfg.tile_cols)
         return m

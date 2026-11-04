@@ -18,7 +18,12 @@ capacity:
 
 - ``FREE``: its credit is available;
 - ``OWNED``: a producer took the credit and is filling the slot;
-- ``READY``: the tile is complete, and its token is waiting for the consumer.
+- ``READY``: the tile is complete, and its token is waiting for the consumer;
+- ``READING``: a consumer took the token and is reading the tile.
+
+The consumer takes the token when it starts, so a later consumer of the same slot
+(the next tile filled into it) waits for the next token even while the Streamer
+still has the current one's command in flight.
 
 Every command carries a ``cmd_sync`` field (``Sync``):
 
@@ -27,8 +32,9 @@ field     meaning
 ========  =============================================================
 src       slot the command reads (consumer side)
 dst       slot the command fills (producer side)
-WAIT      start only when ``src`` is READY (its tile-ready token)
-RELEASE   on completion, return ``src``'s credit (READY -> FREE)
+WAIT      start only when ``src`` is READY (its tile-ready token); with
+          RELEASE, take the token at the start (READY -> READING)
+RELEASE   on completion, return ``src``'s credit (READING -> FREE)
 ACQUIRE   start only when ``dst`` is FREE, and take its credit (-> OWNED)
 SIGNAL    on completion, emit ``dst``'s token (OWNED -> READY)
 ========  =============================================================
@@ -45,8 +51,11 @@ Pools, and who uses which side:
   reduction step of a C tile, SIGNAL on the last), the BlockMover's STORE
   consumes (src).
 
+A WAIT without RELEASE only checks the token (the slot stays READY for another
+reader), and a RELEASE without WAIT returns a READY slot's credit directly.
+
 A transition from the wrong state (a SIGNAL on a slot that is not OWNED, a RELEASE
-on one that is not READY), or a slot tag outside the pool, sets the sticky
+on one that is neither READING nor READY), or a slot tag outside the pool, sets the sticky
 ``error``. A command never takes a credit it does not have, so an out-of-range tag
 stalls its queue; ``error`` reports why.
 """
@@ -120,6 +129,7 @@ class SlotState:
     FREE = 0
     OWNED = 1
     READY = 2
+    READING = 3
 
 
 class SlotPool(Component):
@@ -135,9 +145,10 @@ class SlotPool(Component):
         Consumer (the process that reads slots):
             cons_slot, cons_wait: The head command's ``src`` and WAIT flag
             cons_ready: ``cons_slot`` is READY
+            cons_take: Strobe: the head command was dispatched with WAIT and RELEASE
             cons_release, cons_release_slot: Strobe: a command with RELEASE completed
         Status:
-            free, ready: Per-slot state bits (OWNED = neither)
+            free, ready: Per-slot state bits (OWNED and READING = neither)
             error: Sticky protocol error (see the module docstring)
     """
 
@@ -156,6 +167,7 @@ class SlotPool(Component):
                 "cons_slot": In(SLOT_BITS),
                 "cons_wait": In(1),
                 "cons_ready": Out(1),
+                "cons_take": In(1),
                 "cons_release": In(1),
                 "cons_release_slot": In(SLOT_BITS),
                 "free": Out(slots),
@@ -183,9 +195,13 @@ class SlotPool(Component):
         m.d.comb += self.error.eq(error)
 
         def transition(strobe, slot, src, dst):
+            sources = src if isinstance(src, tuple) else (src,)
             for s in range(n):
                 with m.If(strobe & (slot == s)):
-                    with m.If(state[s] == src):
+                    from_ok = state[s] == sources[0]
+                    for other in sources[1:]:
+                        from_ok = from_ok | (state[s] == other)
+                    with m.If(from_ok):
                         m.d.sync += state[s].eq(dst)
                     with m.Else():
                         m.d.sync += error.eq(1)
@@ -194,10 +210,17 @@ class SlotPool(Component):
                     m.d.sync += error.eq(1)
 
         # Each transition starts from a different state, so at most one applies to a
-        # slot in a cycle
+        # slot in a cycle (a take and a RELEASE without WAIT of one READY slot at once
+        # is a protocol error)
         transition(self.prod_take, self.prod_slot, SlotState.FREE, SlotState.OWNED)
         transition(self.prod_signal, self.prod_signal_slot, SlotState.OWNED, SlotState.READY)
-        transition(self.cons_release, self.cons_release_slot, SlotState.READY, SlotState.FREE)
+        transition(self.cons_take, self.cons_slot, SlotState.READY, SlotState.READING)
+        transition(
+            self.cons_release, self.cons_release_slot,
+            (SlotState.READING, SlotState.READY), SlotState.FREE,
+        )  # fmt: skip
+        with m.If(self.cons_take & self.cons_release & (self.cons_slot == self.cons_release_slot)):
+            m.d.sync += error.eq(1)
 
         # A head command naming a slot outside the pool would wait forever
         if n < 1 << SLOT_BITS:

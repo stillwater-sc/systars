@@ -5,10 +5,11 @@ Test helpers for the ISA instructions (Matmul, Conv2d).
   issues, standing in for ``SystolicTop``: commands are accepted as pushed (no
   round trip), and each STORE reports completion a few cycles later.
 - ``TopModel`` executes those commands the way ``SystolicTop`` does (LOAD,
-  CONFIG, PRELOAD, COMPUTE[_ACCUMULATE], STORE), over a byte-addressed L3, so a
-  command stream can be checked numerically against numpy. LOAD and STORE move
-  ``len`` rows ``stride`` bytes apart (0 = one beat), ``row_bytes`` per row (0 = a
-  whole row): a loaded row is zero-filled past them, a stored row writes only them.
+  CONFIG, PRELOAD, COMPUTE[_ACCUMULATE], STORE, in OS and the stationary mode),
+  over a byte-addressed L3, so a command stream can be checked numerically against
+  numpy. LOAD and STORE move ``len`` rows ``stride`` bytes apart (0 = one beat),
+  ``row_bytes`` per row (0 = a whole row): a loaded row is zero-filled past them, a
+  stored row writes only them. TRANSPOSE turns the tile's rows into its columns.
   It also checks the commands' credits and tile-ready tokens (``cmd_sync``): in
   program order, a well-formed stream only waits on tokens that are there and takes
   credits that are free, and every slot is free again at the end.
@@ -22,13 +23,13 @@ import numpy as np
 
 from systars.controller.sync import SlotState, Sync
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE
-from systars.util.commands import ExecOpcode
+from systars.util.commands import DmaOpcode, ExecOpcode
 
 from ._sim import run_sim
 
 FIELDS = (
     "dram_addr", "local_addr", "len", "stride", "row_bytes", "rs1", "rs2", "rd", "k_dim",
-    "activation", "sync",
+    "activation", "sync", "chain",
 )  # fmt: skip
 DATA_MASK = (1 << 29) - 1  # LocalAddr data bits (the flags are ignored by the memories)
 
@@ -49,6 +50,7 @@ class Command:
     k_dim: int
     activation: int
     sync: int = 0
+    chain: int = 0
 
 
 @dataclass
@@ -132,7 +134,8 @@ class TopModel:
         self.sp: dict[int, list[int]] = {}
         self.acc: dict[int, list[int]] = {}
         self.weights = np.zeros((self.dim, self.dim), dtype=np.int64)
-        self.dataflow = 0
+        self.held = np.zeros((self.dim, self.dim), dtype=np.int64)  # OS: C in the PEs
+        self.dataflow = 0  # 0 = OS, 1 = stationary (WS and IS)
         self.l2_slots = [SlotState.FREE] * cfg.l2_slots
         self.acc_slots = [SlotState.FREE] * cfg.acc_slots
 
@@ -153,14 +156,16 @@ class TopModel:
             assert pool[slot] == frm, f"{what}: slot {slot} is {pool[slot]}, not {frm}: {c}"
             pool[slot] = to
 
+        taken = SlotState.READING if c.sync & Sync.RELEASE else SlotState.READY
         if phase == "start":
-            if c.sync & Sync.WAIT:
-                move(consumes, src, SlotState.READY, SlotState.READY, "WAIT")
+            if c.sync & Sync.WAIT:  # with RELEASE, the consumer takes the token
+                move(consumes, src, SlotState.READY, taken, "WAIT")
             if c.sync & Sync.ACQUIRE:
                 move(produces, dst, SlotState.FREE, SlotState.OWNED, "ACQUIRE")
         else:
             if c.sync & Sync.RELEASE:
-                move(consumes, src, SlotState.READY, SlotState.FREE, "RELEASE")
+                held = SlotState.READING if c.sync & Sync.WAIT else SlotState.READY
+                move(consumes, src, held, SlotState.FREE, "RELEASE")
             if c.sync & Sync.SIGNAL:
                 move(produces, dst, SlotState.OWNED, SlotState.READY, "SIGNAL")
 
@@ -181,13 +186,25 @@ class TopModel:
         if c.type == CTRL_LOAD:
             row_bytes = c.row_bytes or dim * cfg.input_bits // 8
             n_elems = min(dim, row_bytes * 8 // cfg.input_bits)
-            for n in range(c.len):
-                row = self.read_elems(c.dram_addr + n * stride, cfg.input_bits, n_elems)
-                self.sp[(c.local_addr & DATA_MASK) + n] = row + [0] * (dim - n_elems)
+            base = c.local_addr & DATA_MASK
+            rows = [
+                self.read_elems(c.dram_addr + n * stride, cfg.input_bits, n_elems)
+                for n in range(c.len if c.opcode != DmaOpcode.TRANSPOSE else min(c.len, dim))
+            ]
+            if c.opcode == DmaOpcode.TRANSPOSE:  # L3 row n -> element n of every L2 row
+                rows = [[row[j] for row in rows] for j in range(n_elems)]
+            for n, row in enumerate(rows):
+                self.sp[base + n] = row + [0] * (dim - len(row))
         elif c.type == CTRL_STORE:
             row_bytes = c.row_bytes or dim * cfg.acc_bits // 8
-            for n in range(c.len):
-                row = self.acc.get((c.local_addr & DATA_MASK) + n, [0] * dim)
+            base = c.local_addr & DATA_MASK
+            if c.opcode == DmaOpcode.TRANSPOSE:  # element n of each gathered row -> row n
+                gather = min(dim, row_bytes * 8 // cfg.acc_bits)
+                tile = [self.acc.get(base + g, [0] * dim) for g in range(gather)]
+                rows = [[tile[g][n] for g in range(gather)] for n in range(min(c.len, dim))]
+            else:
+                rows = [self.acc.get(base + n, [0] * dim) for n in range(c.len)]
+            for n, row in enumerate(rows):
                 data = to_unsigned_bytes(row, cfg.acc_bits)[:row_bytes]
                 self.write(c.dram_addr + n * stride, data)
         elif c.type == CTRL_EXEC:
@@ -197,23 +214,43 @@ class TopModel:
 
     def execute(self, c):
         dim = self.dim
+        sp = self.sp
+        accumulate = c.opcode == ExecOpcode.COMPUTE_ACCUMULATE
+
+        def row(addr):
+            # Rows past an edge tile were never loaded: they feed only results no
+            # STORE writes, so zeros stand in for whatever L2 holds there
+            return sp.get(addr & DATA_MASK, [0] * dim)
+
+        def write(key, out):
+            if accumulate:
+                out = out + np.array(self.acc.get(key, [0] * dim))
+            self.acc[key] = [int(v) for v in out]
+
         if c.opcode == ExecOpcode.CONFIG:
-            self.dataflow = c.rs1 & 1
+            self.dataflow = int(c.rs1 != 0)
         elif c.opcode == ExecOpcode.PRELOAD:
-            assert self.dataflow == 1, "PRELOAD in OS does nothing; Matmul/Conv2d use WS"
-            k = min(c.k_dim, dim)
-            self.weights[:] = 0
-            for r in range(k):
-                self.weights[r] = self.sp[(c.rs1 & DATA_MASK) + r]
+            if self.dataflow:  # the stationary tile, row-major; zero rows below k_dim
+                k = min(c.k_dim, dim)
+                self.weights[:] = 0
+                for r in range(k):
+                    self.weights[r] = row(c.rs1 + r)
         elif c.opcode in (ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE):
-            assert self.dataflow == 1
-            accumulate = c.opcode == ExecOpcode.COMPUTE_ACCUMULATE
-            for mrow in range(c.k_dim):
-                a = np.array(self.sp[(c.rs1 & DATA_MASK) + mrow], dtype=np.int64)
-                out = a @ self.weights
-                key = (c.rd & DATA_MASK) + mrow
-                if accumulate:
-                    out = out + np.array(self.acc.get(key, [0] * dim))
-                self.acc[key] = [int(v) for v in out]
+            k = min(c.k_dim, dim)
+            if k == 0:
+                return
+            if self.dataflow == 0:  # OS: A tile row-major, B tile column-major
+                A = np.array([row(c.rs1 + i)[:k] for i in range(dim)])
+                Bt = np.array([row(c.rs2 + j)[:k] for j in range(dim)])
+                part = A.astype(np.int64) @ Bt.T.astype(np.int64)
+                self.held = part if not c.chain & 1 else self.held + part
+                if not c.chain & 2:
+                    for i in range(dim):
+                        write((c.rd & DATA_MASK) + i, self.held[i])
+            else:  # stationary: the streamed tile column-major (row r = column r)
+                X = np.array([row(c.rs1 + r)[:k] for r in range(dim)]).T
+                out = X.astype(np.int64) @ self.weights
+                for mrow in range(k):
+                    write((c.rd & DATA_MASK) + mrow, out[mrow])
         else:
             raise AssertionError(f"unexpected exec opcode {c.opcode:#x}")

@@ -2,7 +2,7 @@
 Conv2D ISA instruction: Y = conv2d(X, F)
 
 A hardware FSM that runs a 2D convolution on the systolic array as an implicit
-GEMM, issuing LOAD / CONFIG / PRELOAD / COMPUTE / STORE commands on the command
+GEMM, issuing LOAD / CONFIG / COMPUTE / STORE commands on the command
 port ``SystolicTop`` takes (see ``isa.command``).
 
 Tensor layouts (dense, NHWC):
@@ -14,27 +14,31 @@ Tensor layouts (dense, NHWC):
 As a matrix multiply: M = batch * out_h * out_w output positions (rows),
 N = out_c (columns), and K = kernel_h * kernel_w * in_c, walked as one K tile per
 kernel offset (kh, kw) and chunk of ``dim`` input channels. Dataflow:
-weight-stationary. For each output tile (M tile, N tile), and each K tile:
+output-stationary: one LOAD per output position writes that position's channels
+as one L2 row, which is the A tile row-major, as OS streams it. (WS and IS stream
+A column-major, which per-position LOADs cannot write, so Conv2d needs an array
+with OS.) For each output tile (M tile, N tile), and each K tile:
 
 - LOAD one row per output position ``p = (b, oh, ow)``: the input pixel
   ``X[b, oh*stride_h + kh*dilation_h - pad_h, ow*stride_w + kw*dilation_w - pad_w,
   ic0:]`` (its chunk's channels), or, where that falls in the padding, the zero
   row at ``CONFIG_ZERO_ADDR``;
 - LOAD the filter tile ``F[kh, kw, ic0:, n0:]`` (one command: rows ``out_c``
-  elements apart), PRELOAD it as weights, and COMPUTE (the first K tile
-  overwrites, later ones accumulate);
+  elements apart) with a corner turn, so it lands column-major, and COMPUTE: the
+  K tiles are one reduction, held in the PEs (``cmd_chain``), and the last one
+  writes the output tile to the accumulator;
 
 then STORE the output tile, one command: rows ``y_stride`` bytes apart, only the
 tile's own channels written (byte strobes), so Y can be dense. The tile's
 BlockMover moves rows from and to any byte address, so X, F and Y need no alignment.
 
 The commands are pushed without waiting for each other (``isa.command``): credits
-and tile-ready tokens order them in ``SystolicTop``. A K tile's X rows fill one A
-slot (the first row's LOAD takes the slot's credit, the last emits its tile-ready
-token), its filter tile the paired B slot; each K tile uses the next A/B pair and
-each output tile the next accumulator slot, in ring order (``TileBuffers``,
-``buffers=2`` by default; 1 serializes the processes). The instruction is done
-when its last STORE completes.
+and tile-ready tokens order them in ``SystolicTop``. A K tile's X rows and its
+filter tile are read by one COMPUTE, so they share one slot (the pair's A slot):
+the first X row's LOAD takes its credit and the filter tile's LOAD emits its
+tile-ready token. Each K tile uses the next A/B pair and each output tile the next
+accumulator slot, in ring order (``TileBuffers``, ``buffers=2`` by default; 1
+serializes the processes). The instruction is done when its last STORE completes.
 
 Errors (``error_code``): CONFIG_INCOMPLETE without the input, output and kernel
 dimensions and the X/F/Y addresses (or with padding but no zero row);
@@ -92,7 +96,7 @@ class Conv2dError(IntEnum):
     UNSUPPORTED_ACCUMULATE = 0x09  # Accumulate onto Y (Y is not loaded into the accumulator)
 
 
-WS = 1  # ExecuteController CONFIG rs1[0]
+OS = 0  # ExecuteController CONFIG rs1
 
 # batch (8 bits) * out_h (16) * out_w (16): the widest M, and M-tile count, configurable
 M_BITS = 40
@@ -107,7 +111,7 @@ class Conv2d(Component):
         cmd_*: Command port (``isa.command``)
         busy, done, error, error_code: Status
         progress_m, progress_n, progress_k: Current M tile, N tile, K tile
-        selected_dataflow: 1 (weight-stationary)
+        selected_dataflow: 0 (output-stationary)
         param_*: Configured and derived dimensions
         dbg_addr_X/F/Y/B, dbg_tile_M/N/K: Current X row, F and Y tile addresses; tile sizes
     """
@@ -121,8 +125,11 @@ class Conv2d(Component):
         self.dim = rows
         if self.dim & (self.dim - 1):
             raise ValueError(f"Conv2d requires a power-of-two array dimension, got {self.dim}")
-        if not config.dataflow & Dataflow.B_STATIONARY:
-            raise ValueError("Conv2d issues weight-stationary commands: the array must support WS")
+        if not config.dataflow & Dataflow.OUTPUT_STATIONARY:
+            raise ValueError(
+                "Conv2d issues output-stationary commands: the array must support OS "
+                "(its per-position LOADs write A row-major)"
+            )
         # X tiles in the A slots, filter tiles in the B slots, Y tiles in the accumulator slots
         self.tiles = TileBuffers(config, self.dim, buffers, "Conv2d")
 
@@ -258,7 +265,7 @@ class Conv2d(Component):
             self.param_M.eq(reg_M),
             self.param_N.eq(reg_N),
             self.param_K.eq(reg_K),
-            self.selected_dataflow.eq(WS),
+            self.selected_dataflow.eq(OS),
             self.progress_m.eq(tile_m),
             self.progress_n.eq(tile_n),
             self.progress_k.eq((kh * kernel_w + kw) * tiles_C + chunk),
@@ -375,7 +382,7 @@ class Conv2d(Component):
                     m.d.sync += self.error_code.eq(Conv2dError.NONE)
                     m.next = "CONFIG"
 
-            issuer.state("CONFIG", "K_TILE", CTRL_EXEC, ExecOpcode.CONFIG, rs1=WS)
+            issuer.state("CONFIG", "K_TILE", CTRL_EXEC, ExecOpcode.CONFIG, rs1=OS)
 
             # Start a K tile: walk the M tile's positions from its first
             with m.State("K_TILE"):
@@ -385,7 +392,7 @@ class Conv2d(Component):
             issuer.state(
                 "LOAD_X", "X_NEXT", CTRL_LOAD, DmaOpcode.MEMCPY,
                 dram_addr=x_row, local_addr=bufs.a_addr + row, len=1, row_bytes=tile_K * in_bytes,
-                sync=bufs.load(bufs.a_slot, first=row == 0, last=row + 1 >= tile_M),
+                sync=bufs.load(bufs.a_slot, first=row == 0, last=False),
             )  # fmt: skip
             with m.State("X_NEXT"):
                 m.d.sync += [pos_b.eq(succ_b), pos_oh.eq(succ_oh), pos_ow.eq(succ_ow)]
@@ -402,21 +409,21 @@ class Conv2d(Component):
                     ]
                     m.next = "LOAD_F"
 
-            # The filter tile, one command: rows out_c elements apart
+            # The filter tile, one command: rows out_c elements apart, turned so
+            # that L2 row n is output channel n's filter column. It completes the
+            # pair, so it emits the A slot's token.
             issuer.state(
-                "LOAD_F", "PRELOAD", CTRL_LOAD, DmaOpcode.MEMCPY,
-                dram_addr=f_tile, local_addr=bufs.b_addr, len=tile_K, sync=bufs.load(bufs.b_slot),
+                "LOAD_F", "COMPUTE", CTRL_LOAD, DmaOpcode.TRANSPOSE,
+                dram_addr=f_tile, local_addr=bufs.b_addr, len=tile_K,
+                sync=bufs.load(bufs.a_slot, first=False),
                 stride=out_c * in_bytes, row_bytes=tile_N * in_bytes,
             )  # fmt: skip
 
+            # One COMPUTE per K tile, the K tiles one reduction in the PEs
             issuer.state(
-                "PRELOAD", "COMPUTE", CTRL_EXEC, ExecOpcode.PRELOAD,
-                rs1=bufs.b_addr, k_dim=tile_K, sync=bufs.preload(),
-            )  # fmt: skip
-            issuer.state(
-                "COMPUTE", "NEXT_K", CTRL_EXEC,
-                Mux(first_k, ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE),
-                rs1=bufs.a_addr, rd=bufs.acc_addr, k_dim=tile_M,
+                "COMPUTE", "NEXT_K", CTRL_EXEC, ExecOpcode.COMPUTE,
+                rs1=bufs.a_addr, rs2=bufs.b_addr, rd=bufs.acc_addr, k_dim=tile_K,
+                chain=bufs.chain(first_k, last_k),
                 sync=bufs.compute(first_k=first_k, last_k=last_k), then=bufs.next_l2(),
             )  # fmt: skip
 

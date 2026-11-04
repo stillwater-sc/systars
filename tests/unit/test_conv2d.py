@@ -18,7 +18,7 @@ from systars.controller.sync import Sync
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.conv2d import Conv2d, Conv2dCmd, Conv2dError
 from systars.top import SystolicTop
-from systars.util.commands import ExecOpcode
+from systars.util.commands import DmaOpcode, ExecOpcode
 
 from ._axi import axi_memory
 from ._isa import TopModel, from_bytes, run_isa, to_unsigned_bytes
@@ -35,10 +35,10 @@ def config(**overrides):
 
 
 def x_and_f_loads(cmds):
-    """The X row LOADs (into the A slots, 0 and 1) and the filter LOADs (B slots, 2 and 3)."""
+    """The X row LOADs (one row each, MEMCPY) and the filter LOADs (corner-turned)."""
     loads = [c for c in cmds if c.type == CTRL_LOAD]
-    x = [c for c in loads if (c.sync >> Sync.DST) & 0xF < 2]
-    return x, [c for c in loads if (c.sync >> Sync.DST) & 0xF >= 2]
+    x = [c for c in loads if c.opcode == DmaOpcode.MEMCPY]
+    return x, [c for c in loads if c.opcode == DmaOpcode.TRANSPOSE]
 
 
 def out_size(size, kernel, stride, pad, dilation):
@@ -160,35 +160,38 @@ class TestCommandStream:
 
     def test_structure(self):
         cmds = self.commands()
-        assert (cmds[0].type, cmds[0].opcode, cmds[0].rs1) == (CTRL_EXEC, ExecOpcode.CONFIG, 1)
-        execs = [c.opcode for c in cmds[1:] if c.type == CTRL_EXEC]
-        # 16 positions = 4 M tiles, 1 N tile, 9 K tiles (3x3 kernel, 1 channel chunk)
-        per_m_tile = [ExecOpcode.PRELOAD, ExecOpcode.COMPUTE] + [
-            ExecOpcode.PRELOAD,
-            ExecOpcode.COMPUTE_ACCUMULATE,
-        ] * 8
-        assert execs == per_m_tile * 4
+        assert (cmds[0].type, cmds[0].opcode, cmds[0].rs1) == (CTRL_EXEC, ExecOpcode.CONFIG, 0)
+        execs = [c for c in cmds[1:] if c.type == CTRL_EXEC]
+        # 16 positions = 4 M tiles, 1 N tile, 9 K tiles (3x3 kernel, 1 channel chunk):
+        # OS, one COMPUTE per K tile, the 9 chained into one reduction per output tile
+        assert [c.opcode for c in execs] == [ExecOpcode.COMPUTE] * 9 * 4
+        assert [c.chain for c in execs] == ([0b10] + [0b11] * 7 + [0b01]) * 4
+        assert {c.k_dim for c in execs} == {2}  # the K tile: 2 input channels
         # One STORE per output tile (4 positions, 3 channels, dense)
         stores = [c for c in cmds if c.type == CTRL_STORE]
         assert [(c.dram_addr, c.len, c.stride, c.row_bytes) for c in stores] == [
             (Y_ADDR + m * 4 * 12, 4, 12, 12) for m in range(4)
         ]
         # Per K tile: one LOAD per output position (len 1, its 2 channels), one per filter tile
+        # The filter tile is corner-turned into L2 (column-major, as OS streams it)
         x_loads, f_loads = x_and_f_loads(cmds)
-        assert {(c.len, c.row_bytes) for c in x_loads} == {(1, 2)}
-        assert {(c.len, c.stride, c.row_bytes) for c in f_loads} == {(2, 3, 3)}
+        assert {(c.opcode, c.len, c.row_bytes) for c in x_loads} == {(DmaOpcode.MEMCPY, 1, 2)}
+        assert {(c.opcode, c.len, c.stride, c.row_bytes) for c in f_loads} == {
+            (DmaOpcode.TRANSPOSE, 2, 3, 3)
+        }
         assert len(f_loads) == 9 * 4
 
-    def test_x_rows_fill_one_slot(self):
-        """A K tile's X rows share an A slot: the first LOAD takes its credit, the last
-        emits its token; the slot pairs alternate between K tiles."""
+    def test_x_rows_and_filter_fill_one_slot(self):
+        """A K tile's X rows and its filter tile share the pair's A slot (one COMPUTE
+        reads both): the first X LOAD takes its credit, the filter LOAD emits its token;
+        the slot pairs alternate between K tiles."""
         x_loads, f_loads = x_and_f_loads(self.commands())
-        first = [(c.sync >> Sync.DST) & 0xF for c in f_loads[:4]]
-        assert first == [2, 3, 2, 3]  # B slots of the two pairs
+        assert [(c.sync >> Sync.DST) & 0xF for c in f_loads[:4]] == [0, 1, 0, 1]
+        assert all(c.sync & Sync.SIGNAL and not c.sync & Sync.ACQUIRE for c in f_loads)
         tile = x_loads[:4]  # the first K tile's 4 positions
         assert [(c.sync >> Sync.DST) & 0xF for c in tile] == [0] * 4
         assert [bool(c.sync & Sync.ACQUIRE) for c in tile] == [True, False, False, False]
-        assert [bool(c.sync & Sync.SIGNAL) for c in tile] == [False, False, False, True]
+        assert not any(c.sync & Sync.SIGNAL for c in tile)
         assert [c.local_addr for c in x_loads[4:8]] == [DIM, DIM + 1, DIM + 2, DIM + 3]
 
     def test_padding_rows_load_the_zero_row(self):
@@ -242,9 +245,13 @@ class TestErrors:
 
 
 class TestConstruction:
-    def test_requires_weight_stationary(self):
-        with pytest.raises(ValueError, match="weight-stationary"):
-            Conv2d(config(dataflow=Dataflow.OUTPUT_STATIONARY))
+    @pytest.mark.parametrize(
+        "dataflow", [Dataflow.B_STATIONARY, Dataflow.A_STATIONARY | Dataflow.B_STATIONARY]
+    )
+    def test_requires_output_stationary(self, dataflow):
+        """Per-position LOADs write A row-major, which only OS streams."""
+        with pytest.raises(ValueError, match="output-stationary"):
+            Conv2d(config(dataflow=dataflow))
 
     def test_requires_square_power_of_two(self):
         with pytest.raises(ValueError, match="square"):

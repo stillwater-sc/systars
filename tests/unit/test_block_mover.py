@@ -11,6 +11,7 @@ L3, each from or to any byte address, ``stride`` bytes between rows, with
 - A GEMM through SystolicTop with A, B and C at unaligned, strided addresses,
   C written with partial rows between canary bytes.
 - Bank counts: one bank works, a count that is not a power of two is rejected.
+- TRANSPOSE (#21): both legs with a corner turn, alone and through SystolicTop.
 """
 
 import numpy as np
@@ -106,8 +107,19 @@ class StorePath(Elaboratable, _AxiPorts):
         return m
 
 
-async def issue(ctx, ctrl, local_field, *, dram_addr, local_addr, rows, stride=0, row_bytes=0):
-    ctx.set(ctrl.cmd_opcode, DmaOpcode.MEMCPY)
+async def issue(
+    ctx,
+    ctrl,
+    local_field,
+    *,
+    dram_addr,
+    local_addr,
+    rows,
+    stride=0,
+    row_bytes=0,
+    opcode=DmaOpcode.MEMCPY,
+):
+    ctx.set(ctrl.cmd_opcode, opcode)
     ctx.set(ctrl.cmd_dram_addr, dram_addr)
     ctx.set(getattr(ctrl, local_field), local_addr)
     ctx.set(ctrl.cmd_len, rows)
@@ -120,8 +132,9 @@ async def issue(ctx, ctrl, local_field, *, dram_addr, local_addr, rows, stride=0
     await ctx.tick().until(ctrl.completed)
 
 
-def run_load(cfg, memory, **cmd):
-    """Run one LOAD; return {scratchpad row: bytes written}."""
+def run_load(cfg, memory, *, then=(), **cmd):
+    """Run one LOAD, then the commands in ``then`` (dicts of the same fields); return
+    {scratchpad row: bytes written}."""
     dut = LoadPath(cfg)
     sp_bytes = cfg.sp_width // 8
     written = {}
@@ -135,15 +148,17 @@ def run_load(cfg, memory, **cmd):
                 written[addr] = data.to_bytes(sp_bytes, "little")
 
     async def testbench(ctx):
-        await issue(ctx, dut.ctrl, "cmd_sp_addr", **cmd)
+        for fields in (cmd, *then):
+            await issue(ctx, dut.ctrl, "cmd_sp_addr", **fields)
 
     beat = cfg.dma_buswidth // 8
     run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat), recorder])
     return written
 
 
-def run_store(cfg, memory, acc_rows, *, activation=0, **cmd):
-    """Run one STORE of ``acc_rows`` (lists of acc_bits values) into ``memory``."""
+def run_store(cfg, memory, acc_rows, *, activation=0, then=(), **cmd):
+    """Run one STORE of ``acc_rows`` (lists of acc_bits values) into ``memory``, then the
+    commands in ``then`` (dicts of the same fields)."""
     dut = StorePath(cfg)
 
     async def accumulator(ctx):
@@ -159,7 +174,8 @@ def run_store(cfg, memory, acc_rows, *, activation=0, **cmd):
 
     async def testbench(ctx):
         ctx.set(dut.ctrl.cmd_activation, activation)
-        await issue(ctx, dut.ctrl, "cmd_acc_addr", **cmd)
+        for fields in (cmd, *then):
+            await issue(ctx, dut.ctrl, "cmd_acc_addr", **fields)
 
     beat = cfg.dma_buswidth // 8
     run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat), accumulator])
@@ -302,7 +318,9 @@ A_ADDR, B_ADDR, C_ADDR = 0x1003, 0x2009, 0x3005
 def gemm_any_layout(cfg, A, B, *, a_stride, b_stride, c_stride):
     """WS GEMM (one tile) through SystolicTop, operands and C at unaligned, strided addresses.
 
-    C is written with row_bytes = N results, so the bytes past each row keep their canary."""
+    A is row-major in L3; the LOAD's corner turn lays it column-major in L2, as the
+    Streamer streams it. C is written with row_bytes = N results, so the bytes past
+    each row keep their canary."""
     dim = cfg.grid_rows * cfg.tile_rows
     beat = cfg.dma_buswidth // 8
     M, K = A.shape
@@ -324,7 +342,8 @@ def gemm_any_layout(cfg, A, B, *, a_stride, b_stride, c_stride):
         host = Host(ctx, dut)
         ctx.set(dut.cmd_stride, a_stride)
         ctx.set(dut.cmd_row_bytes, K)
-        await host.load(A_ADDR, 0, M)
+        # M rows of K elements -> K L2 rows of M: A's columns
+        await host.run(SystolicTop.CTRL_LOAD, TRANSPOSE, dram_addr=A_ADDR, local_addr=0, len=M)
         ctx.set(dut.cmd_stride, b_stride)
         ctx.set(dut.cmd_row_bytes, N)
         await host.load(B_ADDR, sp_b, K)
@@ -402,3 +421,201 @@ def test_cmd_fields_default_to_whole_rows_one_beat_apart():
     memory = pattern(1 << 12, seed=8)
     written = run_load(cfg, memory, dram_addr=0x200, local_addr=0, rows=3)
     assert written == {r: bytes(memory[0x200 + r * beat : 0x200 + r * beat + 4]) for r in range(3)}
+
+
+# ---------------------------------------------------------------------------
+# TRANSPOSE: the corner turns (#21)
+# ---------------------------------------------------------------------------
+
+TRANSPOSE = DmaOpcode.TRANSPOSE
+
+
+def turned(rows, n_out, width):
+    """The corner turn of ``rows`` (lists of elements): ``n_out`` rows, element ``n`` of
+    output row ``j`` being element ``j`` of input row ``n``, zero past the inputs."""
+    return [[row[j] for row in rows] + [0] * (width - len(rows)) for j in range(n_out)]
+
+
+class TestLoadTranspose:
+    @pytest.mark.parametrize("offset", [0, 3, 13])
+    def test_tile_lands_column_major(self, offset):
+        """A 4x4 int8 tile at any offset: L3 row n becomes element n of every L2 row."""
+        cfg = config()  # 4 lanes of int8
+        memory = pattern(1 << 12, seed=20)
+        base = 0x100 + offset
+        written = run_load(
+            cfg, memory, dram_addr=base, local_addr=5, rows=4, stride=29, opcode=TRANSPOSE
+        )
+        tile = [list(memory[base + 29 * r : base + 29 * r + 4]) for r in range(4)]
+        assert written == {5 + j: bytes(row) for j, row in enumerate(turned(tile, 4, 4))}
+
+    def test_edge_tile_is_zero_filled(self):
+        """3 rows of 2 elements: 2 L2 rows, each with 3 elements and a zero."""
+        cfg = config()
+        memory = pattern(1 << 12, seed=21)
+        written = run_load(
+            cfg, memory, dram_addr=0x205, local_addr=0, rows=3, stride=7, row_bytes=2,
+            opcode=TRANSPOSE,
+        )  # fmt: skip
+        tile = [list(memory[0x205 + 7 * r : 0x205 + 7 * r + 2]) for r in range(3)]
+        assert written == {j: bytes(row) for j, row in enumerate(turned(tile, 2, 4))}
+
+    def test_consecutive_beats_stream(self):
+        """Aligned, beat-spaced rows take the streaming path into the buffer."""
+        cfg = config(dim=8)
+        beat = cfg.dma_buswidth // 8
+        memory = pattern(1 << 12, seed=22)
+        written = run_load(cfg, memory, dram_addr=0x400, local_addr=0, rows=8, opcode=TRANSPOSE)
+        tile = [list(memory[0x400 + beat * r : 0x400 + beat * r + 8]) for r in range(8)]
+        assert written == {j: bytes(row) for j, row in enumerate(turned(tile, 8, 8))}
+
+    def test_short_tile_after_a_full_one_is_zero_filled(self):
+        """A 2-row tile after a 4-row one has zeros past its second element: the
+        first TRANSPOSE (2 of 4 columns) leaves nothing behind in the buffer."""
+        cfg = config()
+        memory = pattern(1 << 12, seed=25)
+        written = run_load(
+            cfg, memory, dram_addr=0x100, local_addr=0, rows=4, stride=4, row_bytes=2,
+            opcode=TRANSPOSE,
+            then=[{"dram_addr": 0x200, "local_addr": 8, "rows": 2, "stride": 4, "opcode": TRANSPOSE}],
+        )  # fmt: skip
+        tile = [list(memory[0x200 + 4 * r : 0x200 + 4 * r + 4]) for r in range(2)]
+        assert {a: written[a] for a in range(8, 12)} == {
+            8 + j: bytes(row) for j, row in enumerate(turned(tile, 4, 4))
+        }
+
+    def test_moves_at_most_one_tile(self):
+        """len is clamped to the lanes: rows past the tile are not read."""
+        cfg = config()
+        memory = pattern(1 << 12, seed=23)
+        written = run_load(
+            cfg, memory, dram_addr=0x300, local_addr=0, rows=7, stride=4, opcode=TRANSPOSE
+        )
+        tile = [list(memory[0x300 + 4 * r : 0x300 + 4 * r + 4]) for r in range(4)]
+        assert written == {j: bytes(row) for j, row in enumerate(turned(tile, 4, 4))}
+
+    def test_zero_rows_complete_without_a_transfer(self):
+        assert (
+            run_load(config(), pattern(256), dram_addr=0x10, local_addr=0, rows=0, opcode=TRANSPOSE)
+            == {}
+        )
+
+
+class TestStoreTranspose:
+    ROWS = TestStore.ROWS  # 3 accumulator rows of 4 int32
+
+    def stored(self, memory, base, stride, rows, n):
+        return [
+            unpack(int.from_bytes(memory[base + stride * r : base + stride * r + 4 * n], "little"),
+                   32, n)
+            for r in range(rows)
+        ]  # fmt: skip
+
+    @pytest.mark.parametrize("offset", [0, 4, 9])
+    def test_columns_become_rows(self, offset):
+        """3 accumulator rows (row_bytes = 3 results): L3 row i is element i of each."""
+        cfg = config()
+        memory = pattern(1 << 12, seed=24)
+        before = bytes(memory)
+        base = 0x300 + offset
+        run_store(
+            cfg, memory, self.ROWS, dram_addr=base, local_addr=0, rows=4, stride=20,
+            row_bytes=12, opcode=TRANSPOSE,
+        )  # fmt: skip
+        assert self.stored(memory, base, 20, 4, 3) == turned(self.ROWS, 4, 3)
+        expected = bytearray(before)
+        for r in range(4):
+            expected[base + 20 * r : base + 20 * r + 12] = memory[
+                base + 20 * r : base + 20 * r + 12
+            ]
+        assert memory == expected, "STORE wrote outside its rows"
+
+    def test_consecutive_beats_stream(self):
+        cfg = config()
+        beat = cfg.dma_buswidth // 8
+        rows = [[r * 10 + c for c in range(4)] for r in range(4)]
+        memory = bytearray(1 << 12)
+        run_store(cfg, memory, rows, dram_addr=0x800, local_addr=0, rows=4, opcode=TRANSPOSE)
+        assert self.stored(memory, 0x800, beat, 4, 4) == turned(rows, 4, 4)
+
+    def test_activation_applies_per_element(self):
+        cfg = config()
+        memory = bytearray(1 << 10)
+        run_store(
+            cfg, memory, self.ROWS, activation=1, dram_addr=0x40, local_addr=0, rows=2,
+            stride=16, row_bytes=12, opcode=TRANSPOSE,
+        )  # fmt: skip
+        relu = [[max(0, x) for x in row] for row in turned(self.ROWS, 2, 3)]
+        assert self.stored(memory, 0x40, 16, 2, 3) == relu
+
+    def test_narrow_tile_after_a_wide_one_writes_only_its_bytes(self):
+        """A 2-column tile after a 4-column one: the first leaves accumulator rows in
+        the buffer, which only reach elements past row_bytes, so nothing is written there."""
+        cfg = config()
+        rows = [[r * 10 + c + 1 for c in range(4)] for r in range(4)]
+        memory = bytearray(1 << 12)
+        run_store(
+            cfg, memory, rows, dram_addr=0x100, local_addr=0, rows=2, stride=16, opcode=TRANSPOSE,
+            then=[{"dram_addr": 0x400, "local_addr": 0, "rows": 4, "stride": 16,
+                   "row_bytes": 8, "opcode": TRANSPOSE}],
+        )  # fmt: skip
+        assert self.stored(memory, 0x400, 16, 4, 2) == turned(rows[:2], 4, 2)
+        assert not any(any(memory[0x400 + 16 * r + 8 : 0x400 + 16 * r + 16]) for r in range(4))
+
+    def test_moves_at_most_one_tile(self):
+        cfg = config()
+        rows = [[r * 10 + c for c in range(4)] for r in range(4)]
+        memory = bytearray(1 << 12)
+        run_store(
+            cfg, memory, rows, dram_addr=0x100, local_addr=0, rows=9, stride=16, opcode=TRANSPOSE
+        )
+        assert self.stored(memory, 0x100, 16, 4, 4) == turned(rows, 4, 4)
+        assert not any(memory[0x100 + 64 : 0x100 + 9 * 16]), "rows past the tile were written"
+
+
+@pytest.mark.parametrize("dim", [4, 8])
+def test_round_trip_through_both_corner_turns(dim):
+    """Through SystolicTop: LOAD TRANSPOSE of row-major A puts A's columns in L2 (the
+    layout WS streams), a WS GEMM computes A @ B, and STORE TRANSPOSE writes Cᵀ, all
+    at unaligned addresses."""
+    cfg = config(dim)
+    beat = cfg.dma_buswidth // 8
+    rng = np.random.default_rng(30 + dim)
+    M, K, N = dim, dim - 1, dim - 1
+    A = rng.integers(-128, 128, (M, K))
+    B = rng.integers(-128, 128, (K, N))
+    a_addr, b_addr, ct_addr = 0x1003, 0x2009, 0x3005
+    memory = pattern(1 << 16, seed=31)
+    for r, row in enumerate(A):  # M rows of K
+        memory[a_addr + r * K : a_addr + (r + 1) * K] = pack(row, 8).to_bytes(K, "little")
+    for r, row in enumerate(B):
+        memory[b_addr + r * N : b_addr + (r + 1) * N] = pack(row, 8).to_bytes(N, "little")
+    dut = SystolicTop(cfg)
+    sp_b = dim
+
+    async def testbench(ctx):
+        host = Host(ctx, dut)
+        ctx.set(dut.cmd_stride, K)
+        ctx.set(dut.cmd_row_bytes, K)
+        # M rows of A, K elements each -> K L2 rows of M elements: A's columns
+        await host.run(SystolicTop.CTRL_LOAD, TRANSPOSE, dram_addr=a_addr, local_addr=0, len=M)
+        ctx.set(dut.cmd_stride, N)
+        ctx.set(dut.cmd_row_bytes, N)
+        await host.load(b_addr, sp_b, K)
+        await host.execute(ExecOpcode.CONFIG, rs1=WS)
+        await host.execute(ExecOpcode.PRELOAD, rs1=sp_b, k_dim=K)
+        await host.execute(ExecOpcode.COMPUTE, rs1=0, rd=0, k_dim=M)
+        # M accumulator rows of N results -> N L3 rows of M: Cᵀ
+        ctx.set(dut.cmd_stride, 4 * M)
+        ctx.set(dut.cmd_row_bytes, 4 * M)
+        await host.run(SystolicTop.CTRL_STORE, TRANSPOSE, dram_addr=ct_addr, local_addr=0, len=N)
+
+    run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat)], max_cycles=20_000)
+    CT = np.array(
+        [
+            unpack(int.from_bytes(memory[ct_addr + r * 4 * M : ct_addr + (r + 1) * 4 * M],
+                                  "little"), 32, M)
+            for r in range(N)
+        ]
+    )  # fmt: skip
+    np.testing.assert_array_equal(CT, (A @ B).T)

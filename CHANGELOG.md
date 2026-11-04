@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A registered fabric, L1 stream buffers and a bubble-free Streamer** (#15, 2026-11-03;
+  ported from branes-ai/embodied-ai-soc-generator#21). Every PE has an input register on each
+  link, so values move one PE per clock and a PEArray is only a structural grouping (8x8 up
+  to 64x64 PEs). OS results move north on the `last` marker into L1 result buffers; `first`
+  overwrites, so a reduction spans commands (`cmd_chain`) with C held in the PEs. WS and IS
+  share one stationary mode. L1 (`memory/stream_buffer.py`): one-block stream buffers per row
+  and column with one credit each, whose staggered starts are the skew, and result buffers
+  that turn columns back into rows. The Streamer (`controller/execute.py`) starts a command
+  only when the fabric can take it on schedule and never stalls: with `K >= R, C` tiles
+  stream back to back, and a reduction's end waits for the north drain (`2R - 1` clocks
+  between reductions, free with `K >= 2R - 1`). It reports each command's L2 release
+  (`exec_completed`, once its last block is in L1) and its result (`exec_result`)
+  separately; `l1_error` is sticky. Matmul runs OS, WS or IS (`CONFIG_DATAFLOW`, OS by
+  default), laying tiles out with the corner turns; Conv2d runs OS.
+  `tests/unit/test_execute_controller.py`, `test_stream_buffer.py`,
+  `test_systolic_array.py`, `test_gemm_systolic.py`
+
+- **Corner turns in the BlockMover** (#15; ported from
+  branes-ai/embodied-ai-soc-generator#21). LOAD and STORE take the new
+  `DmaOpcode.TRANSPOSE` (0x04), a MEMCPY that turns one tile's rows into its columns through
+  a corner-turn buffer of one tile: LOAD writes the tile column-major into L2 (one L2 row per
+  L1 stream buffer, for OS's B, WS's A and IS's stationary A), and STORE turns an
+  input-stationary result (columns of C) back into row-major rows in L3. Any address,
+  stride and partial rows, as MEMCPY; `len` is clamped to one tile.
+  `tests/unit/test_block_mover.py`
+
 - **Credits and tile-ready tokens** (#9, 2026-11-02; ported from
   branes-ai/embodied-ai-soc-generator#16). `SystolicTop` queues each process's commands
   (BlockMover LOAD and STORE, Streamer) and dispatches a queue's head only when its credits and
@@ -93,6 +119,19 @@ and weight-stationary. The previous execute path could not:
   column through a shift chain, bottom row first
 
 ### Changed
+
+- **Streamer commands** (#15): OS COMPUTE takes an A tile row-major and a B tile
+  column-major, `K <= KB` per command (chain longer reductions); stationary COMPUTE streams a
+  column-major tile. The array's latency contract is replaced by per-edge result clocks
+  (`SystolicArray.os_result_clock`, `stationary_result_clock`); the shift-chain ports
+  `in_d`/`out_c` become `in_w`/`out_w` and the north results `out_c`/`out_c_valid`.
+- **Conv2d runs output-stationary** (#15): an array without OS (`LEAN_CONFIG`,
+  `CHIP_CONFIG`) cannot run Conv2d until a column-write LOAD exists
+  (branes-ai/embodied-ai-soc-generator#25).
+- **A consumer takes a slot's token at its start** (#15): `SlotState.READING`, so with
+  several Streamer commands in flight the next consumer of a slot waits for the next
+  tile's token. Measured, 8x8x16 Matmul on a 4x4 array: 907 -> 744 cycles with one and two
+  buffers (was 1091 -> 686): the Streamer returns L2 early, and the run is BlockMover-bound.
 
 - **ISA command port** (#9): `cmd_completed` is replaced by `cmd_store_completed` (an
   instruction only needs to know its STOREs are done) and the port gains `cmd_sync`.

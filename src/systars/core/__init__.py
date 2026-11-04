@@ -2,9 +2,9 @@
 Core systolic matmul array components.
 
 This module contains the fundamental building blocks:
-- PE: Processing Element (MAC unit, output- or weight-stationary)
+- PE: Processing Element (MAC unit with a register on every link; OS or stationary)
 - PEArray: Combinational grid of PEs
-- SystolicArray: Pipelined grid of PEArrays, with input skew and output deskew
+- SystolicArray: Grid of PEArrays; the L1 stream buffers stagger its streams
 """
 
 from .pe import OUTPUT_STATIONARY, PE, WEIGHT_STATIONARY
