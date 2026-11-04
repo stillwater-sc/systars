@@ -13,8 +13,18 @@ address ``dram_addr + n * stride``.
 - ``stride`` 0 means rows one bus beat apart.
 - The activation (``cmd_activation``) is applied to each element.
 
+``TRANSPOSE`` is a MEMCPY with a corner turn, for results the array produces as
+columns (input-stationary, #21). The tile is first read into a corner-turn
+buffer of ``lanes`` accumulator rows (``lanes = acc_width // acc_bits``): one
+row per element of an L3 row, ``ceil(row_bytes * 8 / acc_bits)`` rows from
+``acc_addr``, read back to back. L3 row ``i`` is then element ``i`` of every
+buffered row: accumulator row ``n`` becomes element ``n`` of each L3 row. The
+rows go out exactly as a MEMCPY's, and the activation applies to each element. A
+TRANSPOSE moves at most one tile: ``len`` is clamped to ``lanes``.
+
 State Machine:
-    IDLE -> NEXT -> ISSUE_BURST -> (READ_ACC -> WAIT_VALID -> SEND_STREAM)* -> WAIT_DONE
+    IDLE [-> GATHER (TRANSPOSE: read the tile into the corner-turn buffer)]
+         -> NEXT -> ISSUE_BURST -> (READ_ACC -> WAIT_VALID -> SEND_STREAM)* -> WAIT_DONE
                     (consecutive beats from a beat boundary: one burst of up to 256 rows)
                  -> READ_ACC -> WAIT_VALID -> ISSUE_ROW -> SEND_LO [-> SEND_HI] -> WAIT_DONE
                     (any other row)
@@ -43,7 +53,7 @@ class StoreController(Component):
         Command Interface:
             cmd_valid: Command available
             cmd_ready: Controller ready to accept command
-            cmd_opcode: Operation code (MEMCPY)
+            cmd_opcode: Operation code (MEMCPY, or TRANSPOSE: with a corner turn)
             cmd_acc_addr: Source address in accumulator (32-bit local format)
             cmd_dram_addr: Destination byte address of row 0 in L3 (64-bit, any alignment)
             cmd_len: Rows to move (0 completes at once)
@@ -91,6 +101,7 @@ class StoreController(Component):
                 f"set dma_buswidth >= {acc_width}"
             )
 
+        self.lanes = acc_width // config.acc_bits  # elements per accumulator row
         beat = buswidth // 8
         if beat < 2 or beat & (beat - 1):
             raise ValueError(
@@ -152,6 +163,18 @@ class StoreController(Component):
         activation_reg = Signal(4)
         row = Signal(16)
 
+        # TRANSPOSE: the corner-turn buffer (one tile), and its reads from the accumulator.
+        # It is never cleared: rows past the ones a TRANSPOSE reads only fill elements
+        # past row_bytes, which the byte strobes leave unwritten
+        eb = cfg.acc_bits
+        lanes = self.lanes
+        transpose = Signal()
+        turn = [Signal(cfg.acc_width, name=f"turn_{n}") for n in range(lanes)]
+        gather = Signal(16)  # accumulator rows to read
+        issued = Signal(16)
+        received = Signal(16)
+        turned_row = Cat(*[t[:eb] for t in turn])  # element 0 of every buffered row
+
         offset = Signal(off_bits)
         two_beats = Signal()
         m.d.comb += [
@@ -192,34 +215,59 @@ class StoreController(Component):
         def activated_row():
             # The latched activation applied to each acc_bits element (the
             # accumulator's own read activation is disabled by SystolicTop, so this
-            # is the only one)
-            return activate_row(
-                self.acc_read_data, activation_reg, cfg.acc_bits, cfg.acc_width // cfg.acc_bits
-            )
+            # is the only one). A TRANSPOSE's row comes from the corner-turn buffer.
+            source = Mux(transpose, turned_row, self.acc_read_data)
+            return activate_row(source, activation_reg, cfg.acc_bits, lanes)
+
+        accepted = (self.cmd_opcode == DmaOpcode.MEMCPY) | (self.cmd_opcode == DmaOpcode.TRANSPOSE)
+        is_transpose = self.cmd_opcode == DmaOpcode.TRANSPOSE
+        cmd_row_bytes = Mux(
+            (self.cmd_row_bytes == 0) | (self.cmd_row_bytes > acc_bytes),
+            acc_bytes,
+            self.cmd_row_bytes,
+        )
 
         with m.FSM(init="IDLE") as fsm:
             with m.State("IDLE"):
                 m.d.comb += self.cmd_ready.eq(1)
-                with m.If(self.cmd_valid & (self.cmd_opcode == DmaOpcode.MEMCPY)):
+                with m.If(self.cmd_valid & accepted):
+                    cmd_len = Mux(is_transpose & (self.cmd_len > lanes), lanes, self.cmd_len)
                     m.d.sync += [
                         acc_addr_reg.eq(self.cmd_acc_addr),
                         row_addr.eq(self.cmd_dram_addr),
-                        len_reg.eq(self.cmd_len),
+                        len_reg.eq(cmd_len),
                         stride_reg.eq(Mux(self.cmd_stride == 0, beat, self.cmd_stride)),
-                        row_bytes.eq(
-                            Mux(
-                                (self.cmd_row_bytes == 0) | (self.cmd_row_bytes > acc_bytes),
-                                acc_bytes,
-                                self.cmd_row_bytes,
-                            )
-                        ),
+                        row_bytes.eq(cmd_row_bytes),
                         cmd_id_reg.eq(self.cmd_id),
                         activation_reg.eq(self.cmd_activation),
                         row.eq(0),
+                        transpose.eq(is_transpose),
+                        gather.eq((cmd_row_bytes * 8 + eb - 1) // eb),
+                        issued.eq(0),
+                        received.eq(0),
                     ]
                     with m.If(self.cmd_len == 0):
                         m.next = "DONE"
+                    with m.Elif(is_transpose):
+                        m.next = "GATHER"
                     with m.Else():
+                        m.next = "NEXT"
+
+            # TRANSPOSE: read the tile's accumulator rows into the corner-turn buffer,
+            # one request per cycle
+            with m.State("GATHER"):
+                with m.If(issued < gather):
+                    m.d.comb += [
+                        self.acc_read_req.eq(1),
+                        self.acc_read_addr.eq(acc_addr_reg + issued),
+                    ]
+                    m.d.sync += issued.eq(issued + 1)
+                with m.If(self.acc_read_valid):
+                    for n in range(lanes):
+                        with m.If(received == n):
+                            m.d.sync += turn[n].eq(self.acc_read_data)
+                    m.d.sync += received.eq(received + 1)
+                    with m.If(received + 1 >= gather):
                         m.next = "NEXT"
 
             with m.State("NEXT"):
@@ -238,18 +286,22 @@ class StoreController(Component):
 
             # --- Read the row from the accumulator ---
             with m.State("READ_ACC"):
-                m.d.comb += [
-                    self.acc_read_req.eq(1),
-                    self.acc_read_addr.eq(acc_addr_reg + row),
-                ]
+                with m.If(~transpose):
+                    m.d.comb += [
+                        self.acc_read_req.eq(1),
+                        self.acc_read_addr.eq(acc_addr_reg + row),
+                    ]
                 m.next = "WAIT_VALID"
 
-            with m.State("WAIT_VALID"), m.If(self.acc_read_valid):
+            # A TRANSPOSE's row is in the corner-turn buffer: no accumulator read
+            with m.State("WAIT_VALID"), m.If(self.acc_read_valid | transpose):
                 # Place the row at its byte offset (0 when streaming)
                 m.d.sync += [
                     data_buf.eq(activated_row() << (offset * 8)),
                     strb_buf.eq(keep << offset),
                 ]
+                with m.If(transpose):
+                    m.d.sync += [t.eq(t >> eb) for t in turn]
                 with m.If(streaming):
                     m.next = "SEND_STREAM"
                 with m.Else():

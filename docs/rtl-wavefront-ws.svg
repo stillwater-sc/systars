@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="542" height="346" viewBox="0 0 542 346" font-family="monospace">
-<rect width="542" height="346" fill="white"/>
-<text x="24" y="20" font-size="14">weight-stationary: 2x2 grid of 2x2 PEArrays</text>
-<g visibility="visible"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.083333" values="visible;hidden"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="716" height="346" viewBox="0 0 716 346" font-family="monospace">
+<rect width="716" height="346" fill="white"/>
+<text x="24" y="20" font-size="14">stationary (WS / IS): 2x2 grid of 2x2 PEArrays</text>
+<g visibility="visible"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.058824" values="visible;hidden"/>
 <text x="24" y="42" font-size="13">cycle -4  preload  (shift)</text>
 <rect x="24" y="56" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">w0</text>
 <rect x="80" y="56" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">w0</text>
@@ -20,7 +20,7 @@
 <rect x="136" y="224" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">w0</text>
 <rect x="192" y="224" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">w0</text>
 </g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.083333;0.166667" values="hidden;visible;hidden"/>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.058824;0.117647" values="hidden;visible;hidden"/>
 <text x="24" y="42" font-size="13">cycle -3  preload  (shift)</text>
 <rect x="24" y="56" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">w0</text>
 <rect x="80" y="56" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">w1</text>
@@ -39,7 +39,7 @@
 <rect x="136" y="224" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">w0</text>
 <rect x="192" y="224" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">w0</text>
 </g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.166667;0.250000" values="hidden;visible;hidden"/>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.117647;0.176471" values="hidden;visible;hidden"/>
 <text x="24" y="42" font-size="13">cycle -2  preload  (shift)</text>
 <rect x="24" y="56" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">w-6</text>
 <rect x="80" y="56" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">w5</text>
@@ -58,7 +58,7 @@
 <rect x="136" y="224" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">w0</text>
 <rect x="192" y="224" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">w0</text>
 </g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.250000;0.333333" values="hidden;visible;hidden"/>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.176471;0.235294" values="hidden;visible;hidden"/>
 <text x="24" y="42" font-size="13">cycle -1  preload  (shift)</text>
 <rect x="24" y="56" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">w-4</text>
 <rect x="80" y="56" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">w-8</text>
@@ -77,14 +77,52 @@
 <rect x="136" y="224" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">w0</text>
 <rect x="192" y="224" width="56" height="56" fill="#c7d7ef" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">w0</text>
 </g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.333333;0.416667" values="hidden;visible;hidden"/>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.235294;0.294118" values="hidden;visible;hidden"/>
 <text x="24" y="42" font-size="13">cycle 0  stream</text>
+<rect x="24" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+</g>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.294118;0.352941" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 1  stream</text>
 <rect x="24" y="56" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="80" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+</g>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.352941;0.411765" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 2  stream</text>
+<rect x="24" y="56" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">m1</text>
 <rect x="80" y="56" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">m0</text>
 <rect x="136" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">.</text>
 <rect x="192" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">.</text>
 <rect x="24" y="112" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">m0</text>
-<rect x="80" y="112" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="80" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">.</text>
 <rect x="136" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">.</text>
 <rect x="192" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">.</text>
 <rect x="24" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">.</text>
@@ -96,103 +134,122 @@
 <rect x="136" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">.</text>
 <rect x="192" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">.</text>
 </g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.416667;0.500000" values="hidden;visible;hidden"/>
-<text x="24" y="42" font-size="13">cycle 1  stream</text>
-<rect x="24" y="56" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="80" y="56" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">m1</text>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.411765;0.470588" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 3  stream</text>
+<rect x="24" y="56" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="80" y="56" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">m1</text>
 <rect x="136" y="56" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">m0</text>
-<rect x="192" y="56" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">m0</text>
-<rect x="24" y="112" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="80" y="112" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="136" y="112" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">m0</text>
-<rect x="192" y="112" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="192" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="112" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="80" y="112" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="136" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">.</text>
 <rect x="24" y="168" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="80" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+</g>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.470588;0.529412" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 4  stream</text>
+<rect x="24" y="56" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="80" y="56" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="136" y="56" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="192" y="56" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="24" y="112" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="80" y="112" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="136" y="112" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="192" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="168" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">m1</text>
 <rect x="80" y="168" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">m0</text>
 <rect x="136" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">.</text>
 <rect x="192" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">.</text>
 <rect x="24" y="224" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="80" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+</g>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.529412;0.588235" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 5  stream</text>
+<rect x="24" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="56" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="136" y="56" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="192" y="56" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="24" y="112" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="80" y="112" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="136" y="112" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="192" y="112" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="24" y="168" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="80" y="168" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="136" y="168" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="192" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="224" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">m1</text>
 <rect x="80" y="224" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">m0</text>
 <rect x="136" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">.</text>
 <rect x="192" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">.</text>
 </g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.500000;0.583333" values="hidden;visible;hidden"/>
-<text x="24" y="42" font-size="13">cycle 2  stream</text>
-<rect x="24" y="56" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="80" y="56" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="136" y="56" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="192" y="56" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="24" y="112" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="80" y="112" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="136" y="112" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="192" y="112" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="24" y="168" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="80" y="168" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="136" y="168" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">m0</text>
-<rect x="192" y="168" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">m0</text>
-<rect x="24" y="224" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="80" y="224" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="136" y="224" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">m0</text>
-<rect x="192" y="224" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">m0</text>
-</g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.583333;0.666667" values="hidden;visible;hidden"/>
-<text x="24" y="42" font-size="13">cycle 3  stream</text>
-<rect x="24" y="56" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="80" y="56" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="136" y="56" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="192" y="56" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="24" y="112" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="80" y="112" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="136" y="112" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="192" y="112" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="24" y="168" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="80" y="168" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="136" y="168" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="192" y="168" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="24" y="224" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="80" y="224" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="136" y="224" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">m1</text>
-<rect x="192" y="224" width="56" height="56" fill="hsl(148, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">m1</text>
-</g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.666667;0.750000" values="hidden;visible;hidden"/>
-<text x="24" y="42" font-size="13">cycle 4  stream</text>
-<rect x="24" y="56" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="80" y="56" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="136" y="56" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="192" y="56" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="24" y="112" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="80" y="112" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="136" y="112" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="192" y="112" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="24" y="168" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="80" y="168" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="136" y="168" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="192" y="168" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="24" y="224" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="80" y="224" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="136" y="224" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">m2</text>
-<rect x="192" y="224" width="56" height="56" fill="hsl(195, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">m2</text>
-</g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.750000;0.833333" values="hidden;visible;hidden"/>
-<text x="24" y="42" font-size="13">cycle 5  stream</text>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.588235;0.647059" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 6  stream</text>
 <rect x="24" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">.</text>
 <rect x="80" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">.</text>
-<rect x="136" y="56" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="192" y="56" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">m4</text>
+<rect x="136" y="56" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="192" y="56" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="24" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="112" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="136" y="112" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="192" y="112" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="24" y="168" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="80" y="168" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="136" y="168" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="192" y="168" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="24" y="224" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="80" y="224" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="136" y="224" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">m0</text>
+<rect x="192" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+</g>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.647059;0.705882" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 7  stream</text>
+<rect x="24" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="56" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">m3</text>
 <rect x="24" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">.</text>
 <rect x="80" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">.</text>
-<rect x="136" y="112" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="192" y="112" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="24" y="168" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="80" y="168" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="136" y="168" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="192" y="168" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="24" y="224" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="80" y="224" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="136" y="224" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">m3</text>
-<rect x="192" y="224" width="56" height="56" fill="hsl(242, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="136" y="112" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="192" y="112" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="24" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="168" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="136" y="168" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="192" y="168" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="24" y="224" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="80" y="224" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="136" y="224" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">m1</text>
+<rect x="192" y="224" width="56" height="56" fill="hsl(100, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">m0</text>
 </g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.833333;0.916667" values="hidden;visible;hidden"/>
-<text x="24" y="42" font-size="13">cycle 6  stream</text>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.705882;0.764706" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 8  stream</text>
+<rect x="24" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="112" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="24" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="168" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="192" y="168" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="24" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="224" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="136" y="224" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">m2</text>
+<rect x="192" y="224" width="56" height="56" fill="hsl(163, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">m1</text>
+</g>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.764706;0.823529" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 9  stream</text>
 <rect x="24" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">.</text>
 <rect x="80" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">.</text>
 <rect x="136" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">.</text>
@@ -203,15 +260,53 @@
 <rect x="192" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">.</text>
 <rect x="24" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">.</text>
 <rect x="80" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">.</text>
-<rect x="136" y="168" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="192" y="168" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">m4</text>
+<rect x="136" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="168" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">m3</text>
 <rect x="24" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">.</text>
 <rect x="80" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">.</text>
-<rect x="136" y="224" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">m4</text>
-<rect x="192" y="224" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">m4</text>
+<rect x="136" y="224" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">m3</text>
+<rect x="192" y="224" width="56" height="56" fill="hsl(227, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">m2</text>
 </g>
-<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="9.60s" repeatCount="indefinite" keyTimes="0;0.916667;1.000000" values="hidden;visible;hidden"/>
-<text x="24" y="42" font-size="13">cycle 7  stream</text>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.823529;0.882353" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 10  stream</text>
+<rect x="24" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="224" width="56" height="56" fill="hsl(290, 60%, 66%)" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">m3</text>
+</g>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.882353;0.941176" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 11  stream</text>
+<rect x="24" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="88.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="112" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="144.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="168" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="200.0" font-size="12" text-anchor="middle">.</text>
+<rect x="24" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="80" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="136" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+<rect x="192" y="224" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="220.0" y="256.0" font-size="12" text-anchor="middle">.</text>
+</g>
+<g visibility="hidden"><animate attributeName="visibility" calcMode="discrete" dur="13.60s" repeatCount="indefinite" keyTimes="0;0.941176;1.000000" values="hidden;visible;hidden"/>
+<text x="24" y="42" font-size="13">cycle 12  stream</text>
 <rect x="24" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="52.0" y="88.0" font-size="12" text-anchor="middle">.</text>
 <rect x="80" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="108.0" y="88.0" font-size="12" text-anchor="middle">.</text>
 <rect x="136" y="56" width="56" height="56" fill="#f2f2f2" stroke="#999" stroke-width="0.5"/><text x="164.0" y="88.0" font-size="12" text-anchor="middle">.</text>
@@ -236,5 +331,5 @@
 <line x1="136" y1="56" x2="136" y2="280" stroke="black" stroke-width="2"/>
 <line x1="248" y1="56" x2="248" y2="280" stroke="black" stroke-width="2"/>
 <text x="24" y="304" font-size="12">mN: the element meeting at that PE (one colour per wavefront)</text>
-<text x="24" y="320" font-size="12">thick lines: PEArray boundaries, where the pipeline registers sit</text>
+<text x="24" y="320" font-size="12">cN: a result moving north; thick lines: PEArray boundaries (every PE link is registered)</text>
 </svg>

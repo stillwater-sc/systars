@@ -3,8 +3,8 @@
 This document explains the wavefront data flow pattern in systolic arrays and how to use the visualization tools to understand and share these concepts.
 
 > The visualization tools below animate a Python model of a textbook array, where each PE is its
-> own pipeline stage. The generated RTL registers only at PEArray boundaries. For animations of
-> the RTL itself, checked against the predicted wavefront, see
+> own pipeline stage, as it is in the generated RTL (every PE link is registered). For animations
+> of the RTL itself, checked against the predicted wavefront, see
 > [Wavefronts from the RTL](#wavefronts-from-the-rtl).
 
 ## Table of Contents
@@ -364,26 +364,28 @@ termtosvg -c "python examples/gemm/02_animated_wavefront.py --size 3"
 
 ## Wavefronts from the RTL
 
-`systars.wavefront` runs the `SystolicArray` RTL in simulation and records what every PE sees in
-every cycle. It checks every PE in every stream cycle against the predicted wavefront, along with
-when `out_last` fires and the result (the preload and drain frames are drawn, not checked cycle by
-cycle):
+`systars.wavefront` runs the `SystolicArray` RTL in simulation, driven as the L1 stream buffers
+drive it, and records what every PE holds in every cycle. It checks every PE in every stream
+cycle against the predicted wavefront, the clock each OS result leaves the north edge, and the
+result (the preload frames are drawn, not checked):
 
-- output-stationary: A[i, k] meets B[k, j] at PE(i, j) in cycle `k + ti + tj`, where `ti` and
-  `tj` are the PEArray row and column;
-- weight-stationary: row m of A meets W[r, j] at PE(r, j) in cycle `m + ti + tj`, with the
-  partial sum `A[m, :r] @ W[:r, j]`.
+- output-stationary: A[i, k] meets B[k, j] at PE(i, j) in cycle `1 + i + j + k`; PE(i, j)'s
+  result leaves the north edge of column `j` in cycle `K + j + 2i`;
+- stationary (WS; IS is the same fabric mode): element m of the stream meets W[r, j] at
+  PE(r, j) in cycle `1 + r + j + m`, with the partial sum `A[m, :r+1] @ W[:r+1, j]`.
 
 Each cell shows which element is meeting there, read back from the RTL's own values: `kN`
-(output-stationary) or `mN` (weight-stationary). A cell where A and B disagree would show `X`.
-Thick lines are PEArray boundaries, where the pipeline registers sit. Because data passes
-combinationally inside a PEArray, the wavefront advances one PEArray per cycle, not one PE.
+(output-stationary) or `mN` (stationary), and `cN` for a result moving north. A cell where A
+and B disagree would show `X`. Thick lines are PEArray boundaries, which are structural only:
+every PE link is registered, so the wavefront advances one PE per cycle, across PEArray
+boundaries as inside them.
 
-Output-stationary, 2x2 grid of 2x2 PEArrays, K = 4, then the results draining down the columns:
+Output-stationary, 2x2 grid of 2x2 PEArrays, K = 4, then the results moving north, each
+column's results leaving the north edge every other cycle:
 
 ![Output-stationary wavefront](rtl-wavefront-os.svg)
 
-Weight-stationary, same array, 5 rows of A, after the weights shift in:
+Stationary (WS), same array, 4 rows of A, after the weights shift in:
 
 ![Weight-stationary wavefront](rtl-wavefront-ws.svg)
 

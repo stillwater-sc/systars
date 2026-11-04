@@ -48,6 +48,7 @@ class DmaOpcode(IntEnum):
     FILL = 0x01  # Fill dst with pattern from src field
     GATHER = 0x02  # Gather scattered elements to contiguous dst
     SCATTER = 0x03  # Scatter contiguous src to scattered locations
+    TRANSPOSE = 0x04  # MEMCPY with a corner turn: the tile's rows become its columns
 
     # Data integrity operations
     CRC32 = 0x10  # Compute CRC32 over src region

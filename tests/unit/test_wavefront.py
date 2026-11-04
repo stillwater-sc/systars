@@ -1,15 +1,15 @@
 """
 Tests for the RTL wavefront trace: the SystolicArray's per-PE, per-cycle
-behaviour matches the predicted wavefront, a skew bug is caught, and the
-renderings are well formed.
+behaviour matches the predicted wavefront (one PE per cycle, the OS results
+draining north), a stagger bug is caught, and the renderings are well formed.
 """
 
 import xml.etree.ElementTree as ET
 
 import pytest
 
+from systars import wavefront
 from systars.config import SystolicConfig
-from systars.core import systolic_array
 from systars.wavefront import OS, WS, label_operands, record, render_svg, render_text
 
 SHAPES = [
@@ -41,31 +41,36 @@ def test_rtl_matches_the_predicted_wavefront(shape, dataflow):
     assert meetings == trace.rows * trace.cols * 4
 
 
-def test_wavefront_moves_one_pearray_per_cycle():
-    """Inside a PEArray everything is combinational: a whole PEArray holds the same k."""
+def test_wavefront_moves_one_pe_per_cycle():
+    """Every link is registered: PEArray boundaries make no difference to the timing."""
     cfg = config((2, 2, 2, 2))
     A, B = label_operands(cfg, OS, 3)
     trace = record(cfg, OS, A, B)
-    first = next(f for f in trace.frames if f.phase == "stream" and f.cycle == 1)
-    ks = [[trace.decode(first, i, j)[0] for j in range(4)] for i in range(4)]
-    assert ks == [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, None, None], [0, 0, None, None]]
+    frame = next(f for f in trace.frames if f.phase == "stream" and f.cycle == 3)
+    ks = [[trace.decode(frame, i, j)[0] for j in range(4)] for i in range(4)]
+    # PE(i, j) holds k = 3 - 1 - i - j
+    assert ks == [[2, 1, 0, None], [1, 0, None, None], [0, None, None, None], [None] * 4]
 
 
-def test_a_skew_bug_is_caught(monkeypatch):
-    """Delaying the B lanes of one PEArray column by an extra cycle breaks the wavefront."""
-    real = systolic_array._delayed
+def test_results_drain_north_every_other_cycle():
+    cfg = config((4, 4, 1, 1))
+    A, B = label_operands(cfg, OS, 2)
+    trace = record(cfg, OS, A, B)
+    column_0 = sorted(t for (i, j), t in trace.result_clocks.items() if j == 0)
+    assert column_0 == [2 + 2 * i for i in range(4)]
+    drain = [f for f in trace.frames if f.c_valid.any()]
+    assert "c" in render_text(trace) and drain
 
-    def late_b(m, value, cycles, name):
-        if name.startswith("skew_b_") and cycles:
-            cycles += 1
-        return real(m, value, cycles, name)
 
-    monkeypatch.setattr(systolic_array, "_delayed", late_b)
+def test_a_stagger_bug_is_caught(monkeypatch):
+    """Starting one lane's stream a cycle late breaks the wavefront."""
+    real = wavefront.stream_start
+    monkeypatch.setattr(wavefront, "stream_start", lambda lane: real(lane) + (lane == 1))
     cfg = config((2, 2, 1, 1))
     A, B = label_operands(cfg, OS, 3)
     trace = record(cfg, OS, A, B)
     problems = trace.check()
-    assert any("expected A[" in p for p in problems)
+    assert any("expected" in p for p in problems)
     assert "result differs from A @ B" in problems
     assert "X" in render_text(trace)  # the mismatching PEs are flagged
 
@@ -95,21 +100,16 @@ def test_zero_length_run_terminates(dataflow):
     A, B = label_operands(cfg, dataflow, 0)
     trace = record(cfg, dataflow, A, B)
     assert trace.check() == []
-    assert trace.C.shape == ((0, 2) if dataflow == WS else (2, 2))
+    assert trace.C.shape == (0, 2)
 
 
-def test_lost_last_is_reported_not_hung(monkeypatch):
-    """If out_last never reaches the output, recording still ends and check() says so."""
-    from amaranth import Const
-
-    real = systolic_array._delayed
-
-    def drop_last(m, value, cycles, name):
-        out = real(m, value, cycles, name)
-        return Const(0) if name.startswith("last_") else out
-
-    monkeypatch.setattr(systolic_array, "_delayed", drop_last)
+def test_a_lost_last_marker_is_reported_not_hung(monkeypatch):
+    """Without the last marker no PE launches its result: recording still ends, and
+    check() reports the missing results."""
+    real = wavefront.stream_start
+    # Start row 0 so late that its last element never arrives in the recorded window
+    monkeypatch.setattr(wavefront, "stream_start", lambda lane: real(lane) + 100 * (lane == 0))
     cfg = config((2, 2, 1, 1))
     A, B = label_operands(cfg, OS, 3)
     problems = record(cfg, OS, A, B).check()
-    assert any(p.startswith("out_last in stream cycles []") for p in problems)
+    assert any("wrong clocks" in p for p in problems)

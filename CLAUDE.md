@@ -69,16 +69,17 @@ The architecture follows a hierarchical design:
 PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) → Top-level accelerator
 ```
 
-- **PE (`core/pe.py`)**: The MAC unit. Two dataflows, selected at run time by `in_control_dataflow`:
-  - Output-stationary (0): `c += a * b` while `in_valid`; A and B pass through combinationally. Results leave by shifting down the column (`in_shift`, `in_d` -> `out_c`), bottom row first
-  - Weight-stationary (1): a weight register `w`, loaded through the same shift chain; A flows right and partial sums flow down: `out_psum = in_psum + a * w`
-  - No pass-through registers: pipeline registers sit only at PEArray boundaries
+- **PE (`core/pe.py`)**: The MAC unit, with an input register on every link, so values move one PE per clock: A east (with `valid`/`first`/`last` markers), B and partial sums south, OS results north. Two modes, selected at run time by `in_control_dataflow`:
+  - Output-stationary (0): `c += a * b`; `first` overwrites, so a reduction may span commands. On `last` the PE launches `c + a * b` north into the `c_up` register of the PE above it
+  - Stationary (1; WS and IS): a stationary register `w`, loaded through a registered chain down each column (`in_shift`, `in_w` -> `out_w`); the streamed operand moves east and `out_psum = in_psum + a * w` moves south
 
-- **PEArray (`core/pe_array.py`)**: Combinational grid of PEs (tile_rows × tile_cols). Data flows directly between adjacent PEs without pipeline registers.
+- **PEArray (`core/pe_array.py`)**: A structural block of PEs (tile_rows × tile_cols). Every PE link is registered, so PEArray boundaries make no difference to the timing.
 
-- **SystolicArray (`core/systolic_array.py`)**: Pipelined grid of PEArrays (grid_rows × grid_cols). Every signal crossing a PEArray boundary passes through exactly one register. The array skews its own inputs and deskews its outputs, so callers present unskewed A/B vectors; `latency = (grid_rows - 1) + (grid_cols - 1)`.
+- **SystolicArray (`core/systolic_array.py`)**: Grid of PEArrays (grid_rows × grid_cols); it scales from 8x8 up to 64x64 PEs. The array has no skew or deskew registers: the L1 stream buffers stagger the streams, and the L1 result buffers turn result columns back into rows. Per-edge result clocks: `os_result_clock`, `stationary_result_clock`.
 
-- **ExecuteController (`controller/execute.py`)**: Streams A and B from the scratchpad's two read ports into the array and writes result rows to the accumulator. The command semantics (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE; OS and WS operand layouts) are in its module docstring.
+- **L1 (`memory/stream_buffer.py`)**: `StreamBuffers` (one block per array row or column, one credit each; a buffer takes the next block in the clock its last element leaves) and `ResultBuffers` (one FIFO per column).
+
+- **ExecuteController (`controller/execute.py`)**: The Streamer. It reads L2 (the scratchpad's two read ports) into L1 on schedule and never stalls: with `K >= R, C` tiles stream back to back, and a reduction's end waits for the OS north drain (`2R - 1` clocks between reductions). It reports each command's L2 release (`completed`, once its last block is in L1) and its result (`result`) separately. The command semantics (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE; `cmd_chain`; OS, WS and IS operand layouts) are in its module docstring.
 
 - **Config (`config.py`)**: Central `SystolicConfig` dataclass with all hardware parameters. Pre-defined configs: `DEFAULT_CONFIG`, `LEAN_CONFIG`, `CHIP_CONFIG`, `LARGE_CONFIG`
 
@@ -89,15 +90,17 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 - Load/Execute/Store controllers, DMA engines (StreamReader/StreamWriter), and `SystolicTop`,
   which computes a verified GEMM end to end (`tests/unit/test_gemm_systolic.py`)
 - `SystolicTop` is a systolic KPU compute tile following kpu-sim's CSP model: AXI = L3,
-  scratchpad = L2, array edge registers = L1; LOAD/STORE are the BlockMover (L3 <-> L2) and
+  scratchpad = L2, the stream and result buffers at the array's edges = L1; LOAD/STORE are the BlockMover (L3 <-> L2) and
   the execute controller is the Streamer (L2 -> L1). A LOAD or STORE moves a whole tile from
-  or to any byte address (`cmd_stride`, `cmd_row_bytes`; `tests/unit/test_block_mover.py`).
+  or to any byte address (`cmd_stride`, `cmd_row_bytes`; `tests/unit/test_block_mover.py`),
+  with a corner turn when its opcode is `DmaOpcode.TRANSPOSE`.
   Use KPU/CSP terms (credits, push, tile-ready tokens), never cache terminology
 - Credits and tile-ready tokens (`controller/sync.py`): `SystolicTop` queues each process's
   commands and starts one only when its whole-tile slot credits and tokens are there
   (`cmd_sync`; `tests/unit/test_credits.py`)
 - Matmul and Conv2d ISA instructions (`isa/`): tile an operation larger than the array and
-  push `SystolicTop` commands ahead, double-buffered (`isa/command.py`); see
+  push `SystolicTop` commands ahead, double-buffered (`isa/command.py`); Matmul runs OS, WS
+  or IS (`CONFIG_DATAFLOW`) and Conv2d runs OS; see
   `docs/isa-instructions.md`
 
 ### Planned Components (see docs/plan/implementation.md)

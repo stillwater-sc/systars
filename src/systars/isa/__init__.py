@@ -9,8 +9,11 @@ by credits and tile-ready tokens (``controller/sync.py``):
     Matmul: C = A @ B
     Conv2d: Y = conv2d(X, F), as an implicit GEMM
 
-Both run weight-stationary. Both check at START that the DMA can move every row
-they load or store; see their modules for the layouts this allows today.
+Matmul runs output-, weight- or input-stationary (``CONFIG_DATAFLOW``; OS by
+default when the array has it); Conv2d runs output-stationary. The BlockMover's
+corner turns lay each tile out in L2 as the Streamer streams it. Both check at
+START that the DMA can move every row they load or store; see their modules for
+the layouts this allows.
 """
 
 from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, command_ports, connect_to_top

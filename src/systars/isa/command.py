@@ -16,13 +16,15 @@ has completed (``cmd_store_completed``): its results are in L3.
 ``TileBuffers`` is the instruction's buffer schedule: ``buffers`` A tile slots and
 ``buffers`` B tile slots in L2, and ``buffers`` accumulator slots, used in ring
 order. Two buffers let the BlockMover fill the next tile's slot while the Streamer
-works on the current one; one serializes them.
+works on the current one; one serializes them. An OS COMPUTE reads both tiles of
+its pair, so OS tracks the pair with the A slot's credit alone: the A tile's LOAD
+takes it and the B tile's LOAD emits its token.
 
 Issuing in program order cannot deadlock: every credit a command waits for is
 returned by a command issued before it.
 """
 
-from amaranth import Module, Mux, Signal
+from amaranth import Cat, Module, Mux, Signal
 from amaranth.lib.wiring import In, Out
 
 from ..config import SystolicConfig
@@ -45,6 +47,7 @@ _FIELDS = {
     "rd": 32,
     "k_dim": 16,
     "activation": 4,
+    "chain": 2,
     "sync": Sync.BITS,
 }
 
@@ -169,16 +172,25 @@ class TileBuffers:
         """LOAD into ``slot``: the credit on the tile's first command, the token on its last."""
         return Sync.encode(dst=slot, acquire=first, signal=last)
 
-    def preload(self):
-        """PRELOAD: waits for the B tile, returns its credit once the weights are in."""
-        return Sync.encode(src=self.b_slot, wait=True, release=True)
+    def preload(self, slot=None):
+        """PRELOAD: waits for the stationary tile (default: B), returns its credit once
+        it is in the fabric."""
+        slot = self.b_slot if slot is None else slot
+        return Sync.encode(src=slot, wait=True, release=True)
 
-    def compute(self, first_k, last_k):
-        """COMPUTE: consumes the A tile; fills the accumulator tile across the K steps."""
+    def compute(self, first_k, last_k, slot=None):
+        """COMPUTE: consumes the streamed tile (default: A); fills the accumulator
+        tile across the K steps."""
+        slot = self.a_slot if slot is None else slot
         return Sync.encode(
-            src=self.a_slot, wait=True, release=True,
+            src=slot, wait=True, release=True,
             dst=self.acc_slot, acquire=first_k, signal=last_k,
         )  # fmt: skip
+
+    @staticmethod
+    def chain(first_k, last_k):
+        """``cmd_chain`` of an OS COMPUTE: one reduction across the K tiles."""
+        return Cat(~first_k, ~last_k)
 
     def store(self):
         """STORE: waits for the result token, returns the accumulator credit."""

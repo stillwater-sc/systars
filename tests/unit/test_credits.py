@@ -4,8 +4,11 @@ Credits and tile-ready tokens (controller/sync.py, SystolicTop's command queues)
 - ``SlotPool`` on its own: the FREE -> OWNED -> READY -> FREE cycle, and the sticky
   protocol error.
 - Matmul and Conv2d on a real ``SystolicTop``, with a monitor that replays the
-  observable events (commands pushed, ``*_started``, ``*_completed``) through an
-  independent slot model, every cycle:
+  observable events (commands pushed, ``*_started``, ``*_completed``, and the
+  Streamer's ``exec_result``) through an independent slot model, every cycle. The
+  Streamer has several commands in flight: each returns its L2 credit on its
+  completion (its last block is in L1) and emits its result token on its result,
+  matched by command ID:
   - credit conservation: the slot state bits always match the model, so every slot
     is in exactly one state and credits plus occupied slots equal capacity;
   - no tile is consumed before its TILE_READY, and no credit is taken twice;
@@ -37,7 +40,9 @@ from ._sim import run_sim
 from .test_conv2d import F_ADDR, X_ADDR, Y_ADDR, ZERO_ADDR, reference
 from .test_conv2d import setup as conv_setup
 
-FREE, OWNED, READY = SlotState.FREE, SlotState.OWNED, SlotState.READY
+FREE, OWNED, READY, READING = (
+    SlotState.FREE, SlotState.OWNED, SlotState.READY, SlotState.READING,
+)  # fmt: skip
 
 
 # =============================================================================
@@ -116,28 +121,33 @@ class Monitor:
         self.produces = {CTRL_LOAD: "l2", CTRL_EXEC: "acc"}
         self.consumes = {CTRL_EXEC: "l2", CTRL_STORE: "acc"}
         self.queued = {t: deque() for t in PROCESSES}
-        self.inflight = dict.fromkeys(PROCESSES)
-        self.active = dict.fromkeys(PROCESSES, False)
+        self.inflight = {t: {} for t in PROCESSES}  # command ID -> cmd_sync
+        self.awaiting_result = {}  # Streamer: command ID -> cmd_sync, until its result
         self.cycles = 0
         self.overlap = 0  # cycles with the BlockMover's LOAD and the Streamer both running
 
     def signals(self, top):
         sigs = [top.cmd_valid, top.cmd_ready, top.cmd_type, top.cmd_sync]
         for name in PROCESSES.values():
-            sigs += [getattr(top, f"{name}_started"), getattr(top, f"{name}_completed")]
-        return [*sigs, top.l2_free, top.l2_ready, top.acc_free, top.acc_ready, top.sync_error]
+            sigs += [getattr(top, f"{name}_started"), getattr(top, f"{name}_started_id"),
+                     getattr(top, f"{name}_completed"), getattr(top, f"{name}_completed_id")]  # fmt: skip
+        sigs += [top.exec_result, top.exec_result_id]
+        return [*sigs, top.l2_free, top.l2_ready, top.acc_free, top.acc_ready, top.sync_error,
+                top.l1_error]  # fmt: skip
 
     def check_state(self, name, free, ready):
         for s, expected in enumerate(self.pools[name]):
             bits = (free >> s & 1, ready >> s & 1)
-            assert bits == {FREE: (1, 0), OWNED: (0, 0), READY: (0, 1)}[expected], (
-                f"cycle {self.cycles}: {name} slot {s} is {bits} (free, ready), model {expected}"
-            )
+            assert (
+                bits == {FREE: (1, 0), OWNED: (0, 0), READY: (0, 1), READING: (0, 0)}[expected]
+            ), f"cycle {self.cycles}: {name} slot {s} is {bits} (free, ready), model {expected}"
 
     def step(self, values):
         valid, ready, ctype, sync, *rest = values
-        events, (l2_free, l2_ready, acc_free, acc_ready, error) = rest[:6], rest[6:]
+        events, (result, result_id), state = rest[:12], rest[12:14], rest[14:]
+        l2_free, l2_ready, acc_free, acc_ready, error, l1_error = state
         assert not error, f"cycle {self.cycles}: protocol error"
+        assert not l1_error, f"cycle {self.cycles}: L1 schedule or protocol error"
         # The state this cycle reflects every earlier cycle's events
         self.check_state("l2", l2_free, l2_ready)
         self.check_state("acc", acc_free, acc_ready)
@@ -146,7 +156,7 @@ class Monitor:
 
         moves = []
         for i, t in enumerate(PROCESSES):
-            started, completed = events[2 * i], events[2 * i + 1]
+            started, started_id, completed, completed_id = events[4 * i : 4 * i + 4]
             if started:
                 s = self.queued[t].popleft()
                 src, dst = s & 0xF, s >> Sync.DST & 0xF
@@ -155,24 +165,29 @@ class Monitor:
                     assert pool[src] == READY, (
                         f"cycle {self.cycles}: {PROCESSES[t]} started before slot {src}'s token"
                     )
+                    if s & Sync.RELEASE:  # the consumer takes the token
+                        moves.append((self.consumes[t], src, READY, READING))
                 if s & Sync.ACQUIRE:
                     moves.append((self.produces[t], dst, FREE, OWNED))
-                self.inflight[t] = s
-                self.active[t] = True
+                assert started_id not in self.inflight[t], f"cycle {self.cycles}: ID reused"
+                self.inflight[t][started_id] = s
             if completed:
-                s = self.inflight[t]
+                s = self.inflight[t].pop(completed_id, None)
                 assert s is not None, f"cycle {self.cycles}: {PROCESSES[t]} completed unstarted"
                 src, dst = s & 0xF, s >> Sync.DST & 0xF
                 if s & Sync.RELEASE:
-                    moves.append((self.consumes[t], src, READY, FREE))
-                if s & Sync.SIGNAL:
+                    moves.append((self.consumes[t], src, READING if s & Sync.WAIT else READY, FREE))
+                if t == CTRL_EXEC:
+                    self.awaiting_result[completed_id] = s
+                elif s & Sync.SIGNAL:
                     moves.append((self.produces[t], dst, OWNED, READY))
-                self.inflight[t] = None
-        if self.active[CTRL_LOAD] and self.active[CTRL_EXEC]:
+        if result:
+            s = self.awaiting_result.pop(result_id, None)
+            assert s is not None, f"cycle {self.cycles}: a result for no command"
+            if s & Sync.SIGNAL:
+                moves.append(("acc", s >> Sync.DST & 0xF, OWNED, READY))
+        if self.inflight[CTRL_LOAD] and self.inflight[CTRL_EXEC]:
             self.overlap += 1
-        for t in PROCESSES:
-            if events[2 * list(PROCESSES).index(t) + 1]:
-                self.active[t] = False
         for pool, slot, frm, to in moves:
             assert self.pools[pool][slot] == frm, (
                 f"cycle {self.cycles}: {pool} slot {slot} is {self.pools[pool][slot]}, not {frm}"
@@ -268,12 +283,14 @@ class TestMatmul:
         C2, two = matmul_on_top(*self.SHAPE, buffers=2)
         np.testing.assert_array_equal(C1, C2)  # bit-identical to the serialized run
         # With one slot per operand a LOAD into the A slot waits for the COMPUTE
-        # that reads it; with two, the next K tile's tiles load during the COMPUTE
-        assert two.overlap > one.overlap
-        # Measured 1091 -> 686 cycles (0.63x): the run is bound by data movement, so
-        # hiding the LOADs behind the COMPUTEs is most of the gain
-        assert two.overlap > 0.3 * two.cycles and one.overlap < 0.01 * one.cycles
-        assert two.cycles < 0.7 * one.cycles, (one.cycles, two.cycles)
+        # that reads it; with two, the next K tile's tiles load while the Streamer
+        # still has the current ones in flight
+        assert two.overlap > one.overlap == 0
+        # Measured (OS, the default): 907 -> 744 cycles. The Streamer returns a
+        # tile's L2 credit once its last block is in L1, a few clocks after it
+        # starts, so even one buffer overlaps most of the next LOAD; the run is
+        # bound by the BlockMover's L3 traffic (WS and IS measure the same)
+        assert two.cycles < 0.85 * one.cycles, (one.cycles, two.cycles)
 
     @pytest.mark.parametrize("buffers", [1, 2])
     def test_l3_backpressure_does_not_change_values(self, buffers):

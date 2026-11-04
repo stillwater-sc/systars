@@ -5,8 +5,9 @@ RTL Wavefront Animation.
 Runs the real SystolicArray RTL in Amaranth simulation, records what every PE
 sees in every cycle, checks it against the predicted wavefront, and draws it.
 Unlike 02/03 (a Python model of a textbook array), this is the generated
-hardware: inside a PEArray data passes combinationally, so the wavefront
-advances one PEArray per cycle.
+hardware: every PE registers its inputs, so the wavefront advances one PE per
+cycle (driven as the L1 stream buffers drive it, each lane one cycle after the
+last), and in output-stationary mode the results then drain north (``cN``).
 
 Each cell shows which element is meeting at that PE, read back from the RTL's
 own values: ``kN`` (output-stationary: A[i, N] meets B[N, j]) or ``mN``
@@ -67,9 +68,11 @@ def main():
         sys.exit(1)
     checked = sum(1 for f in trace.frames if f.phase == "stream")
     print(
-        f"RTL matches the predicted wavefront in all {checked} stream cycles "
-        f"(out_last on time), and C == A @ B. "
-        f"({len(trace.frames) - checked} preload/drain frames are drawn, not checked.)"
+        f"RTL matches the predicted wavefront in all {checked} stream cycles"
+        f"{' (every result left the north edge on time)' if trace.dataflow == OS else ''}"
+        f", and C == A @ B. "
+        f"({len(trace.frames) - checked} preload/drain frames are drawn, not checked "
+        f"cycle by cycle.)"
     )
 
 

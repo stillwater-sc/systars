@@ -4,11 +4,13 @@ ISA-Level Matmul Instruction Demo.
 
 The Matmul instruction takes a high-level description (dimensions, addresses,
 strides), tiles the multiply for the array, and issues the commands a host would
-issue to the systolic tile: CONFIG, then per tile LOAD A, LOAD B, PRELOAD, COMPUTE,
-and STORE C. A LOAD or STORE moves a whole tile (the tile's BlockMover: rows from
-or to any byte address, ``stride`` bytes apart, ``row_bytes`` each). Each command
-names its target controller and that controller's own opcode, and is issued only
-after the previous one completed.
+issue to the systolic tile. It runs output-stationary here (the default when the
+array has OS): CONFIG, then per K tile LOAD A (row-major), LOAD B (corner-turned,
+column-major) and one COMPUTE, the K tiles of a C tile chained into one reduction
+held in the PEs, and STORE C. A LOAD or STORE moves a whole tile (the tile's
+BlockMover: rows from or to any byte address, ``stride`` bytes apart, ``row_bytes``
+each). Each command names its target controller and that controller's own opcode,
+and is pushed ahead: credits and tile-ready tokens order them in the tile.
 
 Here a stand-in controller accepts and completes every command, and the demo
 prints the command stream and checks its shape against the tiling.
@@ -138,6 +140,7 @@ def run_matmul_demo(M, N, K, array_dim, verbose=True):
                 )
             else:
                 print(f"      {name:<18} rs1=0x{rs1:X} rd=0x{rd:X} k_dim={k_dim}")
+                # OS: rs2 is the B tile; the K tiles of one C tile are chained
 
     def tiles(n):
         return [min(array_dim, n - s) for s in range(0, n, array_dim)]
@@ -152,10 +155,9 @@ def run_matmul_demo(M, N, K, array_dim, verbose=True):
     }
     for _tm in tiles(M):
         for _tn in tiles(N):
-            for n, _tk in enumerate(tiles(K)):
+            for _tk in tiles(K):
                 expected["LOAD"] += 2  # the A tile (tm rows) and the B tile (tk rows)
-                expected["PRELOAD"] += 1
-                expected["COMPUTE" if n == 0 else "COMPUTE_ACCUMULATE"] += 1
+                expected["COMPUTE"] += 1  # OS: one per K tile, chained (no PRELOAD)
             expected["STORE"] += 1  # the C tile (tm rows)
     actual = {name: sum(1 for t in trace if t[0] == name) for name in expected}
 

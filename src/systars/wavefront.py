@@ -1,22 +1,25 @@
 """
 Wavefront tracing of the systolic array RTL.
 
-Runs the real ``SystolicArray`` in Amaranth simulation, records what every PE
-sees in every cycle, and checks it against the wavefront the design promises:
+Runs the real ``SystolicArray`` in Amaranth simulation, driven the way the L1
+stream buffers drive it (row ``i``'s stream starts one clock after row ``i - 1``'s,
+column ``j``'s one after column ``j - 1``'s), records what every PE holds in every
+cycle, and checks it against the wavefront the design promises. Every PE registers
+its inputs, so the wavefront advances one PE per cycle in every direction:
 
 - Output-stationary: A[i, k] and B[k, j] meet at PE(i, j) in cycle
-  ``k + ti + tj`` (``ti = i // tile_rows``, ``tj = j // tile_cols``, the PEArray
-  row and column), with ``valid``. Inside a PEArray data passes combinationally,
-  so the wavefront advances one PEArray per cycle, not one PE.
-- Weight-stationary: row m of A meets W[r, j] at PE(r, j) in cycle
-  ``m + ti + tj``, and the partial sum arriving there is
-  ``A[m, :r] @ W[:r, j]``.
+  ``1 + i + j + k``, with ``valid``. After the last product the results move north,
+  one PE per cycle: PE(i, j)'s result leaves the north edge of column ``j`` in cycle
+  ``K + j + 2 i`` (``SystolicArray.os_result_clock``).
+- Stationary (WS; IS is the same fabric mode): element ``m`` of the stream meets
+  W[r, j] at PE(r, j) in cycle ``1 + r + j + m``, and the partial sum it leaves with
+  is ``A[m, :r+1] @ W[:r+1, j]``.
 
 ``label_operands`` builds operands whose values say which element they are,
 so the recorded frames can show, from the RTL's own values, which ``k`` (OS)
 or ``m`` (WS) each PE is working on, and flag a PE whose A and B disagree.
 ``render_text`` and ``render_svg`` draw the frames, with the PEArray boundaries
-(where the pipeline registers sit) marked.
+(structural only) marked.
 """
 
 from __future__ import annotations
@@ -34,19 +37,25 @@ from .core.systolic_array import SystolicArray
 OS, WS = OUTPUT_STATIONARY, WEIGHT_STATIONARY
 
 
+def stream_start(lane: int) -> int:
+    """The clock lane ``lane``'s stream starts (the L1 stream buffers' stagger)."""
+    return lane
+
+
 @dataclass
 class Frame:
-    """What every PE sees in one cycle (arrays are rows x cols)."""
+    """What every PE holds in one cycle (arrays are rows x cols)."""
 
     cycle: int
-    phase: str  # "preload" (WS weights), "stream", or "drain" (OS results)
+    phase: str  # "preload" (WS weights), "stream", or "drain" (OS results moving north)
     valid: np.ndarray
     shift: np.ndarray
     a: np.ndarray
     b: np.ndarray
-    psum_in: np.ndarray
     psum_out: np.ndarray
-    chain: np.ndarray  # the shift-chain register: c (OS) or w (WS)
+    w: np.ndarray  # the stationary register
+    c: np.ndarray  # the OS result each PE sends north this cycle
+    c_valid: np.ndarray
 
 
 @dataclass
@@ -59,8 +68,7 @@ class Trace:
     B: np.ndarray
     C: np.ndarray  # the result as the RTL produced it
     frames: list[Frame] = field(default_factory=list)
-    latency: int = 0  # SystolicArray.latency
-    last_cycles: list[int] = field(default_factory=list)  # stream cycles with out_last high
+    result_clocks: dict = field(default_factory=dict)  # (row, col) -> cycle (OS)
 
     @property
     def rows(self) -> int:
@@ -70,32 +78,26 @@ class Trace:
     def cols(self) -> int:
         return self.config.grid_cols * self.config.tile_cols
 
-    def offset(self, i: int, j: int) -> int:
-        """Pipeline registers between the array inputs and PE(i, j)."""
-        return i // self.config.tile_rows + j // self.config.tile_cols
+    @property
+    def length(self) -> int:
+        """K (OS) or M (WS): the stream length."""
+        return self.A.shape[1] if self.dataflow == OS else self.A.shape[0]
 
     def expected_index(self, frame: Frame, i: int, j: int) -> int | None:
         """The k (OS) or m (WS) that should be at PE(i, j) in ``frame``, if any."""
         if frame.phase != "stream":
             return None
-        n = self.A.shape[1] if self.dataflow == OS else self.A.shape[0]
-        index = frame.cycle - self.offset(i, j)
-        return index if 0 <= index < n else None
+        index = frame.cycle - 1 - i - j
+        return index if 0 <= index < self.length else None
 
     def check(self) -> list[str]:
         """Every place the RTL departs from the predicted wavefront (empty: correct).
 
-        Checks every PE in every stream cycle, when ``out_last`` fired, and the result.
-        Preload and drain frames are recorded for drawing but not checked cycle by cycle.
+        Checks every PE in every stream cycle, the clock each OS result leaves the
+        north edge, and the result. Preload frames are recorded for drawing only.
         """
         problems = []
         A, B = self.A, self.B
-        n = A.shape[1] if self.dataflow == OS else A.shape[0]
-        expected_last = [n - 1 + self.latency] if n else []
-        if self.last_cycles != expected_last:
-            problems.append(
-                f"out_last in stream cycles {self.last_cycles}, expected {expected_last}"
-            )
         for f in self.frames:
             if f.phase != "stream":
                 continue
@@ -117,17 +119,29 @@ class Trace:
                                 f"A[{i},{idx}]={A[i, idx]} B[{idx},{j}]={B[idx, j]}"
                             )
                     else:
-                        psum = int(A[idx, :i] @ B[:i, j])
+                        psum = int(A[idx, : i + 1] @ B[: i + 1, j])
                         if (
                             f.a[i, j] != A[idx, i]
-                            or f.psum_in[i, j] != psum
-                            or f.chain[i, j] != B[i, j]
+                            or f.psum_out[i, j] != psum
+                            or f.w[i, j] != B[i, j]
                         ):
                             problems.append(
-                                f"{where}: a={f.a[i, j]} psum_in={f.psum_in[i, j]} w={f.chain[i, j]}, "
+                                f"{where}: a={f.a[i, j]} psum={f.psum_out[i, j]} w={f.w[i, j]}, "
                                 f"expected A[{idx},{i}]={A[idx, i]} psum={psum} W[{i},{j}]={B[i, j]}"
                             )
-        if not np.array_equal(self.C, A @ B):
+        if self.dataflow == OS and self.length:
+            expected = {
+                (i, j): SystolicArray.os_result_clock(0, self.length, i, j)
+                for i in range(self.rows)
+                for j in range(self.cols)
+            }
+            if self.result_clocks != expected:
+                missing = len(expected) - len(self.result_clocks)
+                problems.append(
+                    f"results left the north edge at the wrong clocks ({missing} missing)"
+                )
+        expected_C = A @ B if self.length else np.zeros((0, self.cols), dtype=np.int64)
+        if self.C.shape != expected_C.shape or not np.array_equal(self.C, expected_C):
             problems.append("result differs from A @ B")
         return problems
 
@@ -173,15 +187,14 @@ def label_operands(config: SystolicConfig, dataflow: int, n: int, *, seed: int =
 def record(config: SystolicConfig, dataflow: int, A, B) -> Trace:
     """Run ``A @ B`` on the RTL array and record every PE in every cycle.
 
-    OS: A is rows x K, B is K x cols. WS: A is M x rows, B is the rows x cols weights.
-    Stream cycles are numbered from 0 (the first A vector); preload cycles are
-    negative.
+    OS: A is rows x K, B is K x cols, one reduction. WS: A is M x rows, B is the
+    rows x cols weights. Stream cycles are numbered from 0 (row 0's and column 0's
+    first element on the edge); preload cycles are negative.
     """
     A, B = np.asarray(A), np.asarray(B)
     dut = SystolicArray(config)
-    rows = config.grid_rows * config.tile_rows
-    cols = config.grid_cols * config.tile_cols
-    trace = Trace(config, dataflow, A, B, np.zeros((0, cols), dtype=np.int64), latency=dut.latency)
+    rows, cols = dut.rows, dut.cols
+    trace = Trace(config, dataflow, A, B, np.zeros((0, cols), dtype=np.int64))
     sim = Simulator(dut)  # elaborates the design, so the PE references below exist
     pes = [
         [
@@ -192,6 +205,11 @@ def record(config: SystolicConfig, dataflow: int, A, B) -> Trace:
         ]
         for i in range(rows)
     ]
+    n = trace.length
+    # Enough clocks for the last element to cross the array, and for OS the last
+    # result to reach the north edge (a fixed count, so a bug cannot hang the run)
+    stream_clocks = n + rows + cols + 1
+    drain_clocks = 2 * rows + 1 if dataflow == OS else 0
 
     def snapshot(ctx, cycle, phase):
         def grid(name):
@@ -203,13 +221,14 @@ def record(config: SystolicConfig, dataflow: int, A, B) -> Trace:
             Frame(
                 cycle,
                 phase,
-                grid("in_valid").astype(bool),
+                grid("out_valid").astype(bool),
                 grid("in_shift").astype(bool),
-                grid("in_a"),
-                grid("in_b"),
-                grid("in_psum"),
+                grid("out_a"),
+                grid("out_b"),
                 grid("out_psum"),
+                grid("out_w"),
                 grid("out_c"),
+                grid("out_c_valid").astype(bool),
             )  # fmt: skip
         )
 
@@ -217,59 +236,55 @@ def record(config: SystolicConfig, dataflow: int, A, B) -> Trace:
         for name, value in values.items():
             ctx.set(getattr(dut, name), int(value))
 
-    async def run_os(ctx):
-        k_dim = A.shape[1]
-        drive(ctx, in_control_dataflow=OS)
-        # The last product reaches the bottom-right PEArray in cycle k_dim - 1 + latency.
-        # A fixed range (not "until out_last") keeps a control-path bug from hanging
-        # the trace; check() then reports the missing out_last.
-        for cycle in range(k_dim + dut.latency):
-            streaming = cycle < k_dim
-            drive(ctx, in_valid=streaming, in_last=cycle == k_dim - 1)
+    def edge_inputs(t):
+        """Every edge input in stream cycle ``t``."""
+        values = {}
+        if dataflow == OS:
             for i in range(rows):
-                drive(ctx, **{f"in_a_{i}": A[i, cycle] if streaming else 0})
+                k = t - stream_start(i)
+                on = 0 <= k < n
+                values.update({
+                    f"in_a_{i}": A[i, k] if on else 0, f"in_valid_{i}": on,
+                    f"in_first_{i}": on and k == 0, f"in_last_{i}": on and k == n - 1,
+                })  # fmt: skip
             for j in range(cols):
-                drive(ctx, **{f"in_b_{j}": B[cycle, j] if streaming else 0})
-            snapshot(ctx, cycle, "stream")
-            if ctx.get(dut.out_last):
-                trace.last_cycles.append(cycle)
-            await ctx.tick()
-        cycle = k_dim + dut.latency
-        drive(ctx, in_valid=0, in_last=0, in_shift=1)
-        drained = []
-        for _ in range(rows):
-            snapshot(ctx, cycle, "drain")
-            drained.append([ctx.get(getattr(dut, f"out_c_{j}")) for j in range(cols)])
-            await ctx.tick()
-            cycle += 1
-        drive(ctx, in_shift=0)
-        trace.C = np.array(drained[::-1])
+                k = t - stream_start(j)
+                values[f"in_b_{j}"] = B[k, j] if 0 <= k < n else 0
+        else:
+            for r in range(rows):
+                m = t - stream_start(r)
+                on = 0 <= m < n
+                values.update({f"in_a_{r}": A[m, r] if on else 0, f"in_valid_{r}": on})
+        return values
 
-    async def run_ws(ctx):
-        m_rows = A.shape[0]
-        drive(ctx, in_control_dataflow=WS, in_shift=1)
-        for n, r in enumerate(reversed(range(rows))):
+    async def run(ctx):
+        drive(ctx, in_control_dataflow=dataflow)
+        if dataflow == WS:
+            drive(ctx, in_shift=1)
+            for step, r in enumerate(reversed(range(rows))):
+                drive(ctx, **{f"in_w_{j}": B[r, j] for j in range(cols)})
+                snapshot(ctx, step - rows, "preload")
+                await ctx.tick()
+            drive(ctx, in_shift=0)
+        out = {j: [] for j in range(cols)}
+        for t in range(stream_clocks + drain_clocks):
+            drive(ctx, **edge_inputs(t))
+            snapshot(ctx, t, "stream" if t < stream_clocks else "drain")
             for j in range(cols):
-                drive(ctx, **{f"in_d_{j}": B[r, j]})
-            snapshot(ctx, n - rows, "preload")
+                if dataflow == OS and ctx.get(getattr(dut, f"out_c_valid_{j}")):
+                    i = len(out[j])
+                    out[j].append(ctx.get(getattr(dut, f"out_c_{j}")))
+                    trace.result_clocks[(i, j)] = t
+                if dataflow == WS and ctx.get(getattr(dut, f"out_psum_valid_{j}")):
+                    out[j].append(ctx.get(getattr(dut, f"out_psum_{j}")))
             await ctx.tick()
-        drive(ctx, in_shift=0)
-        out = []
-        for cycle in range(m_rows + dut.latency + 1):
-            streaming = cycle < m_rows
-            drive(ctx, in_valid=streaming, in_last=cycle == m_rows - 1)
-            for i in range(rows):
-                drive(ctx, **{f"in_a_{i}": A[cycle, i] if streaming else 0})
-            snapshot(ctx, cycle, "stream")
-            if ctx.get(dut.out_last):
-                trace.last_cycles.append(cycle)
-            if ctx.get(dut.out_valid):
-                out.append([ctx.get(getattr(dut, f"out_psum_{j}")) for j in range(cols)])
-            await ctx.tick()
-        trace.C = np.array(out).reshape(-1, cols)
+        depth = min(len(v) for v in out.values())
+        trace.C = np.array([[out[j][r] for j in range(cols)] for r in range(depth)]).reshape(
+            depth, cols
+        )
 
     sim.add_clock(1e-6)
-    sim.add_testbench(run_os if dataflow == OS else run_ws)
+    sim.add_testbench(run)
     sim.run()
     return trace
 
@@ -282,9 +297,9 @@ def record(config: SystolicConfig, dataflow: int, A, B) -> Trace:
 def _cell_text(trace: Trace, frame: Frame, i: int, j: int) -> tuple[str, str]:
     """(label, kind) for one PE in one frame; kind is idle/active/mismatch/shift."""
     if frame.phase == "preload":
-        return f"w{frame.chain[i, j]}", "shift"
-    if frame.phase == "drain":
-        return str(frame.chain[i, j]), "shift"
+        return f"w{frame.w[i, j]}", "shift"
+    if frame.c_valid[i, j]:  # an OS result on its way north
+        return f"c{frame.c[i, j]}", "shift"
     index, agree = trace.decode(frame, i, j)
     if index is None:
         return ".", "idle"
@@ -332,12 +347,12 @@ def render_svg(trace: Trace, *, cell: int = 56, seconds_per_frame: float = 0.8) 
     legend = [
         f"{'kN' if trace.dataflow == OS else 'mN'}: the element meeting at that PE "
         "(one colour per wavefront)",
-        "thick lines: PEArray boundaries, where the pipeline registers sit",
+        "cN: a result moving north; thick lines: PEArray boundaries (every PE link is registered)",
     ]
     n_frames = len(trace.frames)
     total = n_frames * seconds_per_frame
-    n_index = trace.A.shape[1] if trace.dataflow == OS else trace.A.shape[0]
-    mode = "output-stationary" if trace.dataflow == OS else "weight-stationary"
+    n_index = trace.length
+    mode = "output-stationary" if trace.dataflow == OS else "stationary (WS / IS)"
     title = (
         f"{mode}: {cfg.grid_rows}x{cfg.grid_cols} grid of {cfg.tile_rows}x{cfg.tile_cols} PEArrays"
     )
@@ -366,7 +381,7 @@ def render_svg(trace: Trace, *, cell: int = 56, seconds_per_frame: float = 0.8) 
         )
         parts.append(
             f'<text x="{margin}" y="42" font-size="13">cycle {f.cycle}  {f.phase}'
-            f"{'  (shift)' if f.phase != 'stream' else ''}</text>"
+            f"{'  (shift)' if f.phase == 'preload' else ''}</text>"
         )
         for i in range(rows):
             for j in range(cols):
@@ -380,7 +395,7 @@ def render_svg(trace: Trace, *, cell: int = 56, seconds_per_frame: float = 0.8) 
                     f'text-anchor="middle">{html.escape(label)}</text>'
                 )
         parts.append("</g>")
-    # PEArray boundaries: where the pipeline registers sit
+    # PEArray boundaries (structural: every PE link is registered)
     for tr in range(cfg.grid_rows + 1):
         y = header + tr * cfg.tile_rows * cell
         parts.append(

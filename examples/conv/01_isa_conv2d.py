@@ -12,9 +12,9 @@ implicit GEMM:
 
 For each K tile it LOADs one row per output position (the input pixel that
 kernel offset reads, with stride, dilation and padding applied, or a zero row
-in the padding) and the filter tile (one command), then PRELOADs the filter rows
-as weights and COMPUTEs; after the K tiles it STOREs the output tile (one
-command). X, F and Y are dense NHWC at any address: the tile's BlockMover moves
+in the padding) and the filter tile (one command, corner-turned), then COMPUTEs
+output-stationary: the K tiles are one reduction held in the PEs; after the K
+tiles it STOREs the output tile (one command). X, F and Y are dense NHWC at any address: the tile's BlockMover moves
 rows from and to any byte.
 
 Here a stand-in controller accepts and completes every command, and the demo
@@ -133,9 +133,7 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
                 for _kw in range(kernel):
                     for _tk in tiles(in_c):
                         expected["loads"] += tm + 1  # a row per position, the filter tile
-            expected["PRELOAD"] += k_tiles
-            expected["COMPUTE"] += 1
-            expected["COMPUTE_ACCUMULATE"] += k_tiles - 1
+            expected["COMPUTE"] += k_tiles  # OS: one per K tile, chained (no PRELOAD)
             expected["stores"] += 1  # the output tile
     actual = {
         "loads": sum(1 for t in trace if t[0] == CTRL_LOAD),

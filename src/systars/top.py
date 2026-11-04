@@ -73,10 +73,13 @@ class SystolicTop(Component):
             load_busy, store_busy, exec_busy: A process runs a command or has commands queued
             completed: A command completed this cycle (one of possibly several)
             completed_type: Which controller completed (0=load, 1=store, 2=exec)
-            {load,store,exec}_completed[_id]: Per-controller completions (lossless)
+            {load,store,exec}_completed[_id]: Per-controller completions (lossless).
+                The Streamer's completion means it is done with L2 (its last block
+                is in L1); exec_result[_id] means its results are in the accumulator
             {load,store,exec}_started[_id]: A process started a command
             l2_free, l2_ready, acc_free, acc_ready: Slot states (OWNED = neither)
             sync_error: Sticky credit/token protocol error
+            l1_error: Sticky L1/fabric schedule error
             interrupt: Interrupt request
     """
 
@@ -110,6 +113,7 @@ class SystolicTop(Component):
             "cmd_k_dim": In(16),  # Inner dimension
             "cmd_activation": In(4),  # Activation function (for store)
             "cmd_sync": In(Sync.BITS),  # Credits and tokens (controller/sync.py); 0 = untracked
+            "cmd_chain": In(2),  # Execute: OS reduction chaining (controller/execute.py)
             # AXI Read Address Channel
             "axi_arvalid": Out(1),
             "axi_arready": In(1),
@@ -157,6 +161,9 @@ class SystolicTop(Component):
             "store_completed_id": Out(8),
             "exec_completed": Out(1),
             "exec_completed_id": Out(8),
+            # The Streamer's results are in the accumulator (its result token)
+            "exec_result": Out(1),
+            "exec_result_id": Out(8),
             "interrupt": Out(1),
             # A process started a command (its queue's head was dispatched): the
             # CSP action's start, matching {load,store,exec}_completed
@@ -173,6 +180,8 @@ class SystolicTop(Component):
             "acc_free": Out(config.acc_slots),
             "acc_ready": Out(config.acc_slots),
             "sync_error": Out(1),
+            # Sticky L1/fabric schedule error (controller/execute.py)
+            "l1_error": Out(1),
         }
 
         super().__init__(ports)
@@ -232,7 +241,7 @@ class SystolicTop(Component):
             self.CTRL_EXEC: (
                 "exec", exec_ctrl, cfg.ex_queue_length,
                 {"opcode": "opcode", "rs1": "rs1", "rs2": "rs2", "rd": "rd",
-                 "k_dim": "k_dim", "id": "id"},
+                 "k_dim": "k_dim", "chain": "chain", "sync": "sync", "id": "id"},
             ),
         }  # fmt: skip
 
@@ -283,31 +292,38 @@ class SystolicTop(Component):
             l2.prod_signal_slot.eq(ld_done.dst),
         ]
 
-        # Streamer: starts when its L2 tile is ready and its accumulator slot is free
-        # (and then runs to the end); returns the L2 credit and emits the result
-        # token when done
-        ex_go, ex_head, ex_done = gate(
+        # Streamer: starts when its L2 tile is ready, its accumulator slot is free
+        # and the fabric can take it on schedule (and then runs to the end). Several
+        # of its commands are in flight at once, so it carries each command's sync
+        # fields to its own events: it returns the L2 credit once the tile's last
+        # block is in L1, and emits the result token once the results are in the
+        # accumulator.
+        ex_go, ex_head, _ = gate(
             self.CTRL_EXEC,
             lambda h: (~h.wait | l2.cons_ready) & (~h.acquire | acc.prod_credit),
         )
+        ex_released = Sync.fields(exec_ctrl.completed_sync)
+        ex_resulted = Sync.fields(exec_ctrl.result_sync)
         m.d.comb += [
             l2.cons_slot.eq(ex_head.src),
             l2.cons_wait.eq(ex_head.wait),
-            l2.cons_release.eq(exec_ctrl.completed & ex_done.release),
-            l2.cons_release_slot.eq(ex_done.src),
+            l2.cons_take.eq(ex_go & ex_head.wait & ex_head.release),
+            l2.cons_release.eq(exec_ctrl.completed & ex_released.release),
+            l2.cons_release_slot.eq(ex_released.src),
             acc.prod_slot.eq(ex_head.dst),
             acc.prod_acquire.eq(ex_head.acquire),
             acc.prod_take.eq(ex_go & ex_head.acquire),
-            acc.prod_signal.eq(exec_ctrl.completed & ex_done.signal),
-            acc.prod_signal_slot.eq(ex_done.dst),
+            acc.prod_signal.eq(exec_ctrl.result & ex_resulted.signal),
+            acc.prod_signal_slot.eq(ex_resulted.dst),
         ]
 
         # BlockMover, accumulator -> L3: fires on the result token; returns the
         # accumulator credit when done
-        _, st_head, st_done = gate(self.CTRL_STORE, lambda h: ~h.wait | acc.cons_ready)
+        st_go, st_head, st_done = gate(self.CTRL_STORE, lambda h: ~h.wait | acc.cons_ready)
         m.d.comb += [
             acc.cons_slot.eq(st_head.src),
             acc.cons_wait.eq(st_head.wait),
+            acc.cons_take.eq(st_go & st_head.wait & st_head.release),
             acc.cons_release.eq(store_ctrl.completed & st_done.release),
             acc.cons_release_slot.eq(st_done.src),
         ]
@@ -416,22 +432,24 @@ class SystolicTop(Component):
         # =====================================================================
 
         m.d.comb += [
-            array.in_valid.eq(exec_ctrl.array_in_valid),
-            array.in_last.eq(exec_ctrl.array_in_last),
             array.in_shift.eq(exec_ctrl.array_in_shift),
             array.in_control_dataflow.eq(exec_ctrl.array_in_dataflow),
-            exec_ctrl.array_out_valid.eq(array.out_valid),
-            exec_ctrl.array_out_last.eq(array.out_last),
+            exec_ctrl.array_out_collision.eq(array.out_collision),
         ]
         for i in range(total_rows):
-            m.d.comb += getattr(array, f"in_a_{i}").eq(getattr(exec_ctrl, f"array_in_a_{i}"))
+            for name in ("a", "valid", "first", "last"):
+                m.d.comb += getattr(array, f"in_{name}_{i}").eq(
+                    getattr(exec_ctrl, f"array_in_{name}_{i}")
+                )
         for j in range(total_cols):
             m.d.comb += [
                 getattr(array, f"in_b_{j}").eq(getattr(exec_ctrl, f"array_in_b_{j}")),
-                getattr(array, f"in_d_{j}").eq(getattr(exec_ctrl, f"array_in_d_{j}")),
-                getattr(exec_ctrl, f"array_out_psum_{j}").eq(getattr(array, f"out_psum_{j}")),
-                getattr(exec_ctrl, f"array_out_c_{j}").eq(getattr(array, f"out_c_{j}")),
+                getattr(array, f"in_w_{j}").eq(getattr(exec_ctrl, f"array_in_w_{j}")),
             ]
+            for name in ("c", "c_valid", "psum", "psum_valid"):
+                m.d.comb += getattr(exec_ctrl, f"array_out_{name}_{j}").eq(
+                    getattr(array, f"out_{name}_{j}")
+                )
 
         # =====================================================================
         # AXI Interface Wiring
@@ -490,6 +508,9 @@ class SystolicTop(Component):
             self.store_completed_id.eq(store_ctrl.completed_id),
             self.exec_completed.eq(exec_ctrl.completed),
             self.exec_completed_id.eq(exec_ctrl.completed_id),
+            self.exec_result.eq(exec_ctrl.result),
+            self.exec_result_id.eq(exec_ctrl.result_id),
+            self.l1_error.eq(exec_ctrl.error),
         ]
 
         # Summary completion (priority: load > store > exec). Lossy when two
