@@ -49,7 +49,9 @@ Pools, and who uses which side:
   COMPUTE consume (src).
 - Accumulator slots: the Streamer's COMPUTE produces (dst; ACQUIRE on the first
   reduction step of a C tile, SIGNAL on the last), the BlockMover's STORE
-  consumes (src).
+  consumes (src). The token is emitted on the Streamer's result event, so SIGNAL
+  belongs on a command that writes the tile's results; the Streamer flags one
+  that writes none.
 
 A WAIT without RELEASE only checks the token (the slot stays READY for another
 reader), and a RELEASE without WAIT returns a READY slot's credit directly.

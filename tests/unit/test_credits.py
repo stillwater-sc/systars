@@ -132,7 +132,8 @@ class Monitor:
             sigs += [getattr(top, f"{name}_started"), getattr(top, f"{name}_started_id"),
                      getattr(top, f"{name}_completed"), getattr(top, f"{name}_completed_id")]  # fmt: skip
         sigs += [top.exec_result, top.exec_result_id]
-        return [*sigs, top.l2_free, top.l2_ready, top.acc_free, top.acc_ready, top.sync_error]
+        return [*sigs, top.l2_free, top.l2_ready, top.acc_free, top.acc_ready, top.sync_error,
+                top.l1_error]  # fmt: skip
 
     def check_state(self, name, free, ready):
         for s, expected in enumerate(self.pools[name]):
@@ -144,8 +145,9 @@ class Monitor:
     def step(self, values):
         valid, ready, ctype, sync, *rest = values
         events, (result, result_id), state = rest[:12], rest[12:14], rest[14:]
-        l2_free, l2_ready, acc_free, acc_ready, error = state
+        l2_free, l2_ready, acc_free, acc_ready, error, l1_error = state
         assert not error, f"cycle {self.cycles}: protocol error"
+        assert not l1_error, f"cycle {self.cycles}: L1 schedule or protocol error"
         # The state this cycle reflects every earlier cycle's events
         self.check_state("l2", l2_free, l2_ready)
         self.check_state("acc", acc_free, acc_ready)

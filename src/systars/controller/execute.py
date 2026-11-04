@@ -63,8 +63,10 @@ so a host can issue a STORE as soon as it sees the completion.
   accumulator. ``SystolicTop`` emits the accumulator tile's token on it.
 
 ``error`` (sticky) is a schedule or protocol violation: an L1 buffer loaded
-without its credit or overflowing, a collision on a north link, or a result
-without a command. A valid schedule never raises it.
+without its credit or overflowing, a collision on a north link, a result
+without a command, or a command with SIGNAL that writes no result (``k_dim = 0``,
+an OS COMPUTE with ``CHAIN_MORE``, PRELOAD, CONFIG or an unknown opcode), whose
+accumulator slot would never get its token. A valid schedule never raises it.
 """
 
 from amaranth import Cat, Module, Mux, Signal, signed
@@ -350,6 +352,12 @@ class ExecuteController(Component):
         tile_rows = Signal(range(KB + R + 1))  # rows of the command's result tile
         m.d.comb += tile_rows.eq(Mux(st_stream, k_len, R))
 
+        # The accumulator token is emitted on the result event, so a tracked command
+        # with SIGNAL that writes no result would leave its slot OWNED forever
+        error = Signal()
+        with m.If(accept & Sync.fields(self.cmd_sync).signal & ~produces):
+            m.d.sync += error.eq(1)
+
         with m.If(accept):
             with m.If(direct):
                 m.d.sync += [
@@ -515,7 +523,6 @@ class ExecuteController(Component):
             rb = north if north is not None else south
             m.d.comb += [row_valid.eq(rb.out_valid), row_data.eq(rb.out_data)]
 
-        error = Signal()
         with m.If(row_valid):
             with m.If(res_q.r_rdy):
                 m.d.comb += [

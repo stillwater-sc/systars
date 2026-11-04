@@ -17,7 +17,7 @@ Edges (``i`` is a PE row, ``j`` a PE column):
 - North, per column: ``in_b_j`` (OS), ``in_w_j`` (the stationary chain), and the
   OS results ``out_c_j`` with ``out_c_valid_j``.
 - South, per column: the partial sums ``out_psum_j`` (stationary), valid with
-  ``out_valid_j`` of the bottom row (the A markers in the bottom row's PEs).
+  ``out_psum_valid_j`` (the ``valid`` marker of the bottom row's PE).
 
 Timing (all from the clock a value is on an input edge):
 

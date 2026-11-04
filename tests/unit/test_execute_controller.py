@@ -15,6 +15,7 @@ from systars.controller.execute import (
     CHAIN_MORE,
     ExecuteController,
 )
+from systars.controller.sync import Sync
 from systars.core.systolic_array import SystolicArray
 from systars.util.commands import ExecOpcode
 
@@ -73,11 +74,12 @@ def unpack(word, bits, n):
     return [v - (1 << bits) if v >> (bits - 1) else v for v in vals]
 
 
-def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000):
+def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect_error=False):
     """Issue ``commands`` (opcode, fields) and log reads, writes, events and streams.
 
     Untracked: one command at a time, each waited for. Tracked: pushed back to back
-    (``cmd_ready`` only), then the run waits for every completion and result.
+    (``cmd_ready`` only), then the run waits for every completion and result. A
+    command's ``sync`` field overrides its ``cmd_sync``.
     """
     ctrl, cfg = harness.ctrl, harness.cfg
     log = {
@@ -131,7 +133,7 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000):
             ctx.set(ctrl.cmd_id, n + 1)
             for name in ("rs1", "rs2", "rd", "k_dim", "chain"):
                 ctx.set(getattr(ctrl, f"cmd_{name}"), fields.get(name, 0))
-            ctx.set(ctrl.cmd_sync, TRACKED | n if tracked else 0)
+            ctx.set(ctrl.cmd_sync, fields.get("sync", TRACKED | n if tracked else 0))
             ctx.set(ctrl.cmd_valid, 1)
             await ctx.tick().until(ctrl.cmd_ready)
             ctx.set(ctrl.cmd_valid, 0)
@@ -148,7 +150,7 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000):
         processes=[port_model("a"), port_model("b"), monitor],
         max_cycles=max_cycles,
     )
-    assert log["error"] == 0
+    assert log["error"] == int(expect_error)
     return log
 
 
@@ -229,6 +231,39 @@ class TestCommands:
         log = run(Harness(config()), {}, [(ExecOpcode.COMPUTE, {"rd": 3, "k_dim": 0})])
         assert [c[1] for c in log["completed"]] == [1]
         assert not (log["a_reads"] or log["writes"] or log["results"])
+
+
+class TestSignalNeedsAResult:
+    """The accumulator token is emitted on the result event: a command with SIGNAL
+    that writes no result would leave its slot OWNED, so the Streamer flags it."""
+
+    SIGNAL = TRACKED | Sync.encode(dst=1, acquire=True, signal=True)
+
+    @pytest.mark.parametrize(
+        "opcode,fields",
+        [
+            (ExecOpcode.COMPUTE, {"rd": 3, "k_dim": 0}),
+            (ExecOpcode.COMPUTE, {"k_dim": 2, "chain": CHAIN_MORE}),
+            (ExecOpcode.PRELOAD, {"rs1": 8, "k_dim": 2}),
+            (ExecOpcode.CONFIG, {"rs1": OS}),
+            (0x7F, {}),
+        ],
+        ids=["zero_k", "chain_more", "os_preload", "config", "unknown"],
+    )
+    def test_signal_without_a_result_is_an_error(self, opcode, fields):
+        log = run(Harness(config()), {}, [(opcode, {**fields, "sync": self.SIGNAL})],
+                  tracked=True, expect_error=True)  # fmt: skip
+        assert not log["results"]
+
+    def test_signal_on_the_result_is_not(self):
+        harness = Harness(config())
+        rng = np.random.default_rng(3)
+        A = rng.integers(-128, 128, (harness.rows, 2))
+        B = rng.integers(-128, 128, (2, harness.cols))
+        sp, cmds = os_tiles(harness, A, B, 10, 40)
+        log = run(harness, sp, [(ExecOpcode.COMPUTE, {**cmds[0], "rd": 0, "sync": self.SIGNAL})],
+                  tracked=True)  # fmt: skip
+        assert [(r[1], r[2]) for r in log["results"]] == [(1, self.SIGNAL)]
 
 
 class TestOutputStationary:

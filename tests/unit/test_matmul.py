@@ -383,10 +383,13 @@ def test_matmul_drives_systolic_top(grid, tile, M, N, K, dataflow):
             await ctx.tick()
         ctx.set(isa.cfg_valid, 0)
         done, error = await ctx.tick().sample(isa.done, isa.error).until(isa.done | isa.error)
-        status.update(done=done, error=error)
+        # Both are sticky: a schedule or protocol violation anywhere in the run stays set
+        status.update(
+            done=done, error=error, l1=ctx.get(top.l1_error), sync=ctx.get(top.sync_error)
+        )
 
     run_sim(dut, testbench, processes=[axi_memory(top, memory, beat)], max_cycles=200_000)
-    assert status == {"done": 1, "error": 0}
+    assert status == {"done": 1, "error": 0, "l1": 0, "sync": 0}
     c_bytes = M * N * 4
     C = np.array(from_bytes(memory[c_addr : c_addr + c_bytes], 32, M * N)).reshape(M, N)
     np.testing.assert_array_equal(C, A @ B)

@@ -136,7 +136,7 @@ slot it reads (`src`) and the slot it fills (`dst`), with four flags:
 | Flag | Effect |
 |---|---|
 | `ACQUIRE` | start only when `dst` is FREE, and take its credit |
-| `SIGNAL` | on completion, emit `dst`'s token |
+| `SIGNAL` | on completion, emit `dst`'s token (the Streamer: on its result event, so a Streamer command with `SIGNAL` must write a result; one that writes none sets `l1_error`) |
 | `WAIT` | start only when `src` is READY (with `RELEASE`: take the token, READY → READING) |
 | `RELEASE` | on completion, return `src`'s credit (the Streamer: once the tile's last block is in L1) |
 
