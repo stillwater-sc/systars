@@ -47,12 +47,7 @@ sim = [
     "cocotb-bus>=0.2.1",
     "pyvcd>=0.4.0",
 ]
-docs = [
-    "mkdocs>=1.5",
-    "mkdocs-material>=9.5",
-    "mkdocstrings[python]>=0.24",
-]
-all = ["systars[dev,sim,docs]"]
+all = ["systars[dev,sim]"]
 
 [project.urls]
 Homepage = "https://github.com/stillwater-sc/systars"

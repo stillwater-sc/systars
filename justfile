@@ -261,13 +261,14 @@ synth-check:
 # Documentation
 # =============================================================================
 
-# Build documentation
+# Build the documentation site (Starlight, docs-site/; needs Node >= 22.23.4).
+# Pages are authored in docs/, never in docs-site/src/content/docs/ (generated)
 docs:
-    mkdocs build
+    cd docs-site && npm ci && npm run build
 
-# Serve documentation locally
+# Serve the documentation site locally, with live reload
 docs-serve:
-    mkdocs serve
+    cd docs-site && npm ci && npm run dev
 
 # =============================================================================
 # Cleanup

@@ -239,12 +239,13 @@ systars/
 │   └── integration/       # Integration tests
 ├── examples/              # Example configurations
 ├── scripts/               # Build/generation scripts
-└── docs/                  # Documentation
+├── docs/                  # Documentation (the source of the site)
+└── docs-site/             # Starlight site built from docs/ (GitHub Pages)
 ```
 
 ## Roadmap
 
-See [implementation plan](./doc/plan/implementation.md) for the detailed implementation plan.
+See [implementation plan](./docs/plan/implementation.md) for the detailed implementation plan.
 
 ### Phase 1: Foundation ✅
 

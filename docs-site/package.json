@@ -1,0 +1,20 @@
+{
+  "name": "systars-docs",
+  "type": "module",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "sync": "node sync-content.mjs",
+    "clean": "rm -rf src/content/docs/ dist/ public/assets/ .astro/",
+    "dev": "node sync-content.mjs && astro dev",
+    "build": "node sync-content.mjs && astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.42",
+    "astro": "^7.4",
+    "sharp": "^0.35",
+    "starlight-links-validator": "^0.27"
+  }
+}

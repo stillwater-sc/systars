@@ -1,0 +1,67 @@
+---
+title: Systars
+description: Python-based RTL generators of parallel operators using Amaranth HDL
+template: splash
+hero:
+  tagline: >
+    Synthesizable Verilog for configurable systolic array accelerators, generated
+    from Python with Amaranth HDL, for linear algebra workloads in signal
+    processing, sensor fusion and real-time control.
+  actions:
+    - text: Get Started
+      link: /systars/getting-started/development-environment/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/stillwater-sc/systars
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Features
+
+<CardGrid>
+  <Card title="Configurable systolic array" icon="setting">
+    Parameterized grid dimensions, data types and dataflows, from 8x8 up to 64x64 PEs.
+  </Card>
+  <Card title="OS, WS and IS dataflows" icon="random">
+    Output-stationary, weight-stationary and input-stationary schedules, through L1
+    stream buffers with no bubbles between tiles.
+  </Card>
+  <Card title="A KPU compute tile" icon="puzzle">
+    `SystolicTop` follows kpu-sim's CSP model: the BlockMover and the Streamer push
+    whole tiles between L3, L2 and L1 on credits and tile-ready tokens.
+  </Card>
+  <Card title="Modern Python" icon="seti:python">
+    A clean, type-hinted Python 3.10+ codebase on Amaranth HDL, verified with the
+    Amaranth simulator and cocotb on Verilator.
+  </Card>
+</CardGrid>
+
+## Quick start
+
+```bash
+# Install
+git clone https://github.com/stillwater-sc/systars.git
+cd systars
+just setup
+source .venv/bin/activate
+
+# Run tests
+just test
+```
+
+## Start here
+
+<CardGrid>
+  <LinkCard title="ISA instructions" href="/systars/guides/isa-instructions/"
+    description="Matmul and Conv2d, the fabric, L1 and the Streamer, credits and tokens." />
+  <LinkCard title="Wavefront animation" href="/systars/guides/wavefront-animation/"
+    description="Wavefronts traced from the RTL, and the animated demos." />
+  <LinkCard title="Development workflow" href="/systars/getting-started/development-workflow/"
+    description="Tests, linting, RTL generation, synthesis and these docs." />
+  <LinkCard title="Changelog" href="/systars/changelog/"
+    description="What changed, release by release." />
+</CardGrid>
