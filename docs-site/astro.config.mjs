@@ -13,6 +13,7 @@ const syncOnEdit = {
     'astro:server:setup': ({ server, logger }) => {
       const sources = [DOCS, ...Object.keys(ROOT_FILES).map((f) => join(REPO, f))];
       server.watcher.add(sources);
+      /** Re-run the sync when `path` is one of the authored sources. */
       const resync = (path) => {
         if (!sources.some((s) => path === s || path.startsWith(s + sep))) return;
         if (sync().length) logger.warn('sync-content.mjs reported errors (above)');

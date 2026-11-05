@@ -61,8 +61,10 @@ const ORDER = {
 
 // -- Collect the pages -----------------------------------------------
 
+/** A platform path with forward slashes, as links and URLs use. */
 const toPosix = (p) => p.split(sep).join('/');
 
+/** Every file under `dir`, recursively (absolute paths). */
 function walk(dir) {
   const files = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -104,6 +106,7 @@ function collect() {
   for (const [src, dest] of Object.entries(ROOT_FILES)) pages[src] = dest;
 }
 
+/** The site URL of a page, from its path relative to content/docs/ (`guides/x.md` -> `/systars/guides/x/`). */
 function pageUrl(dest) {
   const slug = dest.replace(/\.mdx?$/, '').replace(/(^|\/)index$/, '');
   return `${BASE}/${slug}${slug ? '/' : ''}`;
@@ -144,8 +147,17 @@ function rewriteLinks(body, src) {
     .join('');
 }
 
+/** A double-quoted YAML scalar. */
 const yamlString = (s) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
+/**
+ * A docs/ page as a Starlight page: its H1 becomes the title, it gets an editUrl
+ * to its source, session logs get a dated sidebar label (newest first), and its
+ * links are rewritten.
+ * @param {string} content the Markdown
+ * @param {string} src the page's repo-relative path
+ * @param {string} dest its path relative to content/docs/
+ */
 function frontmatter(content, src, dest) {
   const h1 = content.match(/^#\s+(.+)$/m);
   if (!h1) errors.push(`${src}: no H1 to use as the title`);
