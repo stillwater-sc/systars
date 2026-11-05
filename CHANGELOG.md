@@ -120,6 +120,15 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **The GitHub Pages site is built with Astro Starlight** (#20, 2026-11-04), the same
+  setup as stillwater-sc/universal and stillwater-sc/mtl5, replacing MkDocs. Pages are
+  still written in `docs/`; `docs-site/sync-content.mjs` generates the site's content
+  from them and from this changelog, and fails on a relative link that resolves to
+  nothing or a top-level page with no place in the sidebar. `starlight-links-validator`
+  fails the build on a broken internal link or anchor. `just docs` / `just docs-serve`
+  build and serve the site (Node >= 22.23.4). CI builds it on docs pull requests and
+  deploys it from `main` with SHA-pinned actions. Removed: `mkdocs.yml` and the `docs`
+  extra in `pyproject.toml`. Fixed: the README's link to the implementation plan.
 - **Streamer commands** (#15): OS COMPUTE takes an A tile row-major and a B tile
   column-major, `K <= KB` per command (chain longer reductions); stationary COMPUTE streams a
   column-major tile. The array's latency contract is replaced by per-edge result clocks

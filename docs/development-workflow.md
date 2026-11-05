@@ -73,7 +73,9 @@ systars/
 │   ├── scratchpad/
 │   └── accumulator/
 ├── gen/                   # Generated Verilog (gitignored)
-└── scripts/               # RTL generation scripts
+├── scripts/               # RTL generation scripts
+├── docs/                  # Documentation pages (Markdown)
+└── docs-site/             # Starlight site built from docs/
 ```
 
 ---
@@ -405,6 +407,37 @@ just synth-check    # Yosys synthesis check
 
 ---
 
+## Documentation
+
+The site at <https://stillwater-sc.github.io/systars/> is built with
+[Astro Starlight](https://starlight.astro.build/), the same setup as
+stillwater-sc/universal and stillwater-sc/mtl5. It needs Node.js 22.23.4 or later.
+
+```bash
+just docs           # Build the site into docs-site/dist (npm ci, npm run build)
+just docs-serve     # Serve it locally with live reload
+```
+
+- **Write pages in `docs/`** as plain Markdown, starting with an H1 (it becomes the
+  page title). `docs-site/sync-content.mjs` generates
+  `docs-site/src/content/docs/` from `docs/` and `CHANGELOG.md`. That directory is
+  git-ignored, so never edit it.
+- A page in a subdirectory of `docs/` (`design/`, `architecture/`, `plan/`,
+  `sessions/`) appears in that sidebar group automatically. A page at the top of
+  `docs/` needs an entry in `ROOT_PAGES` in `sync-content.mjs`, or the sync fails.
+- Link pages with relative paths (`[ISA](isa-instructions.md#corner-turns)`), so the
+  links work on GitHub too; the sync rewrites them for the site. Images and other
+  files under `docs/` are served from `/systars/assets/`. A link to another file in
+  the repository becomes a GitHub link.
+- A link that resolves to nothing fails the sync, and a broken internal link or
+  anchor fails the build (`starlight-links-validator`).
+- Starlight-native pages (MDX with Starlight components, such as the landing page)
+  live in `docs/site/` and are copied as they are.
+- CI (`.github/workflows/docs.yml`) builds the site on every pull request that
+  touches the docs, and deploys it from `main`.
+
+---
+
 ## Best Practices
 
 ### Amaranth RTL
@@ -456,6 +489,8 @@ just synth-check    # Yosys synthesis check
 | `just lint` | Run all linters |
 | `just format` | Format Python code |
 | `just waves` | Open waveform viewer |
+| `just docs` | Build the documentation site |
+| `just docs-serve` | Serve the documentation site locally |
 | `just check-tools` | Verify tool installation |
 | `just check-ruff-version` | Verify ruff version consistency |
 

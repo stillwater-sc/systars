@@ -59,6 +59,20 @@ just synth-check            # Run Yosys synthesis check on generated RTL
 just waves                  # Open waveform viewer (gtkwave)
 ```
 
+### Documentation
+
+```bash
+just docs                   # Build the Starlight site (docs-site/; Node >= 22.23.4)
+just docs-serve             # Serve it locally with live reload
+```
+
+The GitHub Pages site uses Astro Starlight, the same setup as stillwater-sc/universal and
+stillwater-sc/mtl5 (never MkDocs). Write pages in `docs/` as plain Markdown with an H1 title;
+`docs-site/sync-content.mjs` generates `docs-site/src/content/docs/` (git-ignored, never edit
+it). A page at the top of `docs/` needs a `ROOT_PAGES` entry in `sync-content.mjs`; pages in
+subdirectories are placed by directory. Broken relative links and anchors fail the build.
+Details: `docs/development-workflow.md`, "Documentation".
+
 ## Architecture
 
 ### Core Components (src/systars/)
