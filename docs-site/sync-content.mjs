@@ -19,14 +19,16 @@
  * page missing from ROOT_PAGES fails it too, so no page is silently dropped.
  * Anchors are checked after the build by starlight-links-validator.
  *
- * Run automatically by `npm run build` and `npm run dev`.
+ * Run automatically by `npm run build` and `npm run dev`. The dev server also
+ * re-runs sync() whenever a source changes (the integration in astro.config.mjs).
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from 'fs';
 import { dirname, join, posix, relative, sep } from 'path';
+import { fileURLToPath } from 'url';
 
-const REPO = join(import.meta.dirname, '..');
-const DOCS = join(REPO, 'docs');
+export const REPO = join(import.meta.dirname, '..');
+export const DOCS = join(REPO, 'docs');
 const SITE = join(DOCS, 'site');
 const OUT = join(import.meta.dirname, 'src', 'content', 'docs');
 const ASSETS = join(import.meta.dirname, 'public', 'assets');
@@ -45,7 +47,7 @@ const ROOT_PAGES = {
 };
 
 /** Files from the repository root -> their place in the site. */
-const ROOT_FILES = {
+export const ROOT_FILES = {
   'CHANGELOG.md': 'changelog.md',
 };
 
@@ -72,28 +74,35 @@ function walk(dir) {
 }
 
 /** repo-relative source path -> destination path relative to content/docs/ */
-const pages = {};
-const assets = [];
-const errors = [];
+let pages = {};
+/** asset paths relative to docs/ */
+let assets = [];
+let errors = [];
 
-for (const file of walk(DOCS)) {
-  const rel = toPosix(relative(DOCS, file));
-  if (rel.startsWith('site/')) continue;
-  if (!rel.endsWith('.md')) {
-    assets.push(rel);
-    continue;
-  }
-  if (!rel.includes('/')) {
-    if (!(rel in ROOT_PAGES)) {
-      errors.push(`docs/${rel}: a top-level page needs a place in ROOT_PAGES (sync-content.mjs)`);
+/** Collect the pages and assets of the current docs/ tree. */
+function collect() {
+  pages = {};
+  assets = [];
+  errors = [];
+  for (const file of walk(DOCS)) {
+    const rel = toPosix(relative(DOCS, file));
+    if (rel.startsWith('site/')) continue;
+    if (!rel.endsWith('.md')) {
+      assets.push(rel);
       continue;
     }
-    pages[`docs/${rel}`] = ROOT_PAGES[rel];
-  } else {
-    pages[`docs/${rel}`] = rel;
+    if (!rel.includes('/')) {
+      if (!(rel in ROOT_PAGES)) {
+        errors.push(`docs/${rel}: a top-level page needs a place in ROOT_PAGES (sync-content.mjs)`);
+        continue;
+      }
+      pages[`docs/${rel}`] = ROOT_PAGES[rel];
+    } else {
+      pages[`docs/${rel}`] = rel;
+    }
   }
+  for (const [src, dest] of Object.entries(ROOT_FILES)) pages[src] = dest;
 }
-for (const [src, dest] of Object.entries(ROOT_FILES)) pages[src] = dest;
 
 function pageUrl(dest) {
   const slug = dest.replace(/\.mdx?$/, '').replace(/(^|\/)index$/, '');
@@ -168,38 +177,57 @@ function addEditUrl(content, src) {
 
 // -- Main ------------------------------------------------------------
 
-const astroCache = join(import.meta.dirname, 'node_modules', '.astro');
-if (existsSync(astroCache)) rmSync(astroCache, { recursive: true });
-for (const dir of [OUT, ASSETS]) {
-  if (existsSync(dir)) rmSync(dir, { recursive: true });
-  mkdirSync(dir, { recursive: true });
-}
-
-console.log('Syncing docs/ -> docs-site/src/content/docs/ ...');
-
-for (const [src, dest] of Object.entries(pages)) {
-  const out = join(OUT, dest);
+/** Write a file only when its content changes, so the dev server reloads only what changed. */
+function write(out, content, written) {
+  written.add(out);
+  if (existsSync(out) && readFileSync(out).equals(Buffer.from(content))) return;
   mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, frontmatter(readFileSync(join(REPO, src), 'utf-8'), src, dest));
+  writeFileSync(out, content);
 }
 
-if (existsSync(SITE)) {
-  for (const file of walk(SITE)) {
-    const rel = toPosix(relative(SITE, file));
-    const out = join(OUT, rel);
-    mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(out, addEditUrl(readFileSync(file, 'utf-8'), `docs/site/${rel}`));
+/** Remove the files of a generated tree that this sync did not write, and empty directories. */
+function prune(dir, written) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      prune(path, written);
+      if (readdirSync(path).length === 0) rmdirSync(path);
+    } else if (!written.has(path)) rmSync(path);
   }
 }
 
-for (const rel of assets) {
-  const out = join(ASSETS, rel);
-  mkdirSync(dirname(out), { recursive: true });
-  cpSync(join(DOCS, rel), out);
+/**
+ * Generate src/content/docs/ and public/assets/ from the sources.
+ * @returns {string[]} the errors (an unplaced page, a link that resolves to nothing)
+ */
+export function sync() {
+  collect();
+  const written = new Set();
+  for (const dir of [OUT, ASSETS]) mkdirSync(dir, { recursive: true });
+
+  for (const [src, dest] of Object.entries(pages)) {
+    write(join(OUT, dest), frontmatter(readFileSync(join(REPO, src), 'utf-8'), src, dest), written);
+  }
+  if (existsSync(SITE)) {
+    for (const file of walk(SITE)) {
+      const rel = toPosix(relative(SITE, file));
+      write(join(OUT, rel), addEditUrl(readFileSync(file, 'utf-8'), `docs/site/${rel}`), written);
+    }
+  }
+  for (const rel of assets) write(join(ASSETS, rel), readFileSync(join(DOCS, rel)), written);
+
+  prune(OUT, written);
+  prune(ASSETS, written);
+  for (const e of errors) console.error(`  ERROR: ${e}`);
+  return errors;
 }
 
-if (errors.length) {
-  for (const e of errors) console.error(`  ERROR: ${e}`);
-  process.exit(1);
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  // Clear Astro's stale data store before a full build or dev start
+  const astroCache = join(import.meta.dirname, 'node_modules', '.astro');
+  if (existsSync(astroCache)) rmSync(astroCache, { recursive: true });
+
+  console.log('Syncing docs/ -> docs-site/src/content/docs/ ...');
+  if (sync().length) process.exit(1);
+  console.log(`  ${Object.keys(pages).length} pages, ${assets.length} assets. Done.`);
 }
-console.log(`  ${Object.keys(pages).length} pages, ${assets.length} assets. Done.`);

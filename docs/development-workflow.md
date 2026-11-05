@@ -418,6 +418,9 @@ just docs           # Build the site into docs-site/dist (npm ci, npm run build)
 just docs-serve     # Serve it locally with live reload
 ```
 
+While `just docs-serve` runs, an edit, a new page or a removed page in `docs/` (or
+`CHANGELOG.md`) re-runs the sync and the browser reloads; no restart is needed.
+
 - **Write pages in `docs/`** as plain Markdown, starting with an H1 (it becomes the
   page title). `docs-site/sync-content.mjs` generates
   `docs-site/src/content/docs/` from `docs/` and `CHANGELOG.md`. That directory is
