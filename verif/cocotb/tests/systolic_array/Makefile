@@ -38,11 +38,10 @@ endif
 # Include cocotb makefile
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-# Generate RTL before running tests
+# Generate RTL before running tests (the systars.targets registry: `just gen` writes the same file)
 .PHONY: gen-rtl
 gen-rtl:
-	@echo "Generating SystolicArray Verilog..."
-	@cd $(PROJECT_ROOT) && python3 scripts/gen_systolic_array.py
+	@cd $(PROJECT_ROOT) && python3 -m systars.targets gen systolic_array
 
 # Run tests (generate RTL first)
 .PHONY: test-all

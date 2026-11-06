@@ -38,19 +38,10 @@ endif
 # Include cocotb makefile
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-# Generate RTL before running tests
+# Generate RTL before running tests (the systars.targets registry: `just gen` writes the same file)
 .PHONY: gen-rtl
 gen-rtl:
-	@echo "Generating PE Verilog..."
-	@cd $(PROJECT_ROOT) && python3 -c "\
-from systars.config import SystolicConfig; \
-from systars.core.pe import PE; \
-from amaranth.back import verilog; \
-config = SystolicConfig(); \
-pe = PE(config); \
-import os; os.makedirs('gen', exist_ok=True); \
-open('gen/pe.v', 'w').write(verilog.convert(pe, name='PE')); \
-print('Generated gen/pe.v')"
+	@cd $(PROJECT_ROOT) && python3 -m systars.targets gen pe
 
 # Run tests (generate RTL first)
 .PHONY: test-all

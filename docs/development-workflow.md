@@ -190,11 +190,15 @@ just test-k "test_output"                  # Run tests matching pattern
 Once unit tests pass, generate synthesizable Verilog:
 
 ```bash
-just gen                    # Generate all RTL
+just gen                    # Generate every target into gen/
 just gen-pe                 # Generate PE Verilog
 just gen-pe-array           # Generate PEArray Verilog
 just gen-systolic-array     # Generate SystolicArray Verilog
 ```
+
+The targets (`python3 -m systars.targets list`) are in `src/systars/targets.py`, the one
+list that `just gen`, `just synth` and CI read. To generate and synthesize a new module, add
+a `Target` there.
 
 Or manually:
 
@@ -405,6 +409,28 @@ just test-cocotb    # RTL simulation tests
 just synth-check    # Yosys synthesis check
 ```
 
+### Synthesis
+
+`just synth <target>` maps every generated module onto a device's cells with Yosys and
+prints the cell counts. CI runs it for each target, and `just synth-report` writes the
+Markdown report that CI uploads.
+
+| Target | Yosys command | Device cells |
+|--------|---------------|--------------|
+| `generic` | `synth` | Yosys's internal gates |
+| `ice40` | `synth_ice40 -noflatten` | Lattice iCE40: `SB_LUT4`, `SB_CARRY`, `SB_DFF*`, `SB_RAM40_4K` |
+| `ecp5` | `synth_ecp5 -noflatten` | Lattice ECP5: `LUT4`, `CCU2C`, `TRELLIS_FF`, `DP16KD`, `MULT18X18D` |
+| `polarfire` | `synth_microchip -family polarfire -noflatten -noiopad` | Microchip PolarFire: `CFG1`-`CFG4`, `ARI1`, `SLE`, `MACC_PA`, `RAM1K20` |
+
+This is a check, not an FPGA build. It shows that the RTL maps onto real cells and gives a
+resource estimate, with no place and route, timing or bitstream. iCE40 and ECP5 have open
+place and route (nextpnr); PolarFire's is Libero. The vendor flows run hierarchically
+(`-noflatten`), so the counts are per module and Yosys can't delete logic that no top-level
+port observes. PolarFire flip-flops have no power-up value, so the `polarfire` flow first
+drops the registers' `init` values (`attrmap -remove init`). That is safe because every
+register also has a synchronous reset, as long as the design is reset before use. The numbers for a 16x16 array are in the
+[PolarFire deployment plan](plan/polarfire-deployment.md#14-resource-estimation).
+
 ---
 
 ## Documentation
@@ -489,6 +515,8 @@ While `just docs-serve` runs, an edit, a new page or a removed page in `docs/` (
 | `just test-cocotb` | Run all cocotb RTL tests |
 | `just test-cocotb-component <name>` | Run single component tests |
 | `just gen` | Generate all Verilog |
+| `just synth <target>` | Map every module onto generic, iCE40, ECP5 or PolarFire cells |
+| `just synth-report` | Write the resource utilization report |
 | `just lint` | Run all linters |
 | `just format` | Format Python code |
 | `just waves` | Open waveform viewer |

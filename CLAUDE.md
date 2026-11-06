@@ -46,10 +46,11 @@ just typecheck              # Run mypy type checking
 ### RTL Generation
 
 ```bash
-just gen                    # Generate all RTL
-just gen-pe                 # Generate PE Verilog (scripts/gen_pe.py)
-just gen-pe-array           # Generate PEArray Verilog (scripts/gen_pe_array.py)
-just gen-systolic-array     # Generate SystolicArray Verilog (scripts/gen_systolic_array.py)
+just gen                    # Generate every target in systars.targets into gen/
+just gen-pe                 # Generate PE Verilog
+just gen-pe-array           # Generate PEArray Verilog (1x1, 2x2)
+just gen-systolic-array     # Generate SystolicArray Verilog (2x2 of 2x2, 4x4)
+python3 -m systars.targets list   # The targets: name, top module, description
 just wavefronts             # Regenerate the docs' wavefront animations (docs/wavefront/)
 ```
 
@@ -57,6 +58,8 @@ just wavefronts             # Regenerate the docs' wavefront animations (docs/wa
 
 ```bash
 just synth-check            # Run Yosys synthesis check on generated RTL
+just synth <target>         # Map every target onto generic|ice40|ecp5|polarfire cells, print stats
+just synth-report           # Markdown resource report for every target (resource_report.md)
 just waves                  # Open waveform viewer (gtkwave)
 ```
 

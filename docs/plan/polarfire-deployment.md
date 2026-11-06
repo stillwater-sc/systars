@@ -15,7 +15,7 @@ This document outlines the steps required to deploy SYSTARS on a Microchip Polar
 | Controllers | Done | Load, Execute, Store controllers |
 | DMA Engines | Done | StreamReader, StreamWriter, DescriptorEngine |
 | Top-Level Integration | Done | SystolicTop with AXI-like interfaces |
-| Synthesizable Verilog | Done | Yosys synthesis passes for ICE40/ECP5 |
+| Synthesizable Verilog | Done | `just synth ice40\|ecp5\|polarfire` maps the `systars.targets` modules (PE, PEArray, SystolicArray, Scratchpad, Accumulator) onto device cells; `SystolicTop` and the controllers are not targets yet |
 
 ### What's Missing for FPGA Deployment
 
@@ -140,6 +140,23 @@ Based on a 16x16 systolic array with 8-bit inputs and 32-bit accumulators:
 | Math Blocks | 256 (16x16 MACs) | 784 | ~33% |
 | Block RAM | ~2Mb (scratchpad+acc) | 16Mb | ~12% |
 | LSRAM | 0 | 7Mb | 0% |
+
+**Yosys's count** for the default 16x16 `SystolicArray` alone (no memories or
+controllers), from `synth_microchip -family polarfire -noflatten -noiopad` after
+`attrmap -remove init` (the `just synth polarfire` flow), measured 2026-11-06 with Yosys 0.60:
+
+| Cell | Count | What it is |
+|------|-------|------------|
+| `MACC_PA` | 256 | Math blocks: one per PE, the 8x8 multiply |
+| `CFG1`-`CFG4` | 28,245 | LUTs (`CFG3`: 26,880) |
+| `ARI1` | 16,384 | Carry-chain cells: the 32-bit accumulate, 64 per PE |
+| `SLE` | 31,744 | Flip-flops: 124 per PE, the registered links and `c` / `w` |
+
+The LUTs and carry cells each take a logic element, so the array needs about 45K of the
+MPFS250T's 254K (about 18%), in line with the estimate above. The math blocks match
+exactly. These counts are before place and route; Libero's are the real ones. The run takes
+about 3 minutes and 1.4 GB, so CI synthesizes the smaller targets in `systars.targets`
+instead.
 
 **Note**: These are rough estimates. Actual utilization depends on:
 

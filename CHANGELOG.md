@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`just synth <target>` for every module, and a PolarFire target** (#25, 2026-11-06).
+  `systars.targets` is the one list of RTL targets (name, top module, factory) that
+  `just gen`, `just synth` and CI read (`python3 -m systars.targets list`), ported from
+  kpugen. `just gen` now also writes the Scratchpad and the Accumulator. `just synth
+  generic|ice40|ecp5|polarfire` maps every target onto the device's cells and prints the
+  counts, and `just synth-report` writes the resource report. The PolarFire flow is Yosys's
+  `synth_microchip -family polarfire`, after dropping the registers' `init` values, which
+  PolarFire flip-flops don't have. CI's synthesis jobs now call these recipes, with
+  `polarfire` added to the matrix, instead of synthesizing only the PE inline. The
+  [PolarFire plan](docs/plan/polarfire-deployment.md) has Yosys's counts for a 16x16 array.
+
 - **Wavefront animations: a 2x2 -> 4x4 -> 16x16 progression from the RTL** (#23,
   2026-11-05). `systars.wavefront` records one tile or several back to back, started on the
   Streamer's schedule (`streamer_starts`, checked against the Streamer in
