@@ -431,7 +431,8 @@ def record(config: SystolicConfig, dataflow: int, A, B, *, starts=None) -> Trace
                     q = len(out[j])
                     out[j].append(ctx.get(getattr(dut, f"out_{kind}_{j}")))
                     if q < len(order):
-                        trace.result_clocks[(*order[q], j)] = t
+                        tile, row = order[q]
+                        trace.result_clocks[(tile, row, j)] = t
             await ctx.tick()
         depth = min(len(v) for v in out.values())
         trace.C = np.array([[out[j][r] for j in range(cols)] for r in range(depth)]).reshape(
