@@ -269,10 +269,13 @@ synth-check:
 # Synthesize each generated module for a Yosys target (generic|ice40|ecp5|polarfire) and print
 # stats. The vendor flows run hierarchically (-noflatten): flattening a large design takes far
 # more memory, and it lets Yosys delete logic no top-level port observes. PolarFire flip-flops
-# have no power-up value, so the polarfire flow drops the registers' `init` values first
-# (`attrmap -remove init`): every register also has a synchronous reset (nothing in src/ is
-# reset_less), so the design must be reset before use. Yosys's counts are estimates before
-# place and route. The cocotb Makefiles generate the same registry targets, so gen/ holds one
+# have no power-up value, so the polarfire flow first drops the initial values: the registers'
+# (`attrmap -remove init`; every register also has a synchronous reset, nothing in src/ is
+# reset_less, so the design must be reset before use) and the memories' (`delete
+# t:$meminit_v2`; the targets' memories start at zero only in simulation, and nothing reads an
+# entry before writing it, see tests/unit/test_targets.py). Same flow as kpugen's
+# (branes-ai/embodied-ai-soc-generator#37). Yosys's counts are estimates before place and
+# route. The cocotb Makefiles generate the same registry targets, so gen/ holds one
 # design per file whichever wrote it last.
 synth target="generic":
     #!/usr/bin/env bash
@@ -282,7 +285,7 @@ synth target="generic":
         generic)   synth_cmd="synth" ;;
         ice40)     synth_cmd="synth_ice40 -noflatten" ;;
         ecp5)      synth_cmd="synth_ecp5 -noflatten" ;;
-        polarfire) prep="proc; attrmap -remove init;"
+        polarfire) prep='proc; delete t:$meminit_v2; attrmap -remove init;'
                    synth_cmd="synth_microchip -family polarfire -noflatten -noiopad" ;;
         *) echo "Unknown synthesis target: {{target}} (generic|ice40|ecp5|polarfire)"; exit 1 ;;
     esac

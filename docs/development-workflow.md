@@ -426,9 +426,21 @@ This is a check, not an FPGA build. It shows that the RTL maps onto real cells a
 resource estimate, with no place and route, timing or bitstream. iCE40 and ECP5 have open
 place and route (nextpnr); PolarFire's is Libero. The vendor flows run hierarchically
 (`-noflatten`), so the counts are per module and Yosys can't delete logic that no top-level
-port observes. PolarFire flip-flops have no power-up value, so the `polarfire` flow first
-drops the registers' `init` values (`attrmap -remove init`). That is safe because every
-register also has a synchronous reset, as long as the design is reset before use. The numbers for a 16x16 array are in the
+port observes.
+
+PolarFire flip-flops have no power-up value, so the `polarfire` flow first drops the initial
+values Amaranth writes:
+
+- **Registers** (`attrmap -remove init`). Every register also has a synchronous reset, so
+  this is safe as long as the design is reset before use.
+- **Memories** (`delete t:$meminit_v2`). The targets' memories (scratchpad, accumulator)
+  start at zero only in simulation, and nothing reads an entry before writing it: Matmul
+  overwrites an accumulator row with `COMPUTE` on its first k-slice and accumulates only
+  after that. `tests/unit/test_targets.py` checks that no target has non-zero memory
+  contents. Today's targets map their memories to block RAM without this step, but
+  `SystolicTop` would need it, as kpugen's tiles do.
+
+The numbers for a 16x16 array are in the
 [PolarFire deployment plan](plan/polarfire-deployment.md#14-resource-estimation).
 
 ---
