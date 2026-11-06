@@ -15,7 +15,7 @@ This document outlines the steps required to deploy SYSTARS on a Microchip Polar
 | Controllers | Done | Load, Execute, Store controllers |
 | DMA Engines | Done | StreamReader, StreamWriter, DescriptorEngine |
 | Top-Level Integration | Done | SystolicTop with AXI-like interfaces |
-| Synthesizable Verilog | Done | Yosys maps every module onto iCE40, ECP5 and PolarFire cells (`just synth polarfire`) |
+| Synthesizable Verilog | Done | `just synth ice40\|ecp5\|polarfire` maps the `systars.targets` modules (PE, PEArray, SystolicArray, Scratchpad, Accumulator) onto device cells; `SystolicTop` and the controllers are not targets yet |
 
 ### What's Missing for FPGA Deployment
 

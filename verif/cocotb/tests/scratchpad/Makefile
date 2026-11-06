@@ -35,19 +35,10 @@ endif
 # Include cocotb makefile
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-# Generate RTL before running tests
+# Generate RTL before running tests (the systars.targets registry: `just gen` writes the same file)
 .PHONY: gen-rtl
 gen-rtl:
-	@echo "Generating Scratchpad Verilog..."
-	@cd $(PROJECT_ROOT) && python3 -c "\
-from systars.config import SystolicConfig; \
-from systars.memory.scratchpad import Scratchpad; \
-from amaranth.back import verilog; \
-config = SystolicConfig(sp_banks=2, sp_capacity_kb=4, spad_read_delay=2); \
-sp = Scratchpad(config); \
-import os; os.makedirs('gen', exist_ok=True); \
-open('gen/scratchpad.v', 'w').write(verilog.convert(sp, name='Scratchpad')); \
-print('Generated gen/scratchpad.v')"
+	@cd $(PROJECT_ROOT) && python3 -m systars.targets gen scratchpad
 
 # Run tests (generate RTL first)
 .PHONY: test-all

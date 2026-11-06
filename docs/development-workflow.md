@@ -428,7 +428,7 @@ place and route (nextpnr); PolarFire's is Libero. The vendor flows run hierarchi
 (`-noflatten`), so the counts are per module and Yosys can't delete logic that no top-level
 port observes. PolarFire flip-flops have no power-up value, so the `polarfire` flow first
 drops the registers' `init` values (`attrmap -remove init`). That is safe because every
-register also has a synchronous reset. The numbers for a 16x16 array are in the
+register also has a synchronous reset, as long as the design is reset before use. The numbers for a 16x16 array are in the
 [PolarFire deployment plan](plan/polarfire-deployment.md#14-resource-estimation).
 
 ---

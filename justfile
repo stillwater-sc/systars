@@ -271,7 +271,9 @@ synth-check:
 # more memory, and it lets Yosys delete logic no top-level port observes. PolarFire flip-flops
 # have no power-up value, so the polarfire flow drops the registers' `init` values first
 # (`attrmap -remove init`): every register also has a synchronous reset (nothing in src/ is
-# reset_less). Yosys's counts are estimates before place and route.
+# reset_less), so the design must be reset before use. Yosys's counts are estimates before
+# place and route. The cocotb Makefiles generate the same registry targets, so gen/ holds one
+# design per file whichever wrote it last.
 synth target="generic":
     #!/usr/bin/env bash
     set -euo pipefail
