@@ -155,20 +155,21 @@ typecheck:
 # RTL Generation
 # =============================================================================
 
-# Generate all RTL
-gen: gen-pe gen-pe-array gen-systolic-array
+# Generate all RTL targets (systars.targets; `python3 -m systars.targets list` names them)
+gen:
+    python3 -m systars.targets gen --out-dir {{gen_dir}}
 
 # Generate PE Verilog
 gen-pe:
-    python3 {{project_root}}/scripts/gen_pe.py
+    python3 -m systars.targets gen pe --out-dir {{gen_dir}}
 
-# Generate PEArray Verilog
+# Generate PEArray Verilog (1x1 and 2x2)
 gen-pe-array:
-    python3 {{project_root}}/scripts/gen_pe_array.py
+    python3 -m systars.targets gen pe_array pe_array_2x2 --out-dir {{gen_dir}}
 
-# Generate SystolicArray Verilog
+# Generate SystolicArray Verilog (2x2 of 2x2 PEArrays, and 4x4)
 gen-systolic-array:
-    python3 {{project_root}}/scripts/gen_systolic_array.py
+    python3 -m systars.targets gen systolic_array systolic_array_4x4 --out-dir {{gen_dir}}
 
 # Generate the wavefront animations the docs embed (docs/wavefront/), from the RTL
 wavefronts:
@@ -264,6 +265,54 @@ synth-check:
     else
         echo "No Verilog files found. Run 'just gen' first."
     fi
+
+# Synthesize each generated module for a Yosys target (generic|ice40|ecp5|polarfire) and print
+# stats. The vendor flows run hierarchically (-noflatten): flattening a large design takes far
+# more memory, and it lets Yosys delete logic no top-level port observes. PolarFire flip-flops
+# have no power-up value, so the polarfire flow drops the registers' `init` values first
+# (`attrmap -remove init`): every register also has a synchronous reset (nothing in src/ is
+# reset_less). Yosys's counts are estimates before place and route.
+synth target="generic":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    prep=""
+    case "{{target}}" in
+        generic)   synth_cmd="synth" ;;
+        ice40)     synth_cmd="synth_ice40 -noflatten" ;;
+        ecp5)      synth_cmd="synth_ecp5 -noflatten" ;;
+        polarfire) prep="proc; attrmap -remove init;"
+                   synth_cmd="synth_microchip -family polarfire -noflatten -noiopad" ;;
+        *) echo "Unknown synthesis target: {{target}} (generic|ice40|ecp5|polarfire)"; exit 1 ;;
+    esac
+    stat=$(mktemp)
+    trap 'rm -f "$stat"' EXIT
+    python3 -m systars.targets list --plain | while read -r name top; do
+        file="{{gen_dir}}/$name.v"
+        [ -f "$file" ] || { echo "Missing $file - run 'just gen' first"; exit 1; }
+        echo "=== $name ($top) -> {{target}}"
+        yosys -q -p "read_verilog -sv $file; hierarchy -top $top; $prep $synth_cmd -top $top; tee -q -o $stat stat -top $top"
+        cat "$stat"
+    done
+
+# Write a Markdown resource utilization report for all generated modules
+synth-report out="resource_report.md":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    stat=$(mktemp)
+    trap 'rm -f "$stat"' EXIT
+    {
+        echo "# Resource Utilization Report"
+        echo ""
+        python3 -m systars.targets list --plain | while read -r name top; do
+            echo "## $name ($top)"
+            echo '```'
+            yosys -q -p "read_verilog -sv {{gen_dir}}/$name.v; synth -top $top; tee -q -o $stat stat"
+            cat "$stat"
+            echo '```'
+            echo ""
+        done
+    } > {{out}}
+    echo "Wrote {{out}}"
 
 # =============================================================================
 # Documentation
