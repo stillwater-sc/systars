@@ -161,11 +161,17 @@ class Trace:
         return None
 
     def expected(self) -> np.ndarray:
-        """``A @ B`` for every tile, stacked as the RTL produces them."""
-        if self.dataflow == OS:
-            parts = [t.A @ t.B for t in self.tiles if t.length]
-        else:
-            parts = [t.A @ self.W for t in self.tiles if t.length]
+        """``A @ B`` for every tile, stacked as the RTL produces them.
+
+        Computed in int64, so narrow operand dtypes (``np.int8``) don't wrap.
+        """
+        parts = []
+        for t in self.tiles:
+            if not t.length:
+                continue
+            B = t.B if self.dataflow == OS else self.W
+            assert B is not None
+            parts.append(t.A.astype(np.int64) @ B.astype(np.int64))
         return np.vstack(parts) if parts else np.zeros((0, self.cols), dtype=np.int64)
 
     def expected_result_clocks(self) -> dict:
@@ -202,7 +208,7 @@ class Trace:
             return None
         W = self.W
         assert W is not None
-        psum = int(A[idx, : i + 1] @ W[: i + 1, j])
+        psum = int(A[idx, : i + 1].astype(np.int64) @ W[: i + 1, j].astype(np.int64))
         if frame.a[i, j] != A[idx, i] or frame.psum_out[i, j] != psum or frame.w[i, j] != W[i, j]:
             return (
                 f"{where}: a={frame.a[i, j]} psum={frame.psum_out[i, j]} w={frame.w[i, j]}, "

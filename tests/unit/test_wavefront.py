@@ -214,7 +214,9 @@ def test_committed_animations_are_current(number, dataflow):
     stage = STAGES[number]
     path = DOCS / stage.filename(dataflow)
     assert path.exists(), f"{path} is missing: run `just wavefronts`"
-    assert path.read_text() == stage_svg(stage, dataflow), f"{path} is stale: run `just wavefronts`"
+    assert path.read_text(encoding="utf-8") == stage_svg(stage, dataflow), (
+        f"{path} is stale: run `just wavefronts`"
+    )
 
 
 @pytest.mark.parametrize("dataflow", [OS, WS], ids=["os", "ws"])
@@ -244,3 +246,15 @@ def test_os_needs_a_b_per_a():
     A, B = operands(cfg, OS, 2, tiles=2)
     with pytest.raises(ValueError, match="one B tile per A tile"):
         record(cfg, OS, A, B[:1])
+
+
+def test_narrow_operand_dtypes_dont_wrap_the_expected_product():
+    """int8 operand arrays: ``A @ B`` is checked in int64, as the RTL's accumulator sums."""
+    cfg = config((2, 2, 1, 1))
+    A = np.full((2, 2), 100, dtype=np.int8)
+    B = np.full((2, 2), 100, dtype=np.int8)
+    trace = record(cfg, OS, A, B)
+    assert trace.check() == []
+    assert (trace.C == 20000).all()
+    W = np.full((2, 2), 100, dtype=np.int8)
+    assert record(cfg, WS, A, W).check() == []

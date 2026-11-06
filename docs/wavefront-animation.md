@@ -58,8 +58,11 @@ edge as `C[m, j]`.
 A 4x4 array, built as a 2x2 grid of 2x2 PEArrays (the thick lines). Each cell shows which
 element is meeting there: `kN` (OS) or `mN` (stationary), one colour per `k` or `m`. On the
 edges, each L1 stream buffer starts one clock after its neighbour: row `i` feeds its
-element `k` in clock `i + k`, and column `j` feeds in clock `j + k`. So every element of a
-given `k` arrives at its PE in the same clock, and that colour lies on an anti-diagonal.
+element `k` in clock `i + k`, and column `j` feeds in clock `j + k`. So A[i, k] and B[k, j]
+reach PE(i, j) together, in clock `1 + i + j + k`. A given `k` reaches the PEs of one
+anti-diagonal (`i + j` constant) in the same clock and the next anti-diagonal a clock later
+(`k = 0` is at PE(0, 0) in clock 1 and at PE(0, 1) in clock 2), so each colour moves
+across the array as a diagonal band.
 After the last `k`, the results (`cN`) move north, and each column's results leave every
 other clock.
 
@@ -92,13 +95,19 @@ the tile boundaries.
 
 Tiles follow each other on the Streamer's schedule (`controller/execute.py`, "Schedule"):
 
-- **OS.** The next tile starts `max(K, R, C)` clocks after the last. A reduction's results
-  leave `2R - 1` clocks after the previous reduction's, so that results never meet on a
-  north link. With `K >= 2R - 1` (here K = 32 >= 31) that costs nothing, and the tiles stream
-  with no bubble. With a shorter K, each reduction waits for the drain:
+- **OS.** A tile of reduction length `K` starts `max(K_prev, R, C, K_prev - K + 2R - 1)`
+  clocks after the previous one, of length `K_prev`. The first three terms are the streams:
+  an L1 buffer takes the next block in the clock the last element of its current block
+  leaves it (`K_prev`), and the Streamer reads a tile's `R` A rows and `C` B columns from L2
+  on consecutive clocks, one per lane (`R`, `C`). The last term keeps the results apart: a
+  reduction's results leave the north edge at least `2R - 1` clocks after the previous
+  reduction's, so that results never meet on a north link. For tiles of equal length the
+  interval is `max(K, R, C, 2R - 1)`, and the tiles stream with no bubble when it is `K`:
+  when `K >= C` and `K >= 2R - 1` (here K = 32, C = 16, 2R - 1 = 31). A wide array costs a gap even with a long enough K: R = 2, C = 6,
+  K = 3 starts a tile every 6 clocks. With a shorter K, each reduction waits for the drain:
   `python examples/gemm/08_rtl_wavefront.py --stage 3 --n 8 --svg out.svg` shows the gaps.
-- **Stationary.** The next tile starts `max(M, R)` clocks after the last, and there's no
-  north drain, so `M >= R` is enough.
+- **Stationary.** The next tile starts `max(M_prev, R)` clocks after the last, and there's
+  no north drain, so `M >= R` is enough.
 
 `wavefront.streamer_starts` is this schedule, and `tests/unit/test_execute_controller.py`
 checks it against the Streamer itself.
@@ -116,10 +125,14 @@ PE holds in every clock and checks it against the prediction:
   the partial sum `A[m, :r+1] @ W[:r+1, j]`. It leaves the south edge of column `j` in clock
   `s + R + j + m`.
 
-Every cell is checked by value: its `a`, `b`, `w` and partial sum against the operands.
-So the colour or label a cell shows is the one the RTL confirmed. A cell where the RTL
-departs from the prediction is drawn red (`X`). The check also covers the clock every
-result leaves the array, and the result itself. `render_svg` draws a trace in the `value`,
+Every cell is checked by value against the operands: its `a` and `b` (OS), or its `a`,
+`w` and outgoing partial sum (stationary). So the colour or label a cell shows is the one
+the RTL confirmed. A cell where the RTL departs from the prediction is drawn red (`X`). The
+check also covers the clock every result leaves the array, and the result itself, so each
+PE's final sum is checked as the result it sends. The OS accumulator inside the PE is not
+a port and isn't recorded: the running sums the value view shows (`c = ...`) are computed
+from the operands the RTL recorded, and an intermediate sum the RTL got wrong would show
+up as a wrong result, not as a red cell. `render_svg` draws a trace in the `value`,
 `index` or `front` view. Each cell's colour and text is one SMIL animation, so the files
 stay small (the 16x16 OS animation is about 320 KB). They carry their own light and dark
 colours, and the palette (viridis) is colour-blind safe.

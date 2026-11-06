@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Wavefront animations: a 2x2 -> 4x4 -> 16x16 progression from the RTL** (#23,
   2026-11-05). `systars.wavefront` records one tile or several back to back, started on the
   Streamer's schedule (`streamer_starts`, checked against the Streamer in
-  `tests/unit/test_execute_controller.py`), and checks every cell by value, so any operands
-  and any array size work (`label_operands` and its int8 limit are gone). `render_svg` draws
+  `tests/unit/test_execute_controller.py`), and checks every cell by value, so any array
+  size works, with any operands that fit the PE's input widths (`label_operands` and its
+  int8 limit are gone; `A @ B` is checked in int64, so int8 operand arrays don't wrap). `render_svg` draws
   a `value` view (operands, running sums, C filling in, `C == A @ B` on screen), an `index`
   view (`kN` / `mN`, with the L1 stream buffers feeding the edges) and a `front` view
   (cells coloured by `k` / `m`, results moving north, PEs busy per clock), with captions

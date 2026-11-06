@@ -37,10 +37,10 @@ def main():
             path = args.out / stage.filename(dataflow)
             svg = stage_svg(stage, dataflow)  # raises if the RTL departs from the prediction
             if args.check:
-                if not path.exists() or path.read_text() != svg:
+                if not path.exists() or path.read_text(encoding="utf-8") != svg:
                     stale.append(path)
                 continue
-            path.write_text(svg)
+            path.write_text(svg, encoding="utf-8")
             print(f"Wrote {path} ({len(svg) // 1024} KB)")
     if stale:
         for path in stale:

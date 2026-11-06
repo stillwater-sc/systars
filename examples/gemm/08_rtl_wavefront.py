@@ -69,7 +69,7 @@ def main():
         print(render_text(trace))
     if args.svg:
         svg = render_svg(trace, view=view)
-        args.svg.write_text(svg)
+        args.svg.write_text(svg, encoding="utf-8")
         print(f"Wrote {args.svg} ({len(svg) // 1024} KB)")
 
     problems = trace.check()
