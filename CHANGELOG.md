@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Wavefront animations: a 2x2 -> 4x4 -> 16x16 progression from the RTL** (#23,
+  2026-11-05). `systars.wavefront` records one tile or several back to back, started on the
+  Streamer's schedule (`streamer_starts`, checked against the Streamer in
+  `tests/unit/test_execute_controller.py`), and checks every cell by value, so any array
+  size works, with any operands that fit the PE's input widths (`label_operands` and its
+  int8 limit are gone; `A @ B` is checked in int64, so int8 operand arrays don't wrap). `render_svg` draws
+  a `value` view (operands, running sums, C filling in, `C == A @ B` on screen), an `index`
+  view (`kN` / `mN`, with the L1 stream buffers feeding the edges) and a `front` view
+  (cells coloured by `k` / `m`, results moving north, PEs busy per clock), with captions
+  that name the clock and phase and that dwell on the first product, the first result and
+  each next tile. Each cell is one SMIL animation, and cells that step through the same
+  colours share one, so the 16x16 three-tile OS animation is about 320 KB. Theme-aware
+  colours (`prefers-color-scheme`) and a viridis palette. `STAGES` defines the docs'
+  progression. `scripts/gen_wavefronts.py` / `just wavefronts` write the committed SVGs in
+  `docs/wavefront/`, and `just wavefronts-check` and `tests/unit/test_wavefront.py` fail when
+  they are stale. `examples/gemm/08_rtl_wavefront.py` gains `--stage`, `--view`, `--tiles`
+  and `--small`. The wavefront page is rewritten around the progression: the reduction
+  (2x2), the stagger from the L1 stream buffers (4x4) and the schedule (16x16, back-to-back
+  tiles and the north drain), OS beside WS; the textbook model (examples 02, 03) is now a
+  labelled aside. `docs/rtl-wavefront-{os,ws}.svg` are replaced.
+
 - **A registered fabric, L1 stream buffers and a bubble-free Streamer** (#15, 2026-11-03;
   ported from branes-ai/embodied-ai-soc-generator#21). Every PE has an input register on each
   link, so values move one PE per clock and a PEArray is only a structural grouping (8x8 up
@@ -67,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in every stream cycle (and `out_last`, and the result) against the predicted wavefront. Renders text frames and an animated SVG, each cell showing which k or
   m is there (read back from the RTL's values), with the PEArray boundaries marked.
   `tests/unit/test_wavefront.py` runs the check on 7 shapes, OS and WS, and shows that a skew
-  bug is caught. Two SVGs are in [the wavefront page](docs/wavefront-animation.md#wavefronts-from-the-rtl).
+  bug is caught. Two SVGs are in [the wavefront page](docs/wavefront-animation.md#how-the-animations-are-made-and-checked) (since replaced by the progression, #23).
   The existing examples 02–05 animate a Python model, not the RTL
 
 ### Fixed

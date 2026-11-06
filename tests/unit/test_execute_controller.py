@@ -433,3 +433,56 @@ class TestStationary:
         log = run(Harness(config(dataflow=Dataflow.B_STATIONARY)), {},
                   [(ExecOpcode.PRELOAD, {"rs1": 0, "k_dim": 9})])  # fmt: skip
         assert sorted(log["b_reads"]) == [0, 1]
+
+
+class TestWavefrontSchedule:
+    """``systars.wavefront.streamer_starts`` (the schedule the wavefront animations
+    are recorded with) is the schedule the Streamer runs."""
+
+    @staticmethod
+    def stream_starts(log, lengths):
+        """The clock each tile's stream starts on lane 0 (its K or M clocks are valid)."""
+        on = [t for t, v in enumerate(log["streaming"]) if v]
+        assert len(on) == sum(lengths)
+        return [on[sum(lengths[:n])] for n in range(len(lengths))]
+
+    @pytest.mark.parametrize("lengths", [[1, 1, 1], [8, 8, 8], [8, 3, 4], [4, 7, 2]])
+    def test_output_stationary(self, lengths):
+        from systars.wavefront import streamer_starts
+
+        harness = Harness(config(grid_rows=4, grid_cols=4))
+        R, C = harness.rows, harness.cols
+        rng = np.random.default_rng(sum(lengths))
+        sp, cmds = {}, []
+        for n, k in enumerate(lengths):
+            A = rng.integers(-128, 128, (R, k))
+            B = rng.integers(-128, 128, (k, C))
+            tile_sp, tile_cmds = os_tiles(harness, A, B, n * 16, 64 + n * 16)
+            sp.update(tile_sp)
+            cmds += [(ExecOpcode.COMPUTE, {**c, "rd": n * R}) for c in tile_cmds]
+        log = run(harness, sp, cmds, tracked=True)
+
+        starts = self.stream_starts(log, lengths)
+        model = streamer_starts(0, R, C, lengths)
+        assert np.diff(starts).tolist() == np.diff(model).tolist()
+
+    @pytest.mark.parametrize("lengths", [[4, 4, 4], [4, 2, 4], [1, 3, 2]])
+    def test_stationary(self, lengths):
+        from systars.wavefront import streamer_starts
+
+        harness = Harness(config(grid_rows=4, grid_cols=4))
+        R, C = harness.rows, harness.cols
+        rng = np.random.default_rng(sum(lengths) + 1)
+        W = rng.integers(-128, 128, (R, C))
+        sp = {50 + r: pack(W[r], harness.cfg.weight_bits) for r in range(R)}
+        cmds = [(ExecOpcode.CONFIG, {"rs1": WS}), (ExecOpcode.PRELOAD, {"rs1": 50, "k_dim": R})]
+        for n, m_len in enumerate(lengths):
+            A = rng.integers(-128, 128, (m_len, R))
+            for k in range(R):
+                sp[n * R + k] = pack(A[:, k], harness.cfg.input_bits)
+            cmds.append((ExecOpcode.COMPUTE, {"rs1": n * R, "rd": 8 * n, "k_dim": m_len}))
+        log = run(harness, sp, cmds, tracked=True)
+
+        starts = self.stream_starts(log, lengths)
+        model = streamer_starts(1, R, C, lengths)
+        assert np.diff(starts).tolist() == np.diff(model).tolist()

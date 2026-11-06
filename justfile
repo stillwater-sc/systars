@@ -170,6 +170,14 @@ gen-pe-array:
 gen-systolic-array:
     python3 {{project_root}}/scripts/gen_systolic_array.py
 
+# Generate the wavefront animations the docs embed (docs/wavefront/), from the RTL
+wavefronts:
+    python3 {{project_root}}/scripts/gen_wavefronts.py
+
+# Fail if a committed wavefront animation is stale
+wavefronts-check:
+    python3 {{project_root}}/scripts/gen_wavefronts.py --check
+
 # =============================================================================
 # Testing
 # =============================================================================

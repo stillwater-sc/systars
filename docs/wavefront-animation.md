@@ -1,399 +1,184 @@
 # Systolic Array Wavefront Visualization
 
-This document explains the wavefront data flow pattern in systolic arrays and how to use the visualization tools to understand and share these concepts.
+A systolic array is a *wavefront* array: the elements of A and B meet at each PE in a
+sweep that crosses the array along its anti-diagonals, one PE per clock. This page shows
+it in three steps, each a bit larger than the last, and every animation on it is
+recorded from the generated RTL and checked against the predicted wavefront:
 
-> The visualization tools below animate a Python model of a textbook array, where each PE is its
-> own pipeline stage, as it is in the generated RTL (every PE link is registered). For animations
-> of the RTL itself, checked against the predicted wavefront, see
-> [Wavefronts from the RTL](#wavefronts-from-the-rtl).
+1. [The reduction](#1-the-reduction-2x2): what one PE computes, clock by clock (2x2).
+2. [The stagger](#2-the-stagger-4x4): how the L1 stream buffers line the elements up (4x4).
+3. [The schedule](#3-the-schedule-16x16): the front sweeping a 16x16 array, tile after
+   tile with no gap between them.
 
-## Table of Contents
+Each step is shown for both fabric modes: output-stationary (OS), and the stationary mode
+(weight-stationary, WS; input-stationary, IS, is the same fabric mode with the operands
+swapped).
 
-1. [Why Wavefront Data Flow?](#why-wavefront-data-flow)
-2. [The Skewing Pattern](#the-skewing-pattern)
-3. [Cycle-by-Cycle Breakdown](#cycle-by-cycle-breakdown)
-4. [Using the Visualization Tools](#using-the-visualization-tools)
-5. [Interpreting the Output](#interpreting-the-output)
-6. [Generating Shareable GIFs](#generating-shareable-gifs)
+## Why a wavefront?
 
----
-
-## Why Wavefront Data Flow?
-
-Systolic arrays are designed to maximize data reuse and minimize memory bandwidth. The key insight is that matrix multiplication has inherent data reuse:
+Matrix multiplication reuses every operand:
 
 ```
 C[i,j] = Σ A[i,k] × B[k,j]  for k = 0 to K-1
 ```
 
-- Each element of **A** is used in computing an entire row of C
-- Each element of **B** is used in computing an entire column of C
-- Each element of **C** accumulates K partial products
+Each element of A is used for a whole row of C, and each element of B for a whole column.
+A systolic array reads each element from memory once and passes it from PE to PE: A moves
+east along a row, B moves south down a column (OS), and each PE multiplies what passes
+through it. For the right pair to meet, row `i`'s stream starts `i` clocks after row 0's,
+and column `j`'s `j` clocks after column 0's. Then A[i, k] and B[k, j] both reach PE(i, j)
+in clock `1 + i + j + k`, and for each `k` the PEs that are working on it form an
+anti-diagonal that moves one PE further every clock: the wavefront.
 
-### The Problem with Naive Approaches
+In the RTL every PE link is registered (`core/pe.py`), and the array itself has no skew
+registers: the stagger comes from the **L1 stream buffers** (`memory/stream_buffer.py`).
+The Streamer loads them on consecutive clocks, so buffer `i` starts one clock after buffer
+`i - 1`.
 
-A naive implementation would:
+## 1. The reduction (2x2)
 
-1. Fetch A[i,k] and B[k,j] from memory
-2. Multiply and accumulate into C[i,j]
-3. Repeat for all i, j, k
+A 2x2 array with K = 3 and single-digit operands. Each PE shows the operands in its input
+registers (`a·b`), its running sum `c` and the `k` it is working on. The strips on the
+west and north edges are the L1 stream buffers, showing what each one feeds the array in
+that clock. On its last product (`k = 2`) a PE sends `c` north, one PE per clock (`↑`),
+into the L1 result buffer, and C fills in on the right. The loop ends with `C == A @ B`,
+as the RTL computed it.
 
-This requires O(N³) memory accesses for an N×N multiplication.
+![Output-stationary reduction, 2x2](wavefront/os-1-reduction.svg)
 
-### The Systolic Solution
+In the stationary mode the weights shift into the array first (preload, one row per
+clock), and each PE holds its weight `w`. Element `m` of the stream (a row of A) moves
+east, and the partial sum `Σ = A[m, :r+1] @ W[:r+1, j]` moves south. It leaves the south
+edge as `C[m, j]`.
 
-A systolic array solves this by:
+![Stationary reduction, 2x2](wavefront/ws-1-reduction.svg)
 
-1. **Flowing data through the array** - Each value is read once and passes through multiple PEs
-2. **Stationary accumulators** - Results stay in place while inputs flow past
-3. **Wavefront pattern** - Careful timing ensures the right values meet at the right PE
+## 2. The stagger (4x4)
 
-The result: O(N²) memory accesses instead of O(N³).
+A 4x4 array, built as a 2x2 grid of 2x2 PEArrays (the thick lines). Each cell shows which
+element is meeting there: `kN` (OS) or `mN` (stationary), one colour per `k` or `m`. On the
+edges, each L1 stream buffer starts one clock after its neighbour: row `i` feeds its
+element `k` in clock `i + k`, and column `j` feeds in clock `j + k`. So A[i, k] and B[k, j]
+reach PE(i, j) together, in clock `1 + i + j + k`. A given `k` reaches the PEs of one
+anti-diagonal (`i + j` constant) in the same clock and the next anti-diagonal a clock later
+(`k = 0` is at PE(0, 0) in clock 1 and at PE(0, 1) in clock 2), so each colour moves
+across the array as a diagonal band.
+After the last `k`, the results (`cN`) move north, and each column's results leave every
+other clock.
 
----
+![Output-stationary stagger, 4x4](wavefront/os-2-stagger.svg)
 
-## The Skewing Pattern
+![Stationary stagger, 4x4](wavefront/ws-2-stagger.svg)
 
-The magic of systolic arrays lies in the **skewed input pattern**. For matrix multiplication C = A × B:
+PEArray boundaries are structural only. Every PE link is registered, so the wavefront
+crosses a PEArray boundary exactly as it moves inside one.
 
-### Input Delays
+## 3. The schedule (16x16)
 
-- **Row i of A** is delayed by **i cycles** before entering the left edge
-- **Column j of B** is delayed by **j cycles** before entering the top edge
+A 16x16 array, three tiles back to back, K = 32 (OS) or M = 32 (stationary). At this size
+the values don't matter: each cell is coloured by the `k` (or `m`) meeting there, so each
+anti-diagonal is one colour, and the front sweeps the array.
 
-### Visual Example (3×3)
+- **Fill:** the front crosses the array, reaching the far corner in clock `R + C - 1`.
+- **Steady state:** every PE is busy. The next tile's front (the colours start again)
+  follows the last one with no gap: the Streamer loads the next tile into each L1 buffer
+  in the clock the previous tile's last element leaves it.
+- **Drain:** the last front leaves, and in OS the results move north (the dots), each
+  column emptying every other clock.
 
-Consider matrices:
+The plot under the array is the fraction of PEs busy in each clock. It stays at 100% across
+the tile boundaries.
 
-```
-A = [1 2 3]    B = [1 4 7]
-    [4 5 6]        [2 5 8]
-    [7 8 9]        [3 6 9]
-```
+![Output-stationary schedule, 16x16, three tiles](wavefront/os-3-schedule.svg)
 
-The skewed input pattern over time:
+![Stationary schedule, 16x16, three tiles](wavefront/ws-3-schedule.svg)
 
-```
-Time →    t=0   t=1   t=2   t=3   t=4   t=5   t=6
+Tiles follow each other on the Streamer's schedule (`controller/execute.py`, "Schedule"):
 
-A inputs (entering from left):
-  Row 0:   1     2     3     ·     ·     ·     ·
-  Row 1:   ·     4     5     6     ·     ·     ·
-  Row 2:   ·     ·     7     8     9     ·     ·
+- **OS.** A tile of reduction length `K` starts `max(K_prev, R, C, K_prev - K + 2R - 1)`
+  clocks after the previous one, of length `K_prev`. The first three terms are the streams:
+  an L1 buffer takes the next block in the clock the last element of its current block
+  leaves it (`K_prev`), and the Streamer reads a tile's `R` A rows and `C` B columns from L2
+  on consecutive clocks, one per lane (`R`, `C`). The last term keeps the results apart: a
+  reduction's results leave the north edge at least `2R - 1` clocks after the previous
+  reduction's, so that results never meet on a north link. For tiles of equal length the
+  interval is `max(K, R, C, 2R - 1)`, and the tiles stream with no bubble when it is `K`:
+  when `K >= C` and `K >= 2R - 1` (here K = 32, C = 16, 2R - 1 = 31). A wide array costs a gap even with a long enough K: R = 2, C = 6,
+  K = 3 starts a tile every 6 clocks. With a shorter K, each reduction waits for the drain:
+  `python examples/gemm/08_rtl_wavefront.py --stage 3 --n 8 --svg out.svg` shows the gaps.
+- **Stationary.** The next tile starts `max(M_prev, R)` clocks after the last, and there's
+  no north drain, so `M >= R` is enough.
 
-B inputs (entering from top):
-  Col 0:   1     2     3     ·     ·     ·     ·
-  Col 1:   ·     4     5     6     ·     ·     ·
-  Col 2:   ·     ·     7     8     9     ·     ·
-```
+`wavefront.streamer_starts` is this schedule, and `tests/unit/test_execute_controller.py`
+checks it against the Streamer itself.
 
-### Why This Works
+## How the animations are made, and checked
 
-At cycle t, PE[i,j] receives:
+`systars.wavefront` runs the `SystolicArray` RTL in simulation, driven as the L1 stream
+buffers drive it, with each tile started on the Streamer's schedule. It records what every
+PE holds in every clock and checks it against the prediction:
 
-- A value that entered the array at cycle (t - j) from row i
-- B value that entered the array at cycle (t - i) from column j
+- **Output-stationary:** A[i, k] meets B[k, j] at PE(i, j) in clock `s + 1 + i + j + k`,
+  where `s` is the clock the tile starts. PE(i, j)'s result leaves the north edge of column
+  `j` in clock `s + K + j + 2i`.
+- **Stationary:** element `m` meets W[r, j] at PE(r, j) in clock `s + 1 + r + j + m`, with
+  the partial sum `A[m, :r+1] @ W[:r+1, j]`. It leaves the south edge of column `j` in clock
+  `s + R + j + m`.
 
-For the values to "meet" at PE[i,j] at time t:
+Every cell is checked by value against the operands: its `a` and `b` (OS), or its `a`,
+`w` and outgoing partial sum (stationary). So the colour or label a cell shows is the one
+the RTL confirmed. A cell where the RTL departs from the prediction is drawn red (`X`). The
+check also covers the clock every result leaves the array, and the result itself, so each
+PE's final sum is checked as the result it sends. The OS accumulator inside the PE is not
+a port and isn't recorded: the running sums the value view shows (`c = ...`) are computed
+from the operands the RTL recorded, and an intermediate sum the RTL got wrong would show
+up as a wrong result, not as a red cell. `render_svg` draws a trace in the `value`,
+`index` or `front` view. Each cell's colour and text is one SMIL animation, so the files
+stay small (the 16x16 OS animation is about 320 KB). They carry their own light and dark
+colours, and the palette (viridis) is colour-blind safe.
 
-- A[i,k] enters row i at cycle k + i (row i is skewed by i cycles), and arrives at column j at cycle k + i + j
-- B[k,j] enters column j at cycle k + j (column j is skewed by j cycles), and arrives at row i at cycle k + j + i
-
-Both arrive at PE[i,j] at cycle k + i + j. Since this happens for all k values (0 to N-1), PE[i,j] correctly computes:
-
-```
-C[i,j] = A[i,0]×B[0,j] + A[i,1]×B[1,j] + A[i,2]×B[2,j] + ...
-```
-
----
-
-## Cycle-by-Cycle Breakdown
-
-Let's trace through a 3×3 multiplication step by step.
-
-### Initial State (Cycle 0)
-
-```
-         B inputs: [1] [ ] [ ]
-                    ↓
-A inputs: [1] →  [PE00] [PE01] [PE02]
-          [ ]    [PE10] [PE11] [PE12]
-          [ ]    [PE20] [PE21] [PE22]
-
-PE states: All idle, C = 0 everywhere
-```
-
-### Cycle 1
-
-```
-         B inputs: [2] [4] [ ]
-                    ↓   ↓
-A inputs: [2] →  [1×1] [a=1] [    ]
-          [4] →  [    ] [    ] [    ]
-          [ ]    [    ] [    ] [    ]
-
-PE00: Computing 1×1=1, c=1
-PE01: Has a=1 (from PE00), waiting for b
-PE10: Has b=1 (from PE00), waiting for a
-```
-
-### Cycle 2
-
-```
-         B inputs: [3] [5] [7]
-                    ↓   ↓   ↓
-A inputs: [3] →  [2×2] [1×4] [a=1]
-          [5] →  [4×1] [    ] [    ]
-          [7] →  [    ] [    ] [    ]
-
-PE00: c = 1 + 2×2 = 5
-PE01: c = 0 + 1×4 = 4
-PE10: c = 0 + 4×1 = 4
-PE02: Has a=1, waiting for b=7
-PE11: Has a=4, b=2, will compute next
-PE20: Has b=1, waiting for a=7
-```
-
-### Cycle 3
-
-```
-PE00: c = 5 + 3×3 = 14  ✓ (Done: C[0,0] = 1×1 + 2×2 + 3×3 = 14)
-PE01: c = 4 + 2×5 = 14
-PE02: c = 0 + 1×7 = 7
-PE10: c = 4 + 5×2 = 14
-PE11: c = 0 + 4×4 = 16
-PE20: c = 0 + 7×1 = 7
-...
-```
-
-### Final Result (Cycle 7)
-
-All PEs have accumulated their final values:
-
-```
-C = [14  32  50]    (matches A @ B)
-    [32  77 122]
-    [50 122 194]
-```
-
-### Wavefront Pattern
-
-Notice how computation moves diagonally through the array:
-
-```
-Cycle when each PE first computes:
-
-       Col0  Col1  Col2
-Row0 [  0     1     2  ]
-Row1 [  1     2     3  ]
-Row2 [  2     3     4  ]
-```
-
-This diagonal pattern is the **wavefront** - it sweeps from top-left to bottom-right.
-
----
-
-## Using the Visualization Tools
-
-### Terminal Animation
-
-The terminal-based animation shows the wavefront in real-time:
+The SVGs in `docs/wavefront/` are generated and committed. To regenerate them after a
+change to the RTL or the renderer:
 
 ```bash
-# Basic animation (4×4 array)
-python examples/gemm/02_animated_wavefront.py
-
-# Smaller array, easier to follow
-python examples/gemm/02_animated_wavefront.py --size 3
-
-# Step-by-step mode (press Enter for each cycle)
-python examples/gemm/02_animated_wavefront.py --step --size 3
-
-# Faster animation
-python examples/gemm/02_animated_wavefront.py --delay 200
-
-# Without colors (for basic terminals)
-python examples/gemm/02_animated_wavefront.py --no-color
+just wavefronts          # rewrite docs/wavefront/*.svg (fails if the RTL departs from the prediction)
+just wavefronts-check    # fail if a committed SVG is stale
 ```
 
-### What You'll See
-
-```
-Cycle 2
-============================================================
-
-  B inputs (flowing ↓):
-       [3]   [5]   [7]
-
-  2 → [2×2   1×4   a=1 ]
-  5 → [4×1    ·     ·  ]
-  7 → [ ·     ·     ·  ]
-
-  Accumulator C:
-       [  5     4     0  ]
-       [  4     0     0  ]
-       [  0     0     0  ]
-```
-
-### GIF Generator
-
-For sharing on Slack, in documentation, or presentations:
-
-```bash
-# Install dependencies
-pip install matplotlib pillow
-
-# Generate GIF
-python examples/gemm/03_wavefront_gif.py --output wavefront.gif
-
-# Customize
-python examples/gemm/03_wavefront_gif.py \
-    --size 4 \
-    --fps 2 \
-    --dpi 150 \
-    --output my_animation.gif
-
-# Preview in window first
-python examples/gemm/03_wavefront_gif.py --show
-```
-
----
-
-## Interpreting the Output
-
-### Terminal Animation Colors
-
-| Color | Meaning |
-|-------|---------|
-| **Green background** | PE is actively computing (a×b) |
-| **Blue background** | PE has partial data (a or b, not both) |
-| **No background** | PE is idle |
-| **Yellow text** | A values (flowing right) |
-| **Cyan text** | B values (flowing down) |
-| **Green text** | Accumulated C values |
-
-### PE State Display
-
-```
-[2×3]  - PE is computing: a=2, b=3
-[a=5]  - PE has a value, waiting for b
-[b=7]  - PE has b value, waiting for a
-[ · ]  - PE is idle
-```
-
-### GIF Panels
-
-The generated GIF shows three panels:
-
-1. **Left Panel - Input Matrices**
-   - Shows A and B matrices
-   - Highlighted cells indicate values currently being fed
-   - Yellow = A values, Blue = B values
-
-2. **Middle Panel - PE Array**
-   - Shows current state of each PE
-   - Green = computing, Blue = has data, Gray = idle
-   - Displays current operation (e.g., "2×3")
-
-3. **Right Panel - Accumulator**
-   - Shows C values building up
-   - Intensity indicates magnitude
-   - Final values match expected result
-
----
-
-## Generating Shareable GIFs
-
-### Quick Start
-
-```bash
-# Default 4×4 array, 2 FPS
-python examples/gemm/03_wavefront_gif.py --output wavefront.gif
-```
-
-### Recommended Settings
-
-| Use Case | Command |
-|----------|---------|
-| Slack/quick share | `--size 3 --fps 2 --dpi 100` |
-| Documentation | `--size 4 --fps 1 --dpi 150` |
-| Presentation | `--size 4 --fps 1 --dpi 200` |
-| Detailed study | `--size 3 --fps 0.5 --dpi 100` |
-
-### File Size Guide
-
-| Size | Frames | Typical File Size |
-|------|--------|-------------------|
-| 3×3 | 10 | ~200 KB |
-| 4×4 | 13 | ~300 KB |
-| 5×5 | 17 | ~450 KB |
-| 6×6 | 21 | ~600 KB |
-
-### Alternative: Record Terminal
-
-For a more "authentic" look, record the terminal animation:
-
-```bash
-# Using asciinema + agg
-asciinema rec demo.cast -c "python examples/gemm/02_animated_wavefront.py --size 3"
-agg demo.cast demo.gif
-
-# Using VHS (Charmbracelet)
-# Create a tape file first, then:
-vhs < demo.tape
-
-# Using termtosvg (creates SVG, not GIF)
-termtosvg -c "python examples/gemm/02_animated_wavefront.py --size 3"
-```
-
----
-
-## Key Takeaways
-
-1. **Wavefront = diagonal sweep** - Computation moves from top-left to bottom-right
-2. **Skewing creates synchronization** - Input delays ensure correct values meet
-3. **Data flows, results stay** - A flows right, B flows down, C accumulates in place
-4. **Total cycles = 2N-1 + N** - For an N×N array: N cycles to fill, N-1 to drain, N for computation overlap
-5. **Maximum parallelism at center** - All N² PEs active when wavefront fills the array
-
-## Further Reading
-
-- Original systolic array paper: H.T. Kung, "Why Systolic Architectures?" (1982)
-- Google TPU architecture: Uses systolic arrays for ML inference
-- Gemmini project: Open-source systolic array generator (Berkeley)
-
-## Wavefronts from the RTL
-
-`systars.wavefront` runs the `SystolicArray` RTL in simulation, driven as the L1 stream buffers
-drive it, and records what every PE holds in every cycle. It checks every PE in every stream
-cycle against the predicted wavefront, the clock each OS result leaves the north edge, and the
-result (the preload frames are drawn, not checked):
-
-- output-stationary: A[i, k] meets B[k, j] at PE(i, j) in cycle `1 + i + j + k`; PE(i, j)'s
-  result leaves the north edge of column `j` in cycle `K + j + 2i`;
-- stationary (WS; IS is the same fabric mode): element m of the stream meets W[r, j] at
-  PE(r, j) in cycle `1 + r + j + m`, with the partial sum `A[m, :r+1] @ W[:r+1, j]`.
-
-Each cell shows which element is meeting there, read back from the RTL's own values: `kN`
-(output-stationary) or `mN` (stationary), and `cN` for a result moving north. A cell where A
-and B disagree would show `X`. Thick lines are PEArray boundaries, which are structural only:
-every PE link is registered, so the wavefront advances one PE per cycle, across PEArray
-boundaries as inside them.
-
-Output-stationary, 2x2 grid of 2x2 PEArrays, K = 4, then the results moving north, each
-column's results leaving the north edge every other cycle:
-
-![Output-stationary wavefront](rtl-wavefront-os.svg)
-
-Stationary (WS), same array, 4 rows of A, after the weights shift in:
-
-![Weight-stationary wavefront](rtl-wavefront-ws.svg)
+`tests/unit/test_wavefront.py` fails in CI when a committed SVG is stale. It also checks
+every stage against the prediction, that the value view's sums are `A @ B`, that the 16x16
+tiles run without an idle clock, and the size of the SVG.
 
 To draw other shapes:
 
 ```bash
-python examples/gemm/08_rtl_wavefront.py --grid 4 4 --tile 1 1 --dataflow ws --svg out.svg
+# A stage of the progression, OS or WS
+python examples/gemm/08_rtl_wavefront.py --stage 2 --dataflow ws --svg out.svg
+
+# Any shape: 8x8 as 4x4 PEArrays, K = 12, two tiles, printed as text frames too
+python examples/gemm/08_rtl_wavefront.py --grid 2 2 --tile 4 4 --n 12 --tiles 2 --text --svg out.svg
 ```
 
-It prints the frames and exits non-zero if the RTL departs from the predicted wavefront.
-`tests/unit/test_wavefront.py` runs the same check on 7 grid and PEArray shapes.
+It exits non-zero if the RTL departs from the predicted wavefront.
+
+## Aside: the textbook model (examples 02 and 03)
+
+`examples/gemm/02_animated_wavefront.py` (a terminal animation) and
+`examples/gemm/03_wavefront_gif.py` (a GIF) animate a **conceptual** Python model of a
+textbook systolic array, not the RTL. It is a square array whose inputs are skewed by delay
+registers at the edges, and whose results stay in the PEs. That is how the idea is usually
+taught, and it is the same wavefront: in the RTL, the L1 stream buffers do the skewing, and
+OS results drain north. Use these for a quick terminal demo or a GIF for slides. Use the
+animations above for what the hardware does.
+
+```bash
+python examples/gemm/02_animated_wavefront.py --m 3 --n 3 --k 3 --step   # Enter: next clock
+pip install matplotlib pillow
+python examples/gemm/03_wavefront_gif.py --size 4 --fps 1 --output wavefront.gif
+```
+
+## Further reading
+
+- H.T. Kung, "Why Systolic Architectures?", IEEE Computer, 1982
+- [ISA instructions](isa-instructions.md): the fabric, L1 and the Streamer, as the Matmul
+  and Conv2d instructions drive them

@@ -50,6 +50,7 @@ just gen                    # Generate all RTL
 just gen-pe                 # Generate PE Verilog (scripts/gen_pe.py)
 just gen-pe-array           # Generate PEArray Verilog (scripts/gen_pe_array.py)
 just gen-systolic-array     # Generate SystolicArray Verilog (scripts/gen_systolic_array.py)
+just wavefronts             # Regenerate the docs' wavefront animations (docs/wavefront/)
 ```
 
 ### Synthesis and Waveforms
@@ -112,6 +113,12 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 - Credits and tile-ready tokens (`controller/sync.py`): `SystolicTop` queues each process's
   commands and starts one only when its whole-tile slot credits and tokens are there
   (`cmd_sync`; `tests/unit/test_credits.py`)
+- Wavefront tracing and animations (`wavefront.py`): records the `SystolicArray` RTL on the
+  Streamer's schedule, checks every PE in every clock against the predicted wavefront, and
+  draws value / index / front views as animated SVGs. The docs embed a committed
+  progression (`docs/wavefront/`, 2x2 -> 4x4 -> 16x16, `wavefront.STAGES`): after changing
+  the fabric, the Streamer's schedule or the renderer, run `just wavefronts` and commit the
+  SVGs (`tests/unit/test_wavefront.py` fails when they are stale)
 - Matmul and Conv2d ISA instructions (`isa/`): tile an operation larger than the array and
   push `SystolicTop` commands ahead, double-buffered (`isa/command.py`); Matmul runs OS, WS
   or IS (`CONFIG_DATAFLOW`) and Conv2d runs OS; see
