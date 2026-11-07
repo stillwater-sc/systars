@@ -203,6 +203,7 @@ class SystolicTop(Component):
         # Local memories
         m.submodules.scratchpad = scratchpad = Scratchpad(cfg)
         m.submodules.accumulator = accumulator = Accumulator(cfg)
+        self.scratchpad, self.accumulator = scratchpad, accumulator  # for testbenches (no hardware)
 
         # DMA engines
         m.submodules.stream_reader = reader = StreamReader(cfg)

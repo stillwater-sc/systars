@@ -81,6 +81,7 @@ class AccumulatorBank(Component):
         # Create memory (signed values stored as unsigned)
         mem = Memory(shape=unsigned(width), depth=cfg.acc_bank_entries, init=[])
         m.submodules.mem = mem
+        self.mem = mem  # for testbenches (no hardware)
 
         # Read port
         rd_port = mem.read_port()
@@ -238,6 +239,7 @@ class Accumulator(Component):
 
         # Instantiate banks
         banks = [AccumulatorBank(cfg, i) for i in range(cfg.acc_banks)]
+        self.banks = banks  # for testbenches (no hardware)
         for i, bank in enumerate(banks):
             m.submodules[f"bank_{i}"] = bank
 
