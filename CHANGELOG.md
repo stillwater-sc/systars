@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The PolarFire flow drops memory initial values too, and a test runs GEMMs from random
+  memory** (#27, 2026-11-06; kpugen parity, branes-ai/embodied-ai-soc-generator#38). The
+  `polarfire` prep in `just synth` is now `proc; delete t:$meminit_v2; attrmap -remove
+  init;`, the same as kpugen's, whose tile accumulator otherwise lands in initialized
+  flip-flops. On hardware, memories start unspecified, not at zero: the design never reads a
+  scratchpad or accumulator word before writing it, and the host must write before it reads
+  (`docs/development-workflow.md`, "Synthesis"). `test_no_read_before_write`
+  (`tests/unit/test_gemm_systolic.py`) fills every scratchpad and accumulator word with
+  full-width random data and checks OS, WS and IS GEMMs, including `COMPUTE_ACCUMULATE`,
+  stay exact; `tests/unit/test_targets.py` checks that no target carries memory contents.
+  The scratchpad and accumulator banks (and `SystolicTop`) keep references to their
+  memories for testbenches; the hardware is unchanged.
+
 - **`just synth <target>` for every module, and a PolarFire target** (#25, 2026-11-06).
   `systars.targets` is the one list of RTL targets (name, top module, factory) that
   `just gen`, `just synth` and CI read (`python3 -m systars.targets list`), ported from
