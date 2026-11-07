@@ -196,7 +196,8 @@ def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1, poison=None):
             for bank in [*dut.scratchpad.banks, *dut.accumulator.banks]:
                 width = bank.mem.shape.width
                 for addr in range(bank.mem.depth):
-                    ctx.set(bank.mem.data[addr], int(poison.integers(0, 1 << 62)) % (1 << width))
+                    word = int.from_bytes(poison.bytes((width + 7) // 8), "little")
+                    ctx.set(bank.mem.data[addr], word % (1 << width))  # every bit random
         host = Host(ctx, dut)
         await host.load(A_L3, A_SP, len(a_rows), lay.row_bytes)
         await host.load(B_L3, B_SP, len(b_rows), lay.row_bytes)
