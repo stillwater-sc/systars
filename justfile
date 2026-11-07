@@ -272,10 +272,11 @@ synth-check:
 # have no power-up value, so the polarfire flow first drops the initial values: the registers'
 # (`attrmap -remove init`; every register also has a synchronous reset, nothing in src/ is
 # reset_less, so the design must be reset before use) and the memories' (`delete
-# t:$meminit_v2`; the targets' memories start at zero only in simulation, and nothing reads an
-# entry before writing it, see tests/unit/test_targets.py). Same flow as kpugen's
-# (branes-ai/embodied-ai-soc-generator#37). Yosys's counts are estimates before place and
-# route. The cocotb Makefiles generate the same registry targets, so gen/ holds one
+# t:$meminit_v2`; the targets' memories start at zero only in simulation, and the design never
+# reads a scratchpad or accumulator word before writing it; what the host reads before writing
+# is unspecified on hardware, see docs/development-workflow.md, "Synthesis"). Same flow as
+# kpugen's (branes-ai/embodied-ai-soc-generator#37). Yosys's counts are estimates before place
+# and route. The cocotb Makefiles generate the same registry targets, so gen/ holds one
 # design per file whichever wrote it last.
 synth target="generic":
     #!/usr/bin/env bash

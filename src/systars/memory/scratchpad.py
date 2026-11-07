@@ -79,6 +79,7 @@ class ScratchpadBank(Component):
         # Create memory
         mem = Memory(shape=unsigned(cfg.sp_width), depth=cfg.sp_bank_entries, init=[])
         m.submodules.mem = mem
+        self.mem = mem  # for testbenches (no hardware)
 
         # Two read ports with the same latency, so the execute controller can
         # read an A row and a B row in the same cycle from any banks
@@ -170,6 +171,7 @@ class Scratchpad(Component):
 
         # Instantiate banks
         banks = [ScratchpadBank(cfg, i) for i in range(cfg.sp_banks)]
+        self.banks = banks  # for testbenches (no hardware)
         for i, bank in enumerate(banks):
             m.submodules[f"bank_{i}"] = bank
 

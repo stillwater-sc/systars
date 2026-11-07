@@ -139,12 +139,14 @@ def tiles(n, size):
     return [(s, min(size, n - s)) for s in range(0, n, size)]
 
 
-def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1):
+def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1, poison=None):
     """Run ``A @ B`` through SystolicTop and return C as read back from L3.
 
     OS: A is R x K and B is K x C. WS: A is M x K and B is K x C with K <= R.
     IS: A is M x K and B is K x N with K <= R and M, N <= C. With ``repeat`` > 1
-    the computation is issued again with COMPUTE_ACCUMULATE.
+    the computation is issued again with COMPUTE_ACCUMULATE. With ``poison`` (a
+    numpy Generator) every scratchpad and accumulator word starts random, not
+    zero, as on hardware with no power-up contents.
     """
     lay = Layout(cfg)
     R, C, KB = lay.rows, lay.cols, lay.kb
@@ -190,6 +192,11 @@ def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1):
     dut = SystolicTop(cfg)
 
     async def testbench(ctx):
+        if poison is not None:
+            for bank in [*dut.scratchpad.banks, *dut.accumulator.banks]:
+                width = bank.mem.shape.width
+                for addr in range(bank.mem.depth):
+                    ctx.set(bank.mem.data[addr], int(poison.integers(0, 1 << 62)) % (1 << width))
         host = Host(ctx, dut)
         await host.load(A_L3, A_SP, len(a_rows), lay.row_bytes)
         await host.load(B_L3, B_SP, len(b_rows), lay.row_bytes)
@@ -279,6 +286,27 @@ class TestGemmOptions:
         cfg = make_config(4, 4, 1, 1)
         A, B = operands(np.random.default_rng(6), 3, 2, 2)
         np.testing.assert_array_equal(gemm(cfg, IS, A, B), A @ B)
+
+
+@pytest.mark.parametrize("mode", [OS, WS, IS], ids=["os", "ws", "is"])
+def test_no_read_before_write(mode):
+    """The design never reads a scratchpad or accumulator word it hasn't written.
+
+    Every word starts random (as on hardware: `just synth polarfire` drops the
+    memories' zero initial values, which only simulation has), and C is still exact,
+    with partial L2 rows (K and M not multiples of the block) and COMPUTE_ACCUMULATE.
+    """
+    cfg = make_config(2, 2, 2, 2)
+    lay = Layout(cfg)
+    rng = np.random.default_rng(7)
+    if mode == OS:
+        A, B = operands(rng, lay.rows, 7, lay.cols)
+    elif mode == WS:
+        A, B = operands(rng, 5, lay.rows, lay.cols)
+    else:
+        A, B = operands(rng, lay.cols, lay.rows, lay.cols)
+    C = gemm(cfg, mode, A, B, repeat=2, poison=np.random.default_rng(8))
+    np.testing.assert_array_equal(C, 2 * (A @ B))
 
 
 @pytest.mark.parametrize("dim", [8, 16])
