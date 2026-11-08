@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Accumulator loads: Matmul and Conv2d with a bias or accumulating onto the output, and
+  padding without a zero row** (#10, 2026-11-08; the port of
+  branes-ai/embodied-ai-soc-generator#17 goes the other way, systars first). The BlockMover's
+  LOAD writes the accumulator when its local address has the accumulator flag, sharing the
+  accumulator's write port with the Streamer, which has it first. Two LOAD opcodes:
+  `DmaOpcode.BROADCAST` writes one L3 row to every row (kpu-sim's `STR_BROADCAST_ROW`), and
+  `DmaOpcode.CLEAR` writes zero rows with no L3 read. An accumulator slot gains a LOADED
+  state and `cmd_sync` a `RESUME` flag (`controller/sync.py`): an accumulator LOAD hands its
+  slot to the Streamer, whose first COMPUTE takes the hand-off token, so a STORE never takes
+  it for the result. Matmul: `CONFIG_D_ADDR` / `CONFIG_D_STRIDE` (`C = A @ B + D`, a stride
+  of 0 being one bias row for every output row) and `CONFIG_OPTIONS` bit 0 (`C = C + A @ B`)
+  in OS and WS; IS still rejects them (`UNSUPPORTED_BIAS`, `UNSUPPORTED_ACCUMULATE`), since
+  it holds Cᵀ in the accumulator. Conv2d: a bias row (`CONFIG_B_ADDR`, broadcast) and
+  accumulating onto Y; a padded position is a `CLEAR`, so `CONFIG_ZERO_ADDR` is removed and
+  padding reads nothing from L3. A bias with accumulate is `UNSUPPORTED_ACCUMULATE`.
+  `tests/unit/test_load_controller.py`, `test_credits.py`, `test_matmul.py`,
+  `test_conv2d.py`; `docs/isa-instructions.md`, "Bias and accumulate".
+
 - **The PolarFire flow drops memory initial values too, and a test runs GEMMs from random
   memory** (#27, 2026-11-06; kpugen parity, branes-ai/embodied-ai-soc-generator#38). The
   `polarfire` prep in `just synth` is now `proc; delete t:$meminit_v2; attrmap -remove

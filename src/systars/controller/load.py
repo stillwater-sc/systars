@@ -1,5 +1,6 @@
 """
-LoadController - moves a tile from L3 into the scratchpad (the BlockMover's L3 -> L2 leg).
+LoadController - moves a tile from L3 into the scratchpad or the accumulator (the
+BlockMover's L3 -> L2 leg, and its L3 -> accumulator leg).
 
 In the KPU's CSP model (kpu-sim, docs/01-architecture/kpu-execution-model.md) the
 tile's AXI port is its link to L3: a memory tile in a SoC, the AXI memory model
@@ -11,6 +12,16 @@ address ``dram_addr + n * stride`` into scratchpad row ``sp_addr + n``.
 - ``row_bytes`` valid bytes per row (0 = a whole scratchpad row); the rest of
   the scratchpad row is written with zeros.
 - ``stride`` 0 means rows one bus beat apart (consecutive beats).
+- A ``sp_addr`` with the accumulator flag (``LocalAddr``, bit 31) writes accumulator
+  rows instead: the starting values of a result tile, a bias or the C being
+  accumulated onto. ``row_bytes`` 0 is then a whole accumulator row. The
+  accumulator's write port is the Streamer's first: a row waits for a clock in
+  which the Streamer writes none (the fabric never stalls).
+
+``BROADCAST`` reads one L3 row and writes it to all ``len`` rows (kpu-sim's
+``STR_BROADCAST_ROW``): a bias row for every output row. ``CLEAR`` writes ``len``
+zero rows and reads nothing from L3 (a state operation, ADR 0002): a padded
+position's row of zeros.
 
 ``TRANSPOSE`` is a MEMCPY with a corner turn, for the layouts the Streamer reads
 (one L2 row per L1 stream buffer, #21). The rows land in a corner-turn buffer of
@@ -20,22 +31,26 @@ is in, scratchpad row ``sp_addr + j`` is written with element ``j`` of every L3
 row: L3 row ``n`` becomes element ``n`` of each scratchpad row. That is one
 scratchpad row per element of an L3 row, ``ceil(row_bytes * 8 / input_bits)``
 rows, zero past the ``len``-th element. A TRANSPOSE moves at most one tile:
-``len`` is clamped to ``lanes``.
+``len`` is clamped to ``lanes``. The corner turn writes only the scratchpad: a
+TRANSPOSE into the accumulator is not accepted.
 
 State Machine (per row):
     IDLE -> ISSUE_DMA -> STREAM (consecutive beats from a beat boundary: one
                              burst of up to 256 rows)
                        -> RECV_LO [-> RECV_HI] -> WRITE_SP (any other row)
-         -> (next burst | TURN (TRANSPOSE: write the tile's columns) | DONE)
+         -> (next burst | TURN (TRANSPOSE: write the tile's columns)
+             | REPEAT (BROADCAST: write the row to every row) | DONE)
+    IDLE -> REPEAT (CLEAR: zero rows) -> DONE
 
 Data Flow:
-    L3 (via StreamReader) --> LoadController --> Scratchpad
+    L3 (via StreamReader) --> LoadController --> Scratchpad | Accumulator
 """
 
 from amaranth import Cat, Const, Module, Mux, Signal
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
+from ..memory.local_addr import LocalAddr
 from ..util.commands import DmaOpcode
 
 
@@ -50,9 +65,11 @@ class LoadController(Component):
         Command Interface:
             cmd_valid: Command available
             cmd_ready: Controller ready to accept command
-            cmd_opcode: Operation code (MEMCPY, or TRANSPOSE: with a corner turn)
+            cmd_opcode: Operation code (MEMCPY, TRANSPOSE: with a corner turn,
+                BROADCAST: one row to every row, CLEAR: zero rows)
             cmd_dram_addr: Source byte address of row 0 in L3 (64-bit, any alignment)
-            cmd_sp_addr: Destination address in scratchpad (32-bit local format)
+            cmd_sp_addr: Destination address in the scratchpad or, with the
+                accumulator flag, the accumulator (32-bit local format)
             cmd_len: Rows to move (0 completes at once)
             cmd_stride: Bytes between source rows (0 = one bus beat)
             cmd_row_bytes: Valid bytes per row (0 = a whole scratchpad row)
@@ -75,6 +92,13 @@ class LoadController(Component):
             sp_write_data: Write data (sp_width bits)
             sp_write_mask: Byte mask for partial writes
 
+        Accumulator Interface:
+            acc_write_en: Write enable (a whole row, overwritten)
+            acc_write_addr: Write address (local format)
+            acc_write_data: Write data (acc_width bits)
+            acc_write_ready: The write port is free this clock (the Streamer is not
+                writing)
+
         Status:
             busy: Controller is processing a command
             completed: Command completed this cycle
@@ -85,13 +109,14 @@ class LoadController(Component):
         self.config = config
         buswidth = config.dma_buswidth
         sp_width = config.sp_width
-        if sp_width > buswidth:
-            # One scratchpad row is written per DMA beat; a wider row would only
-            # receive the low dma_buswidth bits
-            raise ValueError(
-                f"LoadController: scratchpad row ({sp_width} bits) is wider than "
-                f"dma_buswidth ({buswidth}); set dma_buswidth >= {sp_width}"
-            )
+        for what, width in (("scratchpad", sp_width), ("accumulator", config.acc_width)):
+            if width > buswidth:
+                # One row is written per DMA beat; a wider row would only receive
+                # the low dma_buswidth bits
+                raise ValueError(
+                    f"LoadController: {what} row ({width} bits) is wider than "
+                    f"dma_buswidth ({buswidth}); set dma_buswidth >= {width}"
+                )
         beat = buswidth // 8
         if beat < 2 or beat & (beat - 1):
             raise ValueError(
@@ -126,6 +151,11 @@ class LoadController(Component):
                 "sp_write_addr": Out(32),
                 "sp_write_data": Out(sp_width),
                 "sp_write_mask": Out(mask_width),
+                # Accumulator write interface
+                "acc_write_en": Out(1),
+                "acc_write_addr": Out(32),
+                "acc_write_data": Out(config.acc_width),
+                "acc_write_ready": In(1),
                 # Status
                 "busy": Out(1),
                 "completed": Out(1),
@@ -139,16 +169,19 @@ class LoadController(Component):
 
         beat = cfg.dma_buswidth // 8
         sp_bytes = cfg.sp_width // 8
+        acc_bytes = cfg.acc_width // 8
+        row_width = max(cfg.sp_width, cfg.acc_width)  # the widest destination row
         off_bits = (beat - 1).bit_length()
 
         # Registered command parameters
         row_addr = Signal(64)  # byte address of the current row
         sp_addr_reg = Signal(32)
-        len_reg = Signal(16)
+        len_reg = Signal(16)  # L3 rows to read
         stride_reg = Signal(32)
         row_bytes = Signal(16)
         cmd_id_reg = Signal(8)
         row = Signal(16)
+        to_acc = Signal()  # the destination is the accumulator
 
         # TRANSPOSE: the corner-turn buffer (one tile) and the columns left to write.
         # It is never cleared: a row is zero past row_bytes, and the turn shifts out
@@ -158,7 +191,11 @@ class LoadController(Component):
         transpose = Signal()
         turn = [Signal(cfg.sp_width, name=f"turn_{n}") for n in range(lanes)]
         col = Signal(16)
-        cols = Signal(16)  # scratchpad rows a TRANSPOSE writes
+        cols = Signal(16)  # rows TURN or REPEAT writes
+
+        # BROADCAST and CLEAR: the row REPEAT writes to every destination row
+        broadcast = Signal()
+        fill_row = Signal(row_width)
 
         lo = Signal(cfg.dma_buswidth)  # first beat of the row
         hi = Signal(cfg.dma_buswidth)  # second beat, when the row spills over
@@ -173,9 +210,11 @@ class LoadController(Component):
         # The row: shift the two beats down by the byte offset, keep row_bytes bytes
         window = Signal(2 * cfg.dma_buswidth)
         m.d.comb += window.eq(Cat(lo, hi) >> (offset * 8))
-        keep = Cat(*[Mux(i < row_bytes, Const(0xFF, 8), Const(0, 8)) for i in range(sp_bytes)])
-        row_data = Signal(cfg.sp_width)
-        m.d.comb += row_data.eq(window[: cfg.sp_width] & keep)
+        keep = Cat(
+            *[Mux(i < row_bytes, Const(0xFF, 8), Const(0, 8)) for i in range(row_width // 8)]
+        )
+        row_data = Signal(row_width)
+        m.d.comb += row_data.eq(window[:row_width] & keep)
 
         m.d.comb += [
             self.cmd_ready.eq(0),
@@ -186,6 +225,9 @@ class LoadController(Component):
             self.sp_write_addr.eq(0),
             self.sp_write_data.eq(0),
             self.sp_write_mask.eq(0),
+            self.acc_write_en.eq(0),
+            self.acc_write_addr.eq(0),
+            self.acc_write_data.eq(0),
             self.completed.eq(0),
             self.completed_id.eq(0),
         ]
@@ -198,35 +240,58 @@ class LoadController(Component):
         burst_rows = Mux(remaining > 256, 256, remaining)
         m.d.comb += self.dma_req_addr.eq(Cat(Const(0, off_bits), row_addr[off_bits:]))
 
-        def write_sp(addr, data):
-            m.d.comb += [
-                self.sp_write_en.eq(1),
-                self.sp_write_addr.eq(addr),
-                self.sp_write_data.eq(data),
-                self.sp_write_mask.eq((1 << sp_bytes) - 1),
-            ]
+        # A row can be put down this clock: the scratchpad always, the accumulator
+        # when the Streamer is not writing it (nor a BROADCAST, which only keeps it)
+        can_put = Signal()
+        m.d.comb += can_put.eq(~to_acc | transpose | broadcast | self.acc_write_ready)
+
+        def write_row(addr, data):
+            with m.If(to_acc):
+                m.d.comb += [
+                    self.acc_write_en.eq(1),
+                    self.acc_write_addr.eq(addr),
+                    self.acc_write_data.eq(data[: cfg.acc_width]),
+                ]
+            with m.Else():
+                m.d.comb += [
+                    self.sp_write_en.eq(1),
+                    self.sp_write_addr.eq(addr),
+                    self.sp_write_data.eq(data[: cfg.sp_width]),
+                    self.sp_write_mask.eq((1 << sp_bytes) - 1),
+                ]
 
         def put_row(data):
-            """Row ``row`` arrived: into the scratchpad, or the corner-turn buffer."""
+            """Row ``row`` arrived (when ``can_put``): into its destination row, the
+            corner-turn buffer, or the BROADCAST row."""
             with m.If(transpose):
                 for n in range(lanes):
                     with m.If(row == n):
-                        m.d.sync += turn[n].eq(data)
+                        m.d.sync += turn[n].eq(data[: cfg.sp_width])
+            with m.Elif(broadcast):
+                m.d.sync += fill_row.eq(data)
             with m.Else():
-                write_sp(sp_addr_reg + row, data)
+                write_row(sp_addr_reg + row, data)
 
         def finish():
-            """After the last row: write the tile's columns (TRANSPOSE), or complete."""
+            """After the last row: write the tile's columns (TRANSPOSE), the
+            broadcast rows (BROADCAST), or complete."""
             with m.If(transpose):
                 m.next = "TURN"
+            with m.Elif(broadcast):
+                m.next = "REPEAT"
             with m.Else():
                 m.next = "DONE"
 
-        accepted = (self.cmd_opcode == DmaOpcode.MEMCPY) | (self.cmd_opcode == DmaOpcode.TRANSPOSE)
-        is_transpose = self.cmd_opcode == DmaOpcode.TRANSPOSE
+        op = self.cmd_opcode
+        cmd_to_acc = LocalAddr.is_acc(self.cmd_sp_addr)
+        is_transpose = op == DmaOpcode.TRANSPOSE
+        is_broadcast = op == DmaOpcode.BROADCAST
+        is_clear = op == DmaOpcode.CLEAR
+        accepted = (op == DmaOpcode.MEMCPY) | (is_transpose & ~cmd_to_acc) | is_broadcast | is_clear
+        dst_bytes = Mux(cmd_to_acc, acc_bytes, sp_bytes)
         cmd_row_bytes = Mux(
-            (self.cmd_row_bytes == 0) | (self.cmd_row_bytes > sp_bytes),
-            sp_bytes,
+            (self.cmd_row_bytes == 0) | (self.cmd_row_bytes > dst_bytes),
+            dst_bytes,
             self.cmd_row_bytes,
         )
 
@@ -237,11 +302,20 @@ class LoadController(Component):
                     cmd_len = Mux(is_transpose & (self.cmd_len > lanes), lanes, self.cmd_len)
                     m.d.sync += [
                         transpose.eq(is_transpose),
+                        broadcast.eq(is_broadcast),
+                        to_acc.eq(cmd_to_acc),
+                        fill_row.eq(0),
                         col.eq(0),
-                        cols.eq((cmd_row_bytes * 8 + eb - 1) // eb),
+                        cols.eq(
+                            Mux(
+                                is_transpose,
+                                (cmd_row_bytes * 8 + eb - 1) // eb,
+                                self.cmd_len,  # BROADCAST, CLEAR: every row
+                            )
+                        ),
                         row_addr.eq(self.cmd_dram_addr),
                         sp_addr_reg.eq(self.cmd_sp_addr),
-                        len_reg.eq(cmd_len),
+                        len_reg.eq(Mux(is_broadcast, 1, cmd_len)),  # BROADCAST reads one row
                         stride_reg.eq(Mux(self.cmd_stride == 0, beat, self.cmd_stride)),
                         row_bytes.eq(cmd_row_bytes),
                         cmd_id_reg.eq(self.cmd_id),
@@ -249,6 +323,8 @@ class LoadController(Component):
                     ]
                     with m.If(self.cmd_len == 0):
                         m.next = "DONE"
+                    with m.Elif(is_clear):
+                        m.next = "REPEAT"
                     with m.Else():
                         m.next = "ISSUE_DMA"
 
@@ -264,10 +340,11 @@ class LoadController(Component):
                         m.next = "RECV_LO"
 
             with m.State("STREAM"):
-                # One beat per row, written as it arrives
-                m.d.comb += self.dma_resp_ready.eq(1)
-                with m.If(self.dma_resp_valid):
-                    put_row(self.dma_resp_data[: cfg.sp_width] & keep)
+                # One beat per row, put down as it arrives (held off while the
+                # accumulator's write port is the Streamer's)
+                m.d.comb += self.dma_resp_ready.eq(can_put)
+                with m.If(self.dma_resp_valid & can_put):
+                    put_row(self.dma_resp_data[:row_width] & keep)
                     m.d.sync += [row.eq(row + 1), row_addr.eq(row_addr + beat)]
                     with m.If(self.dma_resp_last):
                         with m.If(row + 1 >= len_reg):
@@ -290,7 +367,7 @@ class LoadController(Component):
                     m.d.sync += hi.eq(self.dma_resp_data)
                     m.next = "WRITE_SP"
 
-            with m.State("WRITE_SP"):
+            with m.State("WRITE_SP"), m.If(can_put):
                 put_row(row_data)
                 m.d.sync += [row.eq(row + 1), row_addr.eq(row_addr + stride_reg)]
                 with m.If(row + 1 >= len_reg):
@@ -301,8 +378,15 @@ class LoadController(Component):
             # TRANSPOSE: scratchpad row sp_addr + col is element 0 of every buffered
             # row; the buffer then shifts down one element
             with m.State("TURN"):
-                write_sp(sp_addr_reg + col, Cat(*[t[:eb] for t in turn]))
+                write_row(sp_addr_reg + col, Cat(*[t[:eb] for t in turn]))
                 m.d.sync += [t.eq(t >> eb) for t in turn]
+                m.d.sync += col.eq(col + 1)
+                with m.If(col + 1 >= cols):
+                    m.next = "DONE"
+
+            # BROADCAST and CLEAR: the same row (zero for CLEAR) into every row
+            with m.State("REPEAT"), m.If(~to_acc | self.acc_write_ready):
+                write_row(sp_addr_reg + col, fill_row)
                 m.d.sync += col.eq(col + 1)
                 with m.If(col + 1 >= cols):
                     m.next = "DONE"
