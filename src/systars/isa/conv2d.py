@@ -1,5 +1,5 @@
 """
-Conv2D ISA instruction: Y = conv2d(X, F)
+Conv2D ISA instruction: Y = conv2d(X, F) (+ bias, or + Y)
 
 A hardware FSM that runs a 2D convolution on the systolic array as an implicit
 GEMM, issuing LOAD / CONFIG / COMPUTE / STORE commands on the command
@@ -21,8 +21,8 @@ with OS.) For each output tile (M tile, N tile), and each K tile:
 
 - LOAD one row per output position ``p = (b, oh, ow)``: the input pixel
   ``X[b, oh*stride_h + kh*dilation_h - pad_h, ow*stride_w + kw*dilation_w - pad_w,
-  ic0:]`` (its chunk's channels), or, where that falls in the padding, the zero
-  row at ``CONFIG_ZERO_ADDR``;
+  ic0:]`` (its chunk's channels), or, where that falls in the padding, a CLEAR of
+  the row (zeros, with no L3 read);
 - LOAD the filter tile ``F[kh, kw, ic0:, n0:]`` (one command: rows ``out_c``
   elements apart) with a corner turn, so it lands column-major, and COMPUTE: the
   K tiles are one reduction, held in the PEs (``cmd_chain``), and the last one
@@ -31,6 +31,14 @@ with OS.) For each output tile (M tile, N tile), and each K tile:
 then STORE the output tile, one command: rows ``y_stride`` bytes apart, only the
 tile's own channels written (byte strobes), so Y can be dense. The tile's
 BlockMover moves rows from and to any byte address, so X, F and Y need no alignment.
+
+A bias (``CONFIG_B_ADDR`` != 0: one row of ``out_c`` int32 values) or accumulating
+onto the existing Y (``CONFIG_OPTIONS`` bit 0) starts each output tile from loaded
+values: on its first K tile, after that tile's LOADs, one accumulator LOAD writes
+the bias row to every row of the output tile's accumulator slot (``BROADCAST``,
+kpu-sim's ``STR_BROADCAST_ROW``), or the Y tile, and the K tiles' reduction is
+added onto it (``COMPUTE_ACCUMULATE``; the first COMPUTE takes the LOAD's hand-off
+token, ``controller/sync.py``).
 
 The commands are pushed without waiting for each other (``isa.command``): credits
 and tile-ready tokens order them in ``SystolicTop``. A K tile's X rows and its
@@ -41,12 +49,10 @@ accumulator slot, in ring order (``TileBuffers``, ``buffers=2`` by default; 1
 serializes the processes). The instruction is done when its last STORE completes.
 
 Errors (``error_code``): CONFIG_INCOMPLETE without the input, output and kernel
-dimensions and the X/F/Y addresses (or with padding but no zero row);
-INVALID_DIMS for a zero dimension, stride or dilation; UNSUPPORTED_BIAS for a
-bias and UNSUPPORTED_ACCUMULATE for accumulating onto an existing Y
-(``CONFIG_OPTIONS`` bit 0), which both need a load into the accumulator;
-UNSUPPORTED_LAYOUT when output positions are closer than ``out_c`` results
-(``y_stride``), so rows would overlap.
+dimensions and the X/F/Y addresses; INVALID_DIMS for a zero dimension, stride or
+dilation; UNSUPPORTED_ACCUMULATE for a bias and accumulating together (add the
+bias into Y first); UNSUPPORTED_LAYOUT when output positions are closer than
+``out_c`` results (``y_stride``), so rows would overlap.
 
 The caller sets ``out_h``/``out_w`` consistently with the input, kernel, stride,
 padding and dilation; they are not derived.
@@ -74,8 +80,7 @@ class Conv2dCmd(IntEnum):
     CONFIG_X_ADDR = 0x10
     CONFIG_F_ADDR = 0x11
     CONFIG_Y_ADDR = 0x12
-    CONFIG_B_ADDR = 0x13  # Bias address, 0 = no bias (bias is not supported)
-    CONFIG_ZERO_ADDR = 0x14  # A zero-filled DRAM row, loaded for padded positions
+    CONFIG_B_ADDR = 0x13  # Bias address (out_c int32 values), 0 = no bias
     CONFIG_X_STRIDE = 0x20  # Reserved (X is dense NHWC)
     CONFIG_F_STRIDE = 0x21  # Reserved (F is dense)
     CONFIG_Y_STRIDE = 0x22  # Bytes between output positions (0 = dense)
@@ -90,10 +95,9 @@ class Conv2dError(IntEnum):
 
     NONE = 0x00
     INVALID_DIMS = 0x01  # A dimension, stride or dilation is zero
-    CONFIG_INCOMPLETE = 0x05  # Dimensions or addresses missing (or padding without a zero row)
+    CONFIG_INCOMPLETE = 0x05  # Dimensions or addresses missing
     UNSUPPORTED_LAYOUT = 0x07  # See the module docstring
-    UNSUPPORTED_BIAS = 0x08  # A bias (B) was configured
-    UNSUPPORTED_ACCUMULATE = 0x09  # Accumulate onto Y (Y is not loaded into the accumulator)
+    UNSUPPORTED_ACCUMULATE = 0x09  # Accumulate onto Y together with a bias
 
 
 OS = 0  # ExecuteController CONFIG rs1
@@ -186,13 +190,11 @@ class Conv2d(Component):
         stride_h, stride_w = Signal(8, init=1), Signal(8, init=1)
         pad_h, pad_w = Signal(8), Signal(8)
         dil_h, dil_w = Signal(8, init=1), Signal(8, init=1)
-        x_addr, f_addr, y_addr, b_addr, zero_addr = (
-            Signal(64, name=f"reg_{n}_addr") for n in "XFYBZ"
-        )
+        x_addr, f_addr, y_addr, b_addr = (Signal(64, name=f"reg_{n}_addr") for n in "XFYB")
         y_stride_cfg = Signal(32)
         accumulate = Signal()
         activation = Signal(3)
-        in_valid, out_valid, kernel_valid, addrs_valid, zero_valid = (Signal() for _ in range(5))
+        in_valid, out_valid, kernel_valid, addrs_valid = (Signal() for _ in range(4))
 
         # Derived sizes
         # M = batch * out_h * out_w needs M_BITS; the M tile counters are as wide
@@ -243,10 +245,14 @@ class Conv2d(Component):
         pixel = Signal(64)
         m.d.comb += [
             pixel.eq((pos_b * in_h + ih.as_unsigned()) * in_w + iw.as_unsigned()),
-            x_row.eq(Mux(in_bounds, x_addr + (pixel * in_c + ic0) * in_bytes, zero_addr)),
+            x_row.eq(x_addr + (pixel * in_c + ic0) * in_bytes),
             f_tile.eq(f_addr + (((kh * kernel_w + kw) * in_c + ic0) * out_c + n0) * in_bytes),
             y_tile.eq(y_addr + m0 * y_stride + n0 * acc_bytes),
         ]
+
+        # Each output tile starts from loaded values: the bias row, or Y itself
+        has_bias, loaded = Signal(), Signal()
+        m.d.comb += [has_bias.eq(b_addr != 0), loaded.eq(has_bias | accumulate)]
 
         # Output rows must not overlap (see the module docstring)
         y_stride_ok = Signal()
@@ -324,8 +330,6 @@ class Conv2d(Component):
                         m.d.sync += [y_addr.eq(d), addrs_valid.eq(1)]
                     with m.Case(Conv2dCmd.CONFIG_B_ADDR):
                         m.d.sync += b_addr.eq(d)
-                    with m.Case(Conv2dCmd.CONFIG_ZERO_ADDR):
-                        m.d.sync += [zero_addr.eq(d), zero_valid.eq(1)]
                     with m.Case(Conv2dCmd.CONFIG_Y_STRIDE):
                         m.d.sync += y_stride_cfg.eq(d[0:32])
                     with m.Case(Conv2dCmd.CONFIG_OPTIONS):
@@ -366,13 +370,7 @@ class Conv2d(Component):
                 with m.If(zero_dim):
                     m.d.sync += self.error_code.eq(Conv2dError.INVALID_DIMS)
                     m.next = "ERROR"
-                with m.Elif(((pad_h != 0) | (pad_w != 0)) & ~zero_valid):
-                    m.d.sync += self.error_code.eq(Conv2dError.CONFIG_INCOMPLETE)
-                    m.next = "ERROR"
-                with m.Elif(b_addr != 0):
-                    m.d.sync += self.error_code.eq(Conv2dError.UNSUPPORTED_BIAS)
-                    m.next = "ERROR"
-                with m.Elif(accumulate):
+                with m.Elif(has_bias & accumulate):
                     m.d.sync += self.error_code.eq(Conv2dError.UNSUPPORTED_ACCUMULATE)
                     m.next = "ERROR"
                 with m.Elif(~y_stride_ok):
@@ -389,8 +387,9 @@ class Conv2d(Component):
                 m.d.sync += [row.eq(0), pos_b.eq(base_b), pos_oh.eq(base_oh), pos_ow.eq(base_ow)]
                 m.next = "LOAD_X"
 
+            # The row's input pixel, or a padded position's zeros: a CLEAR, no L3 read
             issuer.state(
-                "LOAD_X", "X_NEXT", CTRL_LOAD, DmaOpcode.MEMCPY,
+                "LOAD_X", "X_NEXT", CTRL_LOAD, Mux(in_bounds, DmaOpcode.MEMCPY, DmaOpcode.CLEAR),
                 dram_addr=x_row, local_addr=bufs.a_addr + row, len=1, row_bytes=tile_K * in_bytes,
                 sync=bufs.load(bufs.a_slot, first=row == 0, last=False),
             )  # fmt: skip
@@ -413,18 +412,37 @@ class Conv2d(Component):
             # that L2 row n is output channel n's filter column. It completes the
             # pair, so it emits the A slot's token.
             issuer.state(
-                "LOAD_F", "COMPUTE", CTRL_LOAD, DmaOpcode.TRANSPOSE,
+                "LOAD_F", "F_NEXT", CTRL_LOAD, DmaOpcode.TRANSPOSE,
                 dram_addr=f_tile, local_addr=bufs.b_addr, len=tile_K,
                 sync=bufs.load(bufs.a_slot, first=False),
                 stride=out_c * in_bytes, row_bytes=tile_N * in_bytes,
             )  # fmt: skip
+            with m.State("F_NEXT"):
+                with m.If(first_k & loaded):
+                    m.next = "LOAD_START"
+                with m.Else():
+                    m.next = "COMPUTE"
 
-            # One COMPUTE per K tile, the K tiles one reduction in the PEs
+            # The output tile's starting values into its accumulator slot, on its
+            # first K tile: the bias row in every row (BROADCAST), or the Y tile.
+            # The LOAD hands the slot to the Streamer.
             issuer.state(
-                "COMPUTE", "NEXT_K", CTRL_EXEC, ExecOpcode.COMPUTE,
+                "LOAD_START", "COMPUTE", CTRL_LOAD,
+                Mux(accumulate, DmaOpcode.MEMCPY, DmaOpcode.BROADCAST),
+                dram_addr=Mux(accumulate, y_tile, b_addr + n0 * acc_bytes),
+                local_addr=bufs.acc_addr, len=tile_M, stride=y_stride,
+                row_bytes=tile_N * acc_bytes, sync=bufs.load_acc(),
+            )  # fmt: skip
+
+            # One COMPUTE per K tile, the K tiles one reduction in the PEs (added
+            # onto the loaded values, if any)
+            issuer.state(
+                "COMPUTE", "NEXT_K", CTRL_EXEC,
+                Mux(loaded, ExecOpcode.COMPUTE_ACCUMULATE, ExecOpcode.COMPUTE),
                 rs1=bufs.a_addr, rs2=bufs.b_addr, rd=bufs.acc_addr, k_dim=tile_K,
                 chain=bufs.chain(first_k, last_k),
-                sync=bufs.compute(first_k=first_k, last_k=last_k), then=bufs.next_l2(),
+                sync=bufs.compute(first_k=first_k, last_k=last_k, loaded=loaded),
+                then=bufs.next_l2(),
             )  # fmt: skip
 
             # K tiles: input-channel chunk, then kernel column, then kernel row
@@ -470,7 +488,7 @@ class Conv2d(Component):
             with m.State("DONE"):
                 m.d.comb += self.done.eq(1)
                 m.d.sync += [
-                    in_valid.eq(0), out_valid.eq(0), kernel_valid.eq(0), addrs_valid.eq(0), zero_valid.eq(0),
+                    in_valid.eq(0), out_valid.eq(0), kernel_valid.eq(0), addrs_valid.eq(0),
                 ]  # fmt: skip
                 m.next = "IDLE"
 

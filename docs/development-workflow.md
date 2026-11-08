@@ -442,14 +442,16 @@ values Amaranth writes:
 What that means:
 
 - **The design** never reads a scratchpad or accumulator word it hasn't written: the
-  Streamer reads the L2 rows a LOAD wrote, and Matmul writes an accumulator row with
-  `COMPUTE` on its first k-slice and accumulates only after that.
+  Streamer reads the L2 rows a LOAD (or a `CLEAR`) wrote, and Matmul writes an accumulator
+  row with `COMPUTE` on its first k-slice and accumulates only after that, or onto the
+  values an accumulator LOAD wrote first (a bias, or the C being accumulated onto).
   `test_no_read_before_write` (`tests/unit/test_gemm_systolic.py`) runs OS, WS and IS
   GEMMs, with `COMPUTE_ACCUMULATE` and partial rows, from random scratchpad and accumulator
   contents, and checks that C is still exact.
 - **The host** must write what it reads. A `COMPUTE_ACCUMULATE` onto an accumulator row
-  that no `COMPUTE` wrote, a `COMPUTE` on a scratchpad slot that no LOAD filled, or a STORE
-  of unwritten rows returns unspecified data on hardware where the simulation returns zero.
+  that neither a `COMPUTE` nor an accumulator LOAD wrote, a `COMPUTE` on a scratchpad slot
+  that no LOAD filled, or a STORE of unwritten rows returns unspecified data on hardware
+  where the simulation returns zero.
 - **Preloads.** `tests/unit/test_targets.py` checks that no target has non-zero memory
   contents, so the step drops nothing a target relies on.
 

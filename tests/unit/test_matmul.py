@@ -6,6 +6,8 @@ Unit tests for the Matmul ISA instruction.
   dense row-major (or strided) at any address, tiled in M, N and K.
 - Matmul driving a real SystolicTop through a byte-addressed AXI memory model:
   dense operands, any M, N and K, at unaligned addresses.
+- A bias (a D matrix, or one bias row for every output row) and accumulating onto
+  the existing C: each C tile's starting values are loaded into the accumulator.
 - Configuration errors.
 """
 
@@ -24,7 +26,7 @@ from ._axi import axi_memory
 from ._isa import TopModel, from_bytes, run_isa, to_unsigned_bytes
 from ._sim import run_sim, skip_without_yosys
 
-A_ADDR, B_ADDR, C_ADDR = 0x1000, 0x8000, 0x10000
+A_ADDR, B_ADDR, C_ADDR, D_ADDR = 0x1000, 0x8000, 0x10000, 0x18000
 ALL = Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY | Dataflow.A_STATIONARY
 DATAFLOWS = [OS, WS, IS]
 DF_IDS = ["os", "ws", "is"]
@@ -38,9 +40,12 @@ def config(grid=4, tile=1, **overrides):
 
 
 def setup(
-    M, N, K, a_stride, b_stride, c_stride, *, d_addr=0, options=0, a_addr=A_ADDR, dataflow=None
-):
+    M, N, K, a_stride, b_stride, c_stride, *, d_addr=0, d_stride=0, options=0, a_addr=A_ADDR,
+    dataflow=None,
+):  # fmt: skip
     extra = [] if dataflow is None else [(MatmulCmd.CONFIG_DATAFLOW, dataflow)]
+    if d_stride:
+        extra.append((MatmulCmd.CONFIG_D_STRIDE, d_stride))
     return extra + [
         (MatmulCmd.CONFIG_DIMS, M | N << 16 | K << 32),
         (MatmulCmd.CONFIG_A_ADDR, a_addr),
@@ -63,22 +68,43 @@ def read_back(model, base, rows, cols, stride, bits):
     return np.array([model.read_elems(base + r * stride, bits, cols) for r in range(rows)])
 
 
-def check_numerically(
-    cfg, M, N, K, a_stride, b_stride, c_stride, *, a_addr=A_ADDR, seed=0, buffers=2,
-    dataflow=None,
-):  # fmt: skip
+def operands(M, N, K, seed, start):
+    """A, B and the starting values: ``start`` None, "matrix" (a D matrix), "row" (one
+    bias row) or "accumulate" (the existing C). Returns the starting values as an
+    M x N matrix (zeros for None) and the setup keywords."""
     rng = np.random.default_rng(seed)
     A = rng.integers(-128, 128, (M, K))
     B = rng.integers(-128, 128, (K, N))
-    cmds = setup(M, N, K, a_stride, b_stride, c_stride, a_addr=a_addr, dataflow=dataflow)
+    D = rng.integers(-(1 << 20), 1 << 20, (M, N))
+    if start == "row":
+        D[:] = D[0]
+    kw = {
+        None: {},
+        "matrix": {"d_addr": D_ADDR, "d_stride": 4 * N + 4},
+        "row": {"d_addr": D_ADDR},
+        "accumulate": {"options": 1},
+    }[start]
+    return A, B, (np.zeros((M, N), dtype=np.int64) if start is None else D), kw
+
+
+def check_numerically(
+    cfg, M, N, K, a_stride, b_stride, c_stride, *, a_addr=A_ADDR, seed=0, buffers=2,
+    dataflow=None, start=None,
+):  # fmt: skip
+    A, B, D, kw = operands(M, N, K, seed, start)
+    cmds = setup(M, N, K, a_stride, b_stride, c_stride, a_addr=a_addr, dataflow=dataflow, **kw)
     result = run_isa(Matmul(cfg, buffers=buffers), cmds, MatmulCmd.START)
     assert result.done and not result.error, f"error {result.error_code:#x}"
     model = TopModel(cfg)
     place(model, a_addr, A, a_stride, 8)
     place(model, B_ADDR, B, b_stride, 8)
+    if start in ("matrix", "row"):
+        place(model, D_ADDR, D if start == "matrix" else D[:1], kw.get("d_stride", 0), 32)
+    elif start == "accumulate":
+        place(model, C_ADDR, D, c_stride, 32)
     model.run(result.commands)  # also checks the credits and tokens
     model.assert_all_free()
-    np.testing.assert_array_equal(read_back(model, C_ADDR, M, N, c_stride, 32), A @ B)
+    np.testing.assert_array_equal(read_back(model, C_ADDR, M, N, c_stride, 32), A @ B + D)
     return result
 
 
@@ -212,6 +238,41 @@ class TestCommandStream:
             chains = [c.chain for c in cmds if c.type == CTRL_EXEC]
             assert chains == [0b10, 0b01] * 2
 
+    @pytest.mark.parametrize("dataflow", [OS, WS], ids=["os", "ws"])
+    @pytest.mark.parametrize("start", ["matrix", "row", "accumulate"])
+    def test_loaded_values_hand_the_slot_to_the_streamer(self, dataflow, start):
+        """Each C tile's starting values: one accumulator LOAD on its first K tile,
+        after that tile's A and B LOADs. It takes the accumulator slot's credit and
+        hands the tile on; the first COMPUTE takes the hand-off token (RESUME) and every
+        COMPUTE accumulates. A D stride of 0 is one bias row, broadcast."""
+        cfg = config()
+        _, _, _, kw = operands(4, 8, 8, 0, start)
+        cmds = run_isa(
+            Matmul(cfg), setup(4, 8, 8, 8, 8, 32, dataflow=dataflow, **kw), MatmulCmd.START
+        ).commands[1:]
+        acc_loads = [c for c in cmds if c.type == CTRL_LOAD and c.local_addr >> 31]
+        opcode = DmaOpcode.BROADCAST if start == "row" else DmaOpcode.MEMCPY
+        src = {"matrix": (D_ADDR, 36), "row": (D_ADDR, 0), "accumulate": (C_ADDR, 32)}[start]
+        assert [(c.opcode, c.dram_addr, c.stride, c.len, c.row_bytes) for c in acc_loads] == [
+            (opcode, src[0], src[1], 4, 16),
+            (opcode, src[0] + 16, src[1], 4, 16),
+        ]
+        assert [c.sync for c in acc_loads] == [
+            n << Sync.DST | Sync.ACQUIRE | Sync.SIGNAL for n in range(2)
+        ]
+        # On each N tile's first K tile, after its A and B LOADs, before its COMPUTEs
+        per_k = 3 if dataflow == OS else 4
+        for n_tile, acc_load in enumerate(acc_loads):
+            assert cmds.index(acc_load) == n_tile * (2 * per_k + 2) + 2
+        computes = [
+            c for c in cmds
+            if c.type == CTRL_EXEC and c.opcode in (ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE)
+        ]  # fmt: skip
+        assert {c.opcode for c in computes} == {ExecOpcode.COMPUTE_ACCUMULATE}
+        resumes = [bool(c.sync & Sync.RESUME) for c in computes]
+        assert resumes == [True, False] * 2
+        assert all(c.sync & Sync.ACQUIRE for c, r in zip(computes, resumes, strict=True) if r)
+
     @pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
     def test_one_buffer_gives_the_same_results(self, dataflow):
         cfg = config()
@@ -268,6 +329,20 @@ class TestNumerical:
         )
 
 
+STARTS = ["matrix", "row", "accumulate"]
+
+
+@pytest.mark.parametrize("dataflow", [OS, WS], ids=["os", "ws"])  # IS: see TestErrors
+@pytest.mark.parametrize("start", STARTS)
+@pytest.mark.parametrize("buffers", [1, 2])
+def test_from_loaded_values(dataflow, start, buffers):
+    """C = A @ B + D (a D matrix, or one bias row) and C = C + A @ B, tiled in M, N and
+    K with edge tiles."""
+    check_numerically(
+        config(), 9, 7, 10, 10, 7, 28, seed=11, buffers=buffers, dataflow=dataflow, start=start
+    )
+
+
 class TestErrors:
     def run(self, cfg, cmds):
         return run_isa(Matmul(cfg), cmds, MatmulCmd.START)
@@ -282,15 +357,22 @@ class TestErrors:
         result = self.run(config(), setup(0, 4, 4, beat, beat, beat))
         assert result.error_code == MatmulError.INVALID_DIMS
 
-    def test_bias_is_unsupported(self):
+    @pytest.mark.parametrize(
+        "kw,code",
+        [({"d_addr": 0x4000}, MatmulError.UNSUPPORTED_BIAS),
+         ({"options": 1}, MatmulError.UNSUPPORTED_ACCUMULATE)],
+        ids=["bias", "accumulate"],
+    )  # fmt: skip
+    def test_is_cannot_start_from_loaded_values(self, kw, code):
+        """IS holds Cᵀ in the accumulator: loaded values would need a corner turn into it."""
         beat = config().dma_buswidth // 8
-        result = self.run(config(), setup(4, 4, 4, beat, beat, beat, d_addr=0x4000))
-        assert result.error_code == MatmulError.UNSUPPORTED_BIAS
+        result = self.run(config(), setup(4, 4, 4, beat, beat, beat, dataflow=IS, **kw))
+        assert result.error_code == code
+        assert not result.commands
 
-    def test_accumulate_is_unsupported(self):
-        """C is never loaded into the accumulator, so accumulating onto it would add stale rows."""
+    def test_bias_and_accumulate_together(self):
         beat = config().dma_buswidth // 8
-        result = self.run(config(), setup(4, 4, 4, beat, beat, beat, options=1))
+        result = self.run(config(), setup(4, 4, 4, beat, beat, beat, d_addr=0x4000, options=1))
         assert result.error_code == MatmulError.UNSUPPORTED_ACCUMULATE
         assert not result.commands
 
@@ -338,25 +420,30 @@ class MatmulOnTop(Elaboratable):
         return m
 
 
-@pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
-@pytest.mark.parametrize(
-    "grid,tile,M,N,K",
-    [(4, 1, 9, 7, 10), (2, 2, 4, 4, 4), (2, 2, 5, 9, 3), (2, 1, 3, 5, 6)],
-)
-def test_matmul_drives_systolic_top(grid, tile, M, N, K, dataflow):
-    """Matmul issues every command to a real SystolicTop; dense C in L3 equals A @ B.
+def run_on_top(grid, tile, M, N, K, dataflow, start=None):
+    """Matmul issues every command to a real SystolicTop through the AXI memory model.
 
-    A, B and C are dense row-major at odd addresses, tiled in M, N and K, with edge
-    tiles in each; every byte outside C keeps its value."""
+    A, B, C (and D) are dense row-major at odd addresses; returns C as read back from
+    L3, A @ B + D (the starting values, zero without), and whether every byte outside
+    C kept its value."""
     cfg = config(grid=grid, tile=tile)
     beat = cfg.dma_buswidth // 8
-    rng = np.random.default_rng(grid * 100 + M * 10 + N + K)
-    A = rng.integers(-128, 128, (M, K))
-    B = rng.integers(-128, 128, (K, N))
-    a_addr, b_addr, c_addr = A_ADDR + 1, B_ADDR + 7, C_ADDR + 3
+    seed = grid * 100 + M * 10 + N + K
+    A, B, D, kw = operands(M, N, K, seed, start)
+    rng = np.random.default_rng(seed + 1)
+    a_addr, b_addr, c_addr, d_addr = A_ADDR + 1, B_ADDR + 7, C_ADDR + 3, D_ADDR + 5
     memory = bytearray(rng.integers(0, 256, 1 << 17, dtype=np.uint8).tobytes())
     memory[a_addr : a_addr + M * K] = to_unsigned_bytes(A, 8)
     memory[b_addr : b_addr + K * N] = to_unsigned_bytes(B, 8)
+    if start == "accumulate":
+        memory[c_addr : c_addr + M * N * 4] = to_unsigned_bytes(D, 32)
+    elif start == "matrix":  # dense D: the D stride is N results
+        kw["d_stride"] = 4 * N
+        memory[d_addr : d_addr + M * N * 4] = to_unsigned_bytes(D, 32)
+    elif start == "row":
+        memory[d_addr : d_addr + N * 4] = to_unsigned_bytes(D[0], 32)
+    if "d_addr" in kw:
+        kw["d_addr"] = d_addr
     before = bytes(memory)
 
     dut = MatmulOnTop(cfg)
@@ -364,18 +451,9 @@ def test_matmul_drives_systolic_top(grid, tile, M, N, K, dataflow):
     status = {}
 
     async def testbench(ctx):
-        cmds = setup(M, N, K, K, N, 4 * N, a_addr=a_addr, dataflow=dataflow)
-        cmds = [
-            (
-                c,
-                b_addr
-                if c == MatmulCmd.CONFIG_B_ADDR
-                else c_addr
-                if c == MatmulCmd.CONFIG_C_ADDR
-                else d,
-            )
-            for c, d in cmds
-        ]
+        cmds = setup(M, N, K, K, N, 4 * N, a_addr=a_addr, dataflow=dataflow, **kw)
+        addrs = {MatmulCmd.CONFIG_B_ADDR: b_addr, MatmulCmd.CONFIG_C_ADDR: c_addr}
+        cmds = [(c, addrs.get(c, d)) for c, d in cmds]
         for cmd, data in [*cmds, (MatmulCmd.START, 0)]:
             ctx.set(isa.cfg_valid, 1)
             ctx.set(isa.cfg_cmd, cmd)
@@ -392,11 +470,38 @@ def test_matmul_drives_systolic_top(grid, tile, M, N, K, dataflow):
     assert status == {"done": 1, "error": 0, "l1": 0, "sync": 0}
     c_bytes = M * N * 4
     C = np.array(from_bytes(memory[c_addr : c_addr + c_bytes], 32, M * N)).reshape(M, N)
-    np.testing.assert_array_equal(C, A @ B)
-    assert (
+    untouched = (
         memory[:c_addr] == before[:c_addr]
         and memory[c_addr + c_bytes :] == before[c_addr + c_bytes :]
     )
+    return C, A @ B + D, untouched
+
+
+@pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
+@pytest.mark.parametrize(
+    "grid,tile,M,N,K",
+    [(4, 1, 9, 7, 10), (2, 2, 4, 4, 4), (2, 2, 5, 9, 3), (2, 1, 3, 5, 6)],
+)
+def test_matmul_drives_systolic_top(grid, tile, M, N, K, dataflow):
+    """Matmul issues every command to a real SystolicTop; dense C in L3 equals A @ B.
+
+    A, B and C are dense row-major at odd addresses, tiled in M, N and K, with edge
+    tiles in each; every byte outside C keeps its value."""
+    C, expected, untouched = run_on_top(grid, tile, M, N, K, dataflow)
+    np.testing.assert_array_equal(C, expected)
+    assert untouched
+
+
+@pytest.mark.parametrize("dataflow", [OS, WS], ids=["os", "ws"])
+@pytest.mark.parametrize("start", STARTS)
+@pytest.mark.parametrize("grid,tile,M,N,K", [(4, 1, 9, 7, 10), (2, 2, 5, 9, 3)])
+def test_matmul_from_loaded_values_drives_systolic_top(grid, tile, M, N, K, dataflow, start):
+    """On a real SystolicTop: C = A @ B + D (a dense D, or one bias row) and C = C + A @ B.
+    The accumulator LOADs share the accumulator's write port with the Streamer, and
+    hand each C tile to it."""
+    C, expected, untouched = run_on_top(grid, tile, M, N, K, dataflow, start)
+    np.testing.assert_array_equal(C, expected)
+    assert untouched
 
 
 def test_helpers_round_trip():

@@ -22,12 +22,13 @@ External Interfaces:
 Data Flow for Matrix Multiply C = A × B + D:
 1. Load A from DRAM → Scratchpad via LoadController + StreamReader
 2. Load B from DRAM → Scratchpad via LoadController + StreamReader
-3. Optionally preload D (bias) from Accumulator
+3. Optionally load D (a bias, or the C being accumulated onto) from DRAM into the
+   Accumulator via LoadController (it hands the tile to the Streamer)
 4. Execute matmul via ExecuteController + SystolicArray
 5. Store C from Accumulator → DRAM via StoreController + StreamWriter
 """
 
-from amaranth import Cat, Module, Signal
+from amaranth import Cat, Module, Mux, Signal
 from amaranth.lib.fifo import SyncFIFO
 from amaranth.lib.wiring import Component, In, Out
 
@@ -219,9 +220,10 @@ class SystolicTop(Component):
         # =====================================================================
 
         # Slot pools: L2 (LOAD fills, PRELOAD/COMPUTE read) and the accumulator
-        # (COMPUTE fills, STORE reads)
+        # (COMPUTE fills, STORE reads; an accumulator LOAD may fill it first and hand
+        # it to the Streamer)
         m.submodules.l2_slots = l2 = SlotPool(cfg.l2_slots)
-        m.submodules.acc_slots = acc = SlotPool(cfg.acc_slots)
+        m.submodules.acc_slots = acc = SlotPool(cfg.acc_slots, loader=True)
 
         # One in-order queue per process: the host (or an ISA instruction) pushes
         # commands ahead, and a queue's head is dispatched when its credits and
@@ -283,18 +285,36 @@ class SystolicTop(Component):
             ]
             return dispatch, Sync.fields(head), Sync.fields(inflight)
 
-        # BlockMover, L3 -> L2: takes the L2 slot's credit; emits its token when done
-        ld_go, ld_head, ld_done = gate(self.CTRL_LOAD, lambda h: ~h.acquire | l2.prod_credit)
+        # BlockMover, L3 -> L2: takes the L2 slot's credit; emits its token when done.
+        # A LOAD into the accumulator (the local address's accumulator flag) takes an
+        # accumulator slot's credit instead, and emits its hand-off token for the
+        # Streamer.
+        ld_to_acc = Signal()  # the head LOAD's destination is the accumulator
+        ld_inflight_acc = Signal()  # ... and the one in flight's
+        m.d.comb += ld_to_acc.eq(load_ctrl.cmd_sp_addr[31])
+        ld_go, ld_head, ld_done = gate(
+            self.CTRL_LOAD,
+            lambda h: ~h.acquire | Mux(ld_to_acc, acc.load_credit, l2.prod_credit),
+        )
+        with m.If(ld_go):
+            m.d.sync += ld_inflight_acc.eq(ld_to_acc)
+        ld_signal = load_ctrl.completed & ld_done.signal
         m.d.comb += [
             l2.prod_slot.eq(ld_head.dst),
-            l2.prod_acquire.eq(ld_head.acquire),
-            l2.prod_take.eq(ld_go & ld_head.acquire),
-            l2.prod_signal.eq(load_ctrl.completed & ld_done.signal),
+            l2.prod_acquire.eq(ld_head.acquire & ~ld_to_acc),
+            l2.prod_take.eq(ld_go & ld_head.acquire & ~ld_to_acc),
+            l2.prod_signal.eq(ld_signal & ~ld_inflight_acc),
             l2.prod_signal_slot.eq(ld_done.dst),
+            acc.load_slot.eq(ld_head.dst),
+            acc.load_acquire.eq(ld_head.acquire & ld_to_acc),
+            acc.load_take.eq(ld_go & ld_head.acquire & ld_to_acc),
+            acc.load_signal.eq(ld_signal & ld_inflight_acc),
+            acc.load_signal_slot.eq(ld_done.dst),
         ]
 
         # Streamer: starts when its L2 tile is ready, its accumulator slot is free
-        # and the fabric can take it on schedule (and then runs to the end). Several
+        # (or, with RESUME, holds the tile an accumulator LOAD handed over) and the
+        # fabric can take it on schedule (and then runs to the end). Several
         # of its commands are in flight at once, so it carries each command's sync
         # fields to its own events: it returns the L2 credit once the tile's last
         # block is in L1, and emits the result token once the results are in the
@@ -313,6 +333,7 @@ class SystolicTop(Component):
             l2.cons_release_slot.eq(ex_released.src),
             acc.prod_slot.eq(ex_head.dst),
             acc.prod_acquire.eq(ex_head.acquire),
+            acc.prod_resume.eq(ex_head.resume),
             acc.prod_take.eq(ex_go & ex_head.acquire),
             acc.prod_signal.eq(exec_ctrl.result & ex_resulted.signal),
             acc.prod_signal_slot.eq(ex_resulted.dst),
@@ -346,7 +367,7 @@ class SystolicTop(Component):
         ]
 
         # =====================================================================
-        # LoadController <-> StreamReader <-> Scratchpad
+        # LoadController <-> StreamReader <-> Scratchpad | Accumulator
         # =====================================================================
 
         # LoadController -> StreamReader
@@ -419,14 +440,24 @@ class SystolicTop(Component):
             exec_ctrl.sp_b_read_valid.eq(scratchpad.read_b_valid),
         ]
 
-        # ExecuteController writes result rows to the accumulator (the
-        # StoreController only reads it)
-        m.d.comb += [
-            accumulator.write_req.eq(exec_ctrl.acc_write_req),
-            accumulator.write_addr.eq(exec_ctrl.acc_write_addr),
-            accumulator.write_data.eq(exec_ctrl.acc_write_data),
-            accumulator.accumulate.eq(exec_ctrl.acc_accumulate),
-        ]
+        # ExecuteController writes result rows to the accumulator, and the
+        # LoadController a tile's starting values (the StoreController only reads
+        # it). The fabric never stalls, so the Streamer has the write port first;
+        # an accumulator LOAD waits for a clock it does not write.
+        m.d.comb += load_ctrl.acc_write_ready.eq(~exec_ctrl.acc_write_req)
+        with m.If(exec_ctrl.acc_write_req):
+            m.d.comb += [
+                accumulator.write_req.eq(1),
+                accumulator.write_addr.eq(exec_ctrl.acc_write_addr),
+                accumulator.write_data.eq(exec_ctrl.acc_write_data),
+                accumulator.accumulate.eq(exec_ctrl.acc_accumulate),
+            ]
+        with m.Else():
+            m.d.comb += [
+                accumulator.write_req.eq(load_ctrl.acc_write_en),
+                accumulator.write_addr.eq(load_ctrl.acc_write_addr),
+                accumulator.write_data.eq(load_ctrl.acc_write_data),
+            ]
 
         # =====================================================================
         # ExecuteController <-> SystolicArray

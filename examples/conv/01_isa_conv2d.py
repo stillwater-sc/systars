@@ -11,8 +11,8 @@ implicit GEMM:
         and chunk of array-dim input channels
 
 For each K tile it LOADs one row per output position (the input pixel that
-kernel offset reads, with stride, dilation and padding applied, or a zero row
-in the padding) and the filter tile (one command, corner-turned), then COMPUTEs
+kernel offset reads, with stride, dilation and padding applied, or a CLEAR of
+the row in the padding: zeros, with no L3 read) and the filter tile (one command, corner-turned), then COMPUTEs
 output-stationary: the K tiles are one reduction held in the PEs; after the K
 tiles it STOREs the output tile (one command). X, F and Y are dense NHWC at any address: the tile's BlockMover moves
 rows from and to any byte.
@@ -36,9 +36,9 @@ from amaranth.sim import Simulator
 from systars.config import SystolicConfig
 from systars.isa.command import CTRL_LOAD, CTRL_STORE
 from systars.isa.conv2d import Conv2d, Conv2dCmd, Conv2dError
-from systars.util.commands import ExecOpcode
+from systars.util.commands import DmaOpcode, ExecOpcode
 
-X_ADDR, F_ADDR, Y_ADDR, ZERO_ADDR = 0x1000_0000, 0x2000_0000, 0x3000_0000, 0x4000_0000
+X_ADDR, F_ADDR, Y_ADDR = 0x1000_0000, 0x2000_0000, 0x3000_0000
 
 
 def out_size(size, kernel, stride, pad, dilation):
@@ -87,7 +87,6 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
             (Conv2dCmd.CONFIG_X_ADDR, X_ADDR),
             (Conv2dCmd.CONFIG_F_ADDR, F_ADDR),
             (Conv2dCmd.CONFIG_Y_ADDR, Y_ADDR),
-            (Conv2dCmd.CONFIG_ZERO_ADDR, ZERO_ADDR),
             (Conv2dCmd.CONFIG_Y_STRIDE, y_stride),
             (Conv2dCmd.START, 0),
         ]
@@ -143,9 +142,9 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
         actual[op] = sum(
             1 for t in trace if t[0] not in (CTRL_LOAD, CTRL_STORE) and t[1] == ExecOpcode[op]
         )
-    padded = sum(1 for t in trace if t[0] == CTRL_LOAD and t[2] == ZERO_ADDR)
+    padded = sum(1 for t in trace if t[0] == CTRL_LOAD and t[1] == DmaOpcode.CLEAR)
 
-    print(f"\n   {len(trace)} commands; {padded} input rows read the zero row (padding)")
+    print(f"\n   {len(trace)} commands; {padded} input rows are CLEARed (padding)")
     print("   Expected vs actual:")
     ok = True
     for name in expected:

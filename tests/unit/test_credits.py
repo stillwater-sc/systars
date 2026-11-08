@@ -1,8 +1,9 @@
 """
 Credits and tile-ready tokens (controller/sync.py, SystolicTop's command queues).
 
-- ``SlotPool`` on its own: the FREE -> OWNED -> READY -> FREE cycle, and the sticky
-  protocol error.
+- ``SlotPool`` on its own: the FREE -> OWNED -> READY -> FREE cycle, the sticky
+  protocol error, and the accumulator's hand-off (a loader fills a slot first:
+  FREE -> OWNED -> LOADED, and the producer resumes it: LOADED -> OWNED).
 - Matmul and Conv2d on a real ``SystolicTop``, with a monitor that replays the
   observable events (commands pushed, ``*_started``, ``*_completed``, and the
   Streamer's ``exec_result``) through an independent slot model, every cycle. The
@@ -16,7 +17,9 @@ Credits and tile-ready tokens (controller/sync.py, SystolicTop's command queues)
   - results equal numpy, and are identical with one buffer per operand (the
     processes serialized) and with two (double buffering);
   - with two buffers the BlockMover fills the next tile's slot while the Streamer
-    works (measured cycles), and L3 backpressure does not change values.
+    works (measured cycles), and L3 backpressure does not change values;
+  - with a bias or accumulation, each accumulator LOAD hands its slot to the
+    Streamer, and no STORE starts on the hand-off token.
 """
 
 from __future__ import annotations
@@ -37,11 +40,12 @@ from systars.top import SystolicTop
 from ._axi import axi_memory
 from ._isa import from_bytes, to_unsigned_bytes
 from ._sim import run_sim
-from .test_conv2d import F_ADDR, X_ADDR, Y_ADDR, ZERO_ADDR, reference
+from .test_conv2d import B_ADDR as CONV_B_ADDR
+from .test_conv2d import F_ADDR, X_ADDR, Y_ADDR, reference
 from .test_conv2d import setup as conv_setup
 
-FREE, OWNED, READY, READING = (
-    SlotState.FREE, SlotState.OWNED, SlotState.READY, SlotState.READING,
+FREE, OWNED, READY, READING, LOADED = (
+    SlotState.FREE, SlotState.OWNED, SlotState.READY, SlotState.READING, SlotState.LOADED,
 )  # fmt: skip
 
 
@@ -85,6 +89,51 @@ def test_slot_pool_cycle_and_errors():
     run_sim(pool, testbench)
 
 
+def test_slot_pool_hand_off():
+    """The loader fills a slot and hands it on (LOADED); the producer resumes it with
+    RESUME instead of a free credit, and only then does the consumer see a token."""
+    pool = SlotPool(2, loader=True)
+
+    async def testbench(ctx):
+        async def pulse(*ports):
+            for port in ports:
+                ctx.set(port, 1)
+            await ctx.tick()
+            for port in ports:
+                ctx.set(port, 0)
+
+        ctx.set(pool.load_slot, 1)
+        ctx.set(pool.prod_slot, 1)
+        ctx.set(pool.cons_slot, 1)
+        assert ctx.get(pool.load_credit)
+        await pulse(pool.load_take)
+        assert not ctx.get(pool.load_credit) and ctx.get(pool.free) == 0b01
+        ctx.set(pool.load_signal_slot, 1)
+        await pulse(pool.load_signal)
+        # LOADED: no free credit, no token for the consumer; a hand-off for RESUME
+        assert ctx.get(pool.free) == 0b01 and ctx.get(pool.ready) == 0
+        assert not ctx.get(pool.cons_ready)
+        assert not ctx.get(pool.prod_credit)
+        ctx.set(pool.prod_resume, 1)
+        assert ctx.get(pool.prod_credit)
+        await pulse(pool.prod_take)
+        ctx.set(pool.prod_resume, 0)
+        assert not ctx.get(pool.prod_credit)  # OWNED by the producer now
+        ctx.set(pool.prod_signal_slot, 1)
+        await pulse(pool.prod_signal)
+        assert ctx.get(pool.cons_ready) and ctx.get(pool.ready) == 0b10
+        ctx.set(pool.cons_release_slot, 1)
+        await pulse(pool.cons_release)
+        assert ctx.get(pool.free) == 0b11 and not ctx.get(pool.error)
+        # RESUME on a slot that was not handed over is a protocol error
+        ctx.set(pool.prod_resume, 1)
+        assert not ctx.get(pool.prod_credit)
+        await pulse(pool.prod_take)
+        assert ctx.get(pool.error)
+
+    run_sim(pool, testbench)
+
+
 def test_slot_pool_rejects_out_of_range_tags():
     pool = SlotPool(3)
 
@@ -101,6 +150,7 @@ def test_slot_pool_rejects_out_of_range_tags():
 def test_sync_encoding():
     value = Sync.encode(src=3, dst=5, wait=True, signal=True)
     assert value == 3 | 5 << 4 | Sync.WAIT | Sync.SIGNAL
+    assert Sync.encode(dst=1, acquire=True, resume=True) == 1 << 4 | Sync.ACQUIRE | Sync.RESUME
     with pytest.raises(ValueError):
         Sync.encode(dst=16)
 
@@ -127,7 +177,7 @@ class Monitor:
         self.overlap = 0  # cycles with the BlockMover's LOAD and the Streamer both running
 
     def signals(self, top):
-        sigs = [top.cmd_valid, top.cmd_ready, top.cmd_type, top.cmd_sync]
+        sigs = [top.cmd_valid, top.cmd_ready, top.cmd_type, top.cmd_sync, top.cmd_local_addr]
         for name in PROCESSES.values():
             sigs += [getattr(top, f"{name}_started"), getattr(top, f"{name}_started_id"),
                      getattr(top, f"{name}_completed"), getattr(top, f"{name}_completed_id")]  # fmt: skip
@@ -138,12 +188,13 @@ class Monitor:
     def check_state(self, name, free, ready):
         for s, expected in enumerate(self.pools[name]):
             bits = (free >> s & 1, ready >> s & 1)
-            assert (
-                bits == {FREE: (1, 0), OWNED: (0, 0), READY: (0, 1), READING: (0, 0)}[expected]
-            ), f"cycle {self.cycles}: {name} slot {s} is {bits} (free, ready), model {expected}"
+            states = {FREE: (1, 0), OWNED: (0, 0), READY: (0, 1), READING: (0, 0), LOADED: (0, 0)}
+            assert bits == states[expected], (
+                f"cycle {self.cycles}: {name} slot {s} is {bits} (free, ready), model {expected}"
+            )
 
     def step(self, values):
-        valid, ready, ctype, sync, *rest = values
+        valid, ready, ctype, sync, local_addr, *rest = values
         events, (result, result_id), state = rest[:12], rest[12:14], rest[14:]
         l2_free, l2_ready, acc_free, acc_ready, error, l1_error = state
         assert not error, f"cycle {self.cycles}: protocol error"
@@ -151,14 +202,14 @@ class Monitor:
         # The state this cycle reflects every earlier cycle's events
         self.check_state("l2", l2_free, l2_ready)
         self.check_state("acc", acc_free, acc_ready)
-        if valid and ready:
-            self.queued[ctype].append(sync)
+        if valid and ready:  # a LOAD into the accumulator fills an accumulator slot
+            self.queued[ctype].append((sync, ctype == CTRL_LOAD and bool(local_addr >> 31)))
 
         moves = []
         for i, t in enumerate(PROCESSES):
             started, started_id, completed, completed_id = events[4 * i : 4 * i + 4]
             if started:
-                s = self.queued[t].popleft()
+                s, to_acc = self.queued[t].popleft()
                 src, dst = s & 0xF, s >> Sync.DST & 0xF
                 if s & Sync.WAIT:
                     pool = self.pools[self.consumes[t]]
@@ -167,18 +218,21 @@ class Monitor:
                     )
                     if s & Sync.RELEASE:  # the consumer takes the token
                         moves.append((self.consumes[t], src, READY, READING))
-                if s & Sync.ACQUIRE:
-                    moves.append((self.produces[t], dst, FREE, OWNED))
+                if s & Sync.ACQUIRE:  # with RESUME, the hand-off token
+                    pool = "acc" if to_acc else self.produces[t]
+                    moves.append((pool, dst, LOADED if s & Sync.RESUME else FREE, OWNED))
                 assert started_id not in self.inflight[t], f"cycle {self.cycles}: ID reused"
-                self.inflight[t][started_id] = s
+                self.inflight[t][started_id] = (s, to_acc)
             if completed:
-                s = self.inflight[t].pop(completed_id, None)
+                s, to_acc = self.inflight[t].pop(completed_id, (None, False))
                 assert s is not None, f"cycle {self.cycles}: {PROCESSES[t]} completed unstarted"
                 src, dst = s & 0xF, s >> Sync.DST & 0xF
                 if s & Sync.RELEASE:
                     moves.append((self.consumes[t], src, READING if s & Sync.WAIT else READY, FREE))
                 if t == CTRL_EXEC:
                     self.awaiting_result[completed_id] = s
+                elif s & Sync.SIGNAL and to_acc:  # hands the tile to the Streamer
+                    moves.append(("acc", dst, OWNED, LOADED))
                 elif s & Sync.SIGNAL:
                     moves.append((self.produces[t], dst, OWNED, READY))
         if result:
@@ -247,18 +301,27 @@ def config(grid=4):
     )  # 2 A/B slot pairs and 2 accumulator slots by default
 
 
-A_ADDR, B_ADDR, C_ADDR = 0x1001, 0x4007, 0x8003
+A_ADDR, B_ADDR, C_ADDR, D_ADDR = 0x1001, 0x4007, 0x8003, 0xC005
 
 
-def matmul_on_top(M, N, K, *, buffers=2, stall=0.0, seed=0):
+def matmul_on_top(M, N, K, *, buffers=2, stall=0.0, seed=0, start=None):
+    """``start``: None, "bias" (a dense D matrix) or "accumulate" (onto C)."""
     cfg = config()
     rng = np.random.default_rng(seed)
     A = rng.integers(-128, 128, (M, K))
     B = rng.integers(-128, 128, (K, N))
+    D = rng.integers(-(1 << 20), 1 << 20, (M, N)) if start else np.zeros((M, N), dtype=int)
     memory = bytearray(rng.integers(0, 256, 1 << 16, dtype=np.uint8).tobytes())
     memory[A_ADDR : A_ADDR + M * K] = to_unsigned_bytes(A, 8)
     memory[B_ADDR : B_ADDR + K * N] = to_unsigned_bytes(B, 8)
-    cmds = [
+    extra = []
+    if start == "bias":
+        memory[D_ADDR : D_ADDR + M * N * 4] = to_unsigned_bytes(D, 32)
+        extra = [(MatmulCmd.CONFIG_D_ADDR, D_ADDR), (MatmulCmd.CONFIG_D_STRIDE, 4 * N)]
+    elif start == "accumulate":
+        memory[C_ADDR : C_ADDR + M * N * 4] = to_unsigned_bytes(D, 32)
+        extra = [(MatmulCmd.CONFIG_OPTIONS, 1)]
+    cmds = extra + [
         (MatmulCmd.CONFIG_DIMS, M | N << 16 | K << 32),
         (MatmulCmd.CONFIG_A_ADDR, A_ADDR),
         (MatmulCmd.CONFIG_B_ADDR, B_ADDR),
@@ -271,7 +334,7 @@ def matmul_on_top(M, N, K, *, buffers=2, stall=0.0, seed=0):
         cfg, Matmul(cfg, buffers=buffers), cmds, MatmulCmd.START, memory, stall=stall
     )
     C = np.array(from_bytes(memory[C_ADDR : C_ADDR + M * N * 4], 32, M * N)).reshape(M, N)
-    np.testing.assert_array_equal(C, A @ B)
+    np.testing.assert_array_equal(C, A @ B + D)
     return C, monitor
 
 
@@ -299,26 +362,36 @@ class TestMatmul:
         np.testing.assert_array_equal(C, C_slow)
         assert slow.cycles > fast.cycles
 
+    @pytest.mark.parametrize("start", ["bias", "accumulate"])
+    @pytest.mark.parametrize("buffers", [1, 2])
+    def test_accumulator_loads_hand_off_to_the_streamer(self, start, buffers):
+        """Each C tile's accumulator LOAD takes its slot's credit and hands it to the
+        Streamer; the monitor checks every slot's state each cycle, and that no STORE
+        starts before the result token (a STORE on the hand-off token would store D)."""
+        matmul_on_top(*self.SHAPE, buffers=buffers, seed=3, start=start, stall=0.2)
+
 
 @pytest.mark.parametrize("buffers", [1, 2])
 def test_conv2d_credits_on_top(buffers):
-    """Conv2d's X tiles are filled by one LOAD per position: the credit is taken by
-    the first, the token emitted by the last, and the Streamer waits for it."""
+    """Conv2d's X tiles are filled by one LOAD (or CLEAR) per position: the credit is
+    taken by the first, the token emitted by the last, and the Streamer waits for it.
+    Each output tile starts from the bias row, whose accumulator LOAD hands the slot to
+    the Streamer."""
     cfg = config()
     X_shape, F_shape, stride, pad = (1, 4, 4, 3), (3, 3, 3, 5), (1, 1), (1, 1)
     rng = np.random.default_rng(7)
     X = rng.integers(-128, 128, X_shape)
     F = rng.integers(-128, 128, F_shape)
-    expected = reference(X, F, stride, pad, (1, 1))
+    bias = rng.integers(-(1 << 20), 1 << 20, F_shape[3])
+    expected = reference(X, F, stride, pad, (1, 1)) + bias  # with a bias row
     memory = bytearray(rng.integers(0, 256, 1 << 20, dtype=np.uint8).tobytes())
     memory[X_ADDR : X_ADDR + X.size] = to_unsigned_bytes(X, 8)
     memory[F_ADDR : F_ADDR + F.size] = to_unsigned_bytes(F, 8)
-    beat = cfg.dma_buswidth // 8
-    memory[ZERO_ADDR : ZERO_ADDR + beat] = bytes(beat)
+    memory[CONV_B_ADDR : CONV_B_ADDR + bias.size * 4] = to_unsigned_bytes(bias, 32)
     run_on_top(
         cfg,
         Conv2d(cfg, buffers=buffers),
-        conv_setup(X_shape, F_shape, stride, pad),
+        conv_setup(X_shape, F_shape, stride, pad, bias=CONV_B_ADDR),
         Conv2dCmd.START,
         memory,
         stall=0.2,
