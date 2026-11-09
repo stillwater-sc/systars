@@ -11,6 +11,9 @@ L3, each from or to any byte address, ``stride`` bytes between rows, with
 - A GEMM through SystolicTop with A, B and C at unaligned, strided addresses,
   C written with partial rows between canary bytes.
 - Bank counts: one bank works, a count that is not a power of two is rejected.
+- 4 KB boundaries (#18): no burst crosses one. A row spilling across one is two
+  1-beat bursts, a streamed tile ends a burst at it, alone and in a GEMM through
+  SystolicTop. The AXI model asserts it for every test.
 - TRANSPOSE (#21): both legs with a corner turn, alone and through SystolicTop.
 """
 
@@ -44,7 +47,8 @@ class _AxiPorts:
     other direction, so ``axi_memory`` can serve one engine."""
 
     READ = ("arvalid", "arready", "araddr", "arlen", "rvalid", "rready", "rdata", "rlast")
-    WRITE = ("awvalid", "awready", "awaddr", "wvalid", "wready", "wdata", "wstrb", "wlast")
+    WRITE = ("awvalid", "awready", "awaddr", "awlen", "wvalid", "wready", "wdata", "wstrb")
+    WRITE += ("wlast",)
     WRITE += ("bvalid", "bready")
 
     def _alias(self, engine, names, present):
@@ -132,7 +136,7 @@ async def issue(
     await ctx.tick().until(ctrl.completed)
 
 
-def run_load(cfg, memory, *, then=(), **cmd):
+def run_load(cfg, memory, *, then=(), log=None, **cmd):
     """Run one LOAD, then the commands in ``then`` (dicts of the same fields); return
     {scratchpad row: bytes written}."""
     dut = LoadPath(cfg)
@@ -152,11 +156,11 @@ def run_load(cfg, memory, *, then=(), **cmd):
             await issue(ctx, dut.ctrl, "cmd_sp_addr", **fields)
 
     beat = cfg.dma_buswidth // 8
-    run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat), recorder])
+    run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat, log=log), recorder])
     return written
 
 
-def run_store(cfg, memory, acc_rows, *, activation=0, then=(), **cmd):
+def run_store(cfg, memory, acc_rows, *, activation=0, then=(), log=None, **cmd):
     """Run one STORE of ``acc_rows`` (lists of acc_bits values) into ``memory``, then the
     commands in ``then`` (dicts of the same fields)."""
     dut = StorePath(cfg)
@@ -178,7 +182,7 @@ def run_store(cfg, memory, acc_rows, *, activation=0, then=(), **cmd):
             await issue(ctx, dut.ctrl, "cmd_acc_addr", **fields)
 
     beat = cfg.dma_buswidth // 8
-    run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat), accumulator])
+    run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat, log=log), accumulator])
 
 
 def pattern(n, seed=0):
@@ -315,7 +319,10 @@ class TestStore:
 A_ADDR, B_ADDR, C_ADDR = 0x1003, 0x2009, 0x3005
 
 
-def gemm_any_layout(cfg, A, B, *, a_stride, b_stride, c_stride):
+def gemm_any_layout(
+    cfg, A, B, *, a_stride, b_stride, c_stride, a_addr=A_ADDR, b_addr=B_ADDR, c_addr=C_ADDR,
+    log=None,
+):  # fmt: skip
     """WS GEMM (one tile) through SystolicTop, operands and C at unaligned, strided addresses.
 
     A is row-major in L3; the LOAD's corner turn lays it column-major in L2, as the
@@ -327,11 +334,11 @@ def gemm_any_layout(cfg, A, B, *, a_stride, b_stride, c_stride):
     N = B.shape[1]
     memory = pattern(1 << 16, seed=7)
     for r, row in enumerate(A):
-        memory[A_ADDR + r * a_stride : A_ADDR + r * a_stride + K] = pack(row, 8).to_bytes(
+        memory[a_addr + r * a_stride : a_addr + r * a_stride + K] = pack(row, 8).to_bytes(
             K, "little"
         )
     for r, row in enumerate(B):
-        memory[B_ADDR + r * b_stride : B_ADDR + r * b_stride + N] = pack(row, 8).to_bytes(
+        memory[b_addr + r * b_stride : b_addr + r * b_stride + N] = pack(row, 8).to_bytes(
             N, "little"
         )
     before = bytes(memory)
@@ -343,23 +350,23 @@ def gemm_any_layout(cfg, A, B, *, a_stride, b_stride, c_stride):
         ctx.set(dut.cmd_stride, a_stride)
         ctx.set(dut.cmd_row_bytes, K)
         # M rows of K elements -> K L2 rows of M: A's columns
-        await host.run(SystolicTop.CTRL_LOAD, TRANSPOSE, dram_addr=A_ADDR, local_addr=0, len=M)
+        await host.run(SystolicTop.CTRL_LOAD, TRANSPOSE, dram_addr=a_addr, local_addr=0, len=M)
         ctx.set(dut.cmd_stride, b_stride)
         ctx.set(dut.cmd_row_bytes, N)
-        await host.load(B_ADDR, sp_b, K)
+        await host.load(b_addr, sp_b, K)
         await host.execute(ExecOpcode.CONFIG, rs1=WS)
         await host.execute(ExecOpcode.PRELOAD, rs1=sp_b, k_dim=K)
         await host.execute(ExecOpcode.COMPUTE, rs1=0, rd=0, k_dim=M)
         ctx.set(dut.cmd_stride, c_stride)
         ctx.set(dut.cmd_row_bytes, 4 * N)
-        await host.store(0, C_ADDR, M)
+        await host.store(0, c_addr, M)
 
-    run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat)], max_cycles=20_000)
+    run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat, log=log)], max_cycles=20_000)
     C = np.array(
         [
             unpack(
                 int.from_bytes(
-                    memory[C_ADDR + r * c_stride : C_ADDR + r * c_stride + 4 * N], "little"
+                    memory[c_addr + r * c_stride : c_addr + r * c_stride + 4 * N], "little"
                 ),
                 32,
                 N,
@@ -370,8 +377,8 @@ def gemm_any_layout(cfg, A, B, *, a_stride, b_stride, c_stride):
     # Everything outside C's rows is untouched
     expected = bytearray(memory)
     for r in range(M):
-        expected[C_ADDR + r * c_stride : C_ADDR + r * c_stride + 4 * N] = before[
-            C_ADDR + r * c_stride : C_ADDR + r * c_stride + 4 * N
+        expected[c_addr + r * c_stride : c_addr + r * c_stride + 4 * N] = before[
+            c_addr + r * c_stride : c_addr + r * c_stride + 4 * N
         ]
     assert expected == before, "STORE wrote outside C's rows"
     return C
@@ -405,6 +412,101 @@ class TestGemmAnyLayout:
         B = rng.integers(-128, 128, (4, 4))
         C = gemm_any_layout(cfg, A, B, a_stride=4, b_stride=4, c_stride=16)
         np.testing.assert_array_equal(C, A @ B)
+
+
+class TestFourKBoundaries:
+    """No burst crosses a 4 KB boundary (#18). The AXI model asserts it for every burst;
+    these tests also check the bursts themselves, and the values."""
+
+    PAGE = 0x2000  # a 4 KB boundary
+
+    def test_load_row_spilling_across_a_boundary(self):
+        """8-byte rows 40 bytes apart: the row at PAGE - 4 is in two pages, and is read
+        as two 1-beat bursts; the rows around it are ordinary bursts."""
+        cfg = config(dim=8)  # 8-byte scratchpad rows, 32-byte beats
+        beat = cfg.dma_buswidth // 8
+        assert beat == 32
+        memory = pattern(1 << 14, seed=20)
+        base, log = self.PAGE - 4 - 40, []
+        written = run_load(cfg, memory, dram_addr=base, local_addr=0, rows=3, stride=40, log=log)
+        assert written == {r: bytes(memory[base + 40 * r : base + 40 * r + 8]) for r in range(3)}
+        # rows at PAGE - 44 (1 beat), PAGE - 4 (split), PAGE + 36 (1 beat)
+        p = self.PAGE
+        assert log == [("r", p - 64, 1), ("r", p - 32, 1), ("r", p, 1), ("r", p + 32, 1)]
+
+    def test_load_stream_crossing_a_boundary(self):
+        """40 consecutive beats from 8 beats before PAGE: one burst to PAGE, one after."""
+        cfg = config()
+        beat = cfg.dma_buswidth // 8
+        memory = pattern(1 << 14, seed=21)
+        base, log = self.PAGE - 8 * beat, []
+        written = run_load(cfg, memory, dram_addr=base, local_addr=0, rows=40, log=log)
+        assert written == {
+            r: bytes(memory[base + r * beat : base + r * beat + 4]) for r in range(40)
+        }
+        assert log == [("r", base, 8), ("r", self.PAGE, 32)]
+
+    def test_load_stream_of_300_rows_from_mid_page(self):
+        """300 beats from mid-page: bursts end at each boundary and at 256 beats."""
+        cfg = config()
+        beat = cfg.dma_buswidth // 8
+        memory = pattern(1 << 15, seed=22)
+        base, log = self.PAGE + 0x800, []
+        written = run_load(cfg, memory, dram_addr=base, local_addr=0, rows=300, log=log)
+        assert len(written) == 300
+        assert all(
+            written[r] == bytes(memory[base + r * beat : base + r * beat + 4]) for r in range(300)
+        )
+        assert log == [("r", base, 128), ("r", base + 0x800, 172)]
+
+    def test_store_row_spilling_across_a_boundary(self):
+        """A 16-byte row at PAGE - 4: two 1-beat bursts, its bytes only."""
+        cfg = config()  # 16-byte accumulator rows, 16-byte beats
+        memory = pattern(1 << 14, seed=23)
+        before = bytes(memory)
+        rows = TestStore.ROWS
+        base, log = self.PAGE - 4 - 24, []
+        run_store(cfg, memory, rows, dram_addr=base, local_addr=0, rows=3, stride=24, log=log)
+        expected = bytearray(before)
+        for r, row in enumerate(rows):
+            expected[base + 24 * r : base + 24 * r + 16] = pack(row, 32).to_bytes(16, "little")
+        assert memory == expected
+        # rows at PAGE - 28 (2 beats), PAGE - 4 (split), PAGE + 20 (2 beats)
+        p = self.PAGE
+        assert log == [("w", p - 32, 2), ("w", p - 16, 1), ("w", p, 1), ("w", p + 16, 2)]
+
+    def test_store_stream_crossing_a_boundary(self):
+        cfg = config()
+        beat = cfg.dma_buswidth // 8
+        rows = [[r, -r, 2 * r, 3] for r in range(40)]
+        memory = bytearray(1 << 14)
+        base, log = self.PAGE - 8 * beat, []
+        run_store(cfg, memory, rows, dram_addr=base, local_addr=0, rows=40, log=log)
+        stored = [
+            unpack(int.from_bytes(memory[base + r * beat : base + (r + 1) * beat], "little"), 32, 4)
+            for r in range(40)
+        ]
+        assert stored == rows
+        assert log == [("w", base, 8), ("w", self.PAGE, 32)]
+
+    def test_gemm_with_every_operand_across_a_boundary(self):
+        """A, B and C each have a row straddling a 4 KB boundary (A's second row at
+        0x1000 - 2, B's at 0x2000 - 1, C's at 0x3000 - 6), at odd strides: each such row
+        is two 1-beat bursts, and C is right."""
+        cfg = config(4)
+        beat = cfg.dma_buswidth // 8
+        rng = np.random.default_rng(24)
+        A = rng.integers(-128, 128, (4, 4))
+        B = rng.integers(-128, 128, (4, 3))
+        log = []
+        C = gemm_any_layout(
+            cfg, A, B, a_stride=37, b_stride=19, c_stride=53,
+            a_addr=0x1000 - 2 - 37, b_addr=0x2000 - 1 - 19, c_addr=0x3000 - 6 - 53, log=log,
+        )  # fmt: skip
+        np.testing.assert_array_equal(C, A @ B)
+        for kind, page in (("r", 0x1000), ("r", 0x2000), ("w", 0x3000)):
+            n = log.index((kind, page - beat, 1))
+            assert log[n + 1] == (kind, page, 1)
 
 
 @pytest.mark.parametrize("field", ["sp_banks", "acc_banks"])

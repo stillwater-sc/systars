@@ -40,9 +40,15 @@ A LOAD or STORE moves a whole tile: `len` rows, row `n` at L3 byte address
 spills into the next beat, is a 1- or 2-beat burst from the beat boundary, shifted into place.
 A loaded row is zero-filled past `row_bytes`; a stored row writes only its own bytes (AXI byte
 strobes, `StreamWriter.data_strb`). Rows that are consecutive beats from a beat boundary stream
-as bursts of up to 256 beats. *Limitation:* bursts are not yet split at 4 KB boundaries, which
-AXI forbids crossing; a long streamed burst, or a 2-beat row burst at the end of a 4 KB region,
-can cross one (#11).
+as bursts of up to 256 beats.
+
+No burst crosses a 4 KB boundary, which AXI forbids (#11):
+
+- a streamed burst ends at the boundary, and the next one starts there;
+- a row whose two beats are in different 4 KB pages is two 1-beat bursts. For a STORE, the
+  second burst is issued once the first is acknowledged.
+
+The unit AXI memory model (`tests/unit/_axi.py`) asserts this for every burst a test issues.
 
 The LOAD leg also writes the accumulator: a `local_addr` with the accumulator flag
 (`LocalAddr`, bit 31) writes accumulator rows (`row_bytes` 0 is then a whole accumulator row),
@@ -222,7 +228,8 @@ not run `SystolicTop` or check numerical results; the unit tests below do.
 
 `tests/unit/test_block_mover.py`: both BlockMover legs over a byte-addressed AXI memory
 (`tests/unit/_axi.py`): every byte offset, spilling rows, partial rows, strides, streamed
-bursts past 256 beats, and a GEMM with unaligned, strided operands.
+bursts past 256 beats, a GEMM with unaligned, strided operands, and rows and streamed tiles
+that cross a 4 KB boundary, for both legs and a GEMM (`TestFourKBoundaries`).
 
 `tests/unit/test_load_controller.py`: accumulator LOADs (streamed and unaligned rows),
 `BROADCAST` (one L3 read) and `CLEAR` (none), with the Streamer holding the accumulator's write
