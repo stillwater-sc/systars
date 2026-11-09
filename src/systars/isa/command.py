@@ -18,10 +18,7 @@ has completed (``cmd_store_completed``): its results are in L3.
 order. Two buffers let the BlockMover fill the next tile's slot while the Streamer
 works on the current one; one serializes them. An OS COMPUTE reads both tiles of
 its pair, so OS tracks the pair with the A slot's credit alone: the A tile's LOAD
-takes it and the B tile's LOAD emits its token. A C tile that starts from loaded
-values (a bias, or the C being accumulated onto) has its accumulator slot filled
-first by an accumulator LOAD, which takes the credit and hands the tile to the
-Streamer; the first COMPUTE takes the hand-off token (RESUME) instead of a credit.
+takes it and the B tile's LOAD emits its token.
 
 Issuing in program order cannot deadlock: every credit a command waits for is
 returned by a command issued before it.
@@ -181,19 +178,15 @@ class TileBuffers:
         slot = self.b_slot if slot is None else slot
         return Sync.encode(src=slot, wait=True, release=True)
 
-    def load_acc(self):
-        """Accumulator LOAD of the C tile's starting values: takes the accumulator
-        slot's credit, and hands the tile to the Streamer when done."""
-        return Sync.encode(dst=self.acc_slot, acquire=True, signal=True)
-
-    def compute(self, first_k, last_k, slot=None, loaded=False):
+    def compute(self, first_k, last_k, slot=None, acquire=None):
         """COMPUTE: consumes the streamed tile (default: A); fills the accumulator
-        tile across the K steps. With ``loaded`` the tile starts from an accumulator
-        LOAD's values, so the first K step takes its hand-off token."""
+        tile across the K steps. It takes the accumulator credit on the first K step
+        (``acquire``, default ``first_k``), unless a LOAD into the accumulator took it."""
         slot = self.a_slot if slot is None else slot
+        acquire = first_k if acquire is None else acquire
         return Sync.encode(
             src=slot, wait=True, release=True,
-            dst=self.acc_slot, acquire=first_k, signal=last_k, resume=first_k & loaded,
+            dst=self.acc_slot, acquire=acquire, signal=last_k,
         )  # fmt: skip
 
     @staticmethod

@@ -449,7 +449,8 @@ What that means:
   GEMMs, with `COMPUTE_ACCUMULATE` and partial rows, from random scratchpad and accumulator
   contents, and checks that C is still exact.
 - **The host** must write what it reads. A `COMPUTE_ACCUMULATE` onto an accumulator row
-  that neither a `COMPUTE` nor an accumulator LOAD wrote, a `COMPUTE` on a scratchpad slot
+  that neither a `COMPUTE` nor an accumulator LOAD wrote, an accumulator LOAD with the add
+  flag (`LocalAddr` bit 30) onto such a row, a `COMPUTE` on a scratchpad slot
   that no LOAD filled, or a STORE of unwritten rows returns unspecified data on hardware
   where the simulation returns zero.
 - **Preloads.** `tests/unit/test_targets.py` checks that no target has non-zero memory

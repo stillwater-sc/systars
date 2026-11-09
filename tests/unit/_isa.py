@@ -10,8 +10,6 @@ Test helpers for the ISA instructions (Matmul, Conv2d).
   numpy. LOAD and STORE move ``len`` rows ``stride`` bytes apart (0 = one beat),
   ``row_bytes`` per row (0 = a whole row): a loaded row is zero-filled past them, a
   stored row writes only them. TRANSPOSE turns the tile's rows into its columns.
-  A LOAD to an accumulator address (bit 31) writes accumulator rows of int32;
-  BROADCAST writes one L3 row to all ``len`` rows, and CLEAR writes zero rows.
   It also checks the commands' credits and tile-ready tokens (``cmd_sync``): in
   program order, a well-formed stream only waits on tokens that are there and takes
   credits that are free, and every slot is free again at the end.
@@ -34,7 +32,6 @@ FIELDS = (
     "activation", "sync", "chain",
 )  # fmt: skip
 DATA_MASK = (1 << 29) - 1  # LocalAddr data bits (the flags are ignored by the memories)
-ACC_FLAG = 1 << 31  # LocalAddr: the accumulator
 
 
 @dataclass
@@ -151,9 +148,8 @@ class TopModel:
     def _sync(self, c, phase):
         """Apply ``c``'s credits and tokens: ``phase`` "start" (WAIT, ACQUIRE) or "end"."""
         src, dst = c.sync & 0xF, (c.sync >> Sync.DST) & 0xF
-        to_acc = c.type == CTRL_LOAD and bool(c.local_addr & ACC_FLAG)
         produces = {CTRL_LOAD: self.l2_slots, CTRL_EXEC: self.acc_slots}.get(c.type)
-        if to_acc:  # an accumulator LOAD: the slot's first producer
+        if c.type == CTRL_LOAD and c.local_addr >> 31 & 1:  # a LOAD into the accumulator
             produces = self.acc_slots
         consumes = {CTRL_EXEC: self.l2_slots, CTRL_STORE: self.acc_slots}.get(c.type)
 
@@ -166,16 +162,14 @@ class TopModel:
         if phase == "start":
             if c.sync & Sync.WAIT:  # with RELEASE, the consumer takes the token
                 move(consumes, src, SlotState.READY, taken, "WAIT")
-            if c.sync & Sync.ACQUIRE:  # with RESUME, the hand-off token instead
-                frm = SlotState.LOADED if c.sync & Sync.RESUME else SlotState.FREE
-                move(produces, dst, frm, SlotState.OWNED, "ACQUIRE")
+            if c.sync & Sync.ACQUIRE:
+                move(produces, dst, SlotState.FREE, SlotState.OWNED, "ACQUIRE")
         else:
             if c.sync & Sync.RELEASE:
                 held = SlotState.READING if c.sync & Sync.WAIT else SlotState.READY
                 move(consumes, src, held, SlotState.FREE, "RELEASE")
-            if c.sync & Sync.SIGNAL:  # an accumulator LOAD hands the tile on
-                to = SlotState.LOADED if to_acc else SlotState.READY
-                move(produces, dst, SlotState.OWNED, to, "SIGNAL")
+            if c.sync & Sync.SIGNAL:
+                move(produces, dst, SlotState.OWNED, SlotState.READY, "SIGNAL")
 
     def assert_all_free(self):
         assert all(s == SlotState.FREE for s in self.l2_slots + self.acc_slots), (
@@ -192,25 +186,32 @@ class TopModel:
         cfg, dim = self.cfg, self.dim
         stride = c.stride or self.beat
         if c.type == CTRL_LOAD:
-            to_acc = bool(c.local_addr & ACC_FLAG)
+            to_acc, add = c.local_addr >> 31 & 1, c.local_addr >> 30 & 1
             bits = cfg.acc_bits if to_acc else cfg.input_bits
             row_bytes = c.row_bytes or dim * bits // 8
             n_elems = min(dim, row_bytes * 8 // bits)
             base = c.local_addr & DATA_MASK
+            turn = c.opcode in (DmaOpcode.TRANSPOSE, DmaOpcode.BROADCAST_TRANSPOSE)
+            n_rows = min(c.len, dim) if turn else c.len
             if c.opcode == DmaOpcode.CLEAR:
-                rows = [[] for _ in range(c.len)]
-            elif c.opcode == DmaOpcode.BROADCAST:  # one L3 row to every row
-                rows = [self.read_elems(c.dram_addr, bits, n_elems)] * c.len
+                rows = [[0] * dim for _ in range(n_rows)]
+            elif c.opcode in (DmaOpcode.BROADCAST, DmaOpcode.BROADCAST_TRANSPOSE):
+                rows = [self.read_elems(c.dram_addr, bits, n_elems)] * n_rows
             else:
                 rows = [
-                    self.read_elems(c.dram_addr + n * stride, bits, n_elems)
-                    for n in range(c.len if c.opcode != DmaOpcode.TRANSPOSE else min(c.len, dim))
+                    self.read_elems(c.dram_addr + n * stride, bits, n_elems) for n in range(n_rows)
                 ]
-            if c.opcode == DmaOpcode.TRANSPOSE:  # L3 row n -> element n of every L2 row
-                assert not to_acc, "the corner turn writes only the scratchpad"
+            if turn:  # L3 row n -> element n of every local row
                 rows = [[row[j] for row in rows] for j in range(n_elems)]
             for n, row in enumerate(rows):
-                (self.acc if to_acc else self.sp)[base + n] = row + [0] * (dim - len(row))
+                row = row + [0] * (dim - len(row))
+                if not to_acc:
+                    self.sp[base + n] = row
+                elif add:
+                    old = self.acc.get(base + n, [0] * dim)
+                    self.acc[base + n] = [a + b for a, b in zip(old, row, strict=True)]
+                else:
+                    self.acc[base + n] = row
         elif c.type == CTRL_STORE:
             row_bytes = c.row_bytes or dim * cfg.acc_bits // 8
             base = c.local_addr & DATA_MASK

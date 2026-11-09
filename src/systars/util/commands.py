@@ -49,8 +49,9 @@ class DmaOpcode(IntEnum):
     GATHER = 0x02  # Gather scattered elements to contiguous dst
     SCATTER = 0x03  # Scatter contiguous src to scattered locations
     TRANSPOSE = 0x04  # MEMCPY with a corner turn: the tile's rows become its columns
-    BROADCAST = 0x05  # One L3 row written to every row of the tile (kpu-sim STR_BROADCAST_ROW)
-    CLEAR = 0x06  # Zero the tile's rows, with no L3 read (a state operation)
+    CLEAR = 0x05  # LOAD: write zero rows, with no L3 read (ADR 0002's clear)
+    BROADCAST = 0x06  # LOAD: read one L3 row and write it to every row
+    BROADCAST_TRANSPOSE = 0x07  # LOAD: BROADCAST with a corner turn
 
     # Data integrity operations
     CRC32 = 0x10  # Compute CRC32 over src region

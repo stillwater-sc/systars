@@ -10,22 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Accumulator loads: Matmul and Conv2d with a bias or accumulating onto the output, and
-  padding without a zero row** (#10, 2026-11-08; the port of
-  branes-ai/embodied-ai-soc-generator#17 goes the other way, systars first). The BlockMover's
-  LOAD writes the accumulator when its local address has the accumulator flag, sharing the
-  accumulator's write port with the Streamer, which has it first. Two LOAD opcodes:
-  `DmaOpcode.BROADCAST` writes one L3 row to every row (kpu-sim's `STR_BROADCAST_ROW`), and
-  `DmaOpcode.CLEAR` writes zero rows with no L3 read. An accumulator slot gains a LOADED
-  state and `cmd_sync` a `RESUME` flag (`controller/sync.py`): an accumulator LOAD hands its
-  slot to the Streamer, whose first COMPUTE takes the hand-off token, so a STORE never takes
-  it for the result. Matmul: `CONFIG_D_ADDR` / `CONFIG_D_STRIDE` (`C = A @ B + D`, a stride
-  of 0 being one bias row for every output row) and `CONFIG_OPTIONS` bit 0 (`C = C + A @ B`)
-  in OS and WS; IS still rejects them (`UNSUPPORTED_BIAS`, `UNSUPPORTED_ACCUMULATE`), since
-  it holds Cᵀ in the accumulator. Conv2d: a bias row (`CONFIG_B_ADDR`, broadcast) and
-  accumulating onto Y; a padded position is a `CLEAR`, so `CONFIG_ZERO_ADDR` is removed and
-  padding reads nothing from L3. A bias with accumulate is `UNSUPPORTED_ACCUMULATE`.
-  `tests/unit/test_load_controller.py`, `test_credits.py`, `test_matmul.py`,
-  `test_conv2d.py`; `docs/isa-instructions.md`, "Bias and accumulate".
+  padding without a zero row** (#10 in #30, 2026-11-08; realigned with
+  branes-ai/embodied-ai-soc-generator#47 by #32, 2026-11-09). A LOAD whose local address has
+  bit 31 set moves its rows into the accumulator, and with bit 30 also set adds them onto
+  the accumulator's rows. It writes in the clocks the Streamer leaves the shared write port
+  free, and is the accumulator slot pool's second producer (`SlotPool(producers=2)`). New
+  LOAD opcodes: `CLEAR` writes zero rows with no L3 read, and
+  `BROADCAST`/`BROADCAST_TRANSPOSE` read one row and write it to every row. With these:
+  - Matmul computes `C = A @ B + D` (D a matrix, or with `CONFIG_D_STRIDE = 0` one row
+    added to every row of C) and `C += A @ B`, in OS, WS and IS;
+  - Conv2d adds a bias row under every output position, accumulates onto Y, and writes
+    padded positions with `CLEAR` instead of reading a zero row.
+
+  `UNSUPPORTED_BIAS` and `UNSUPPORTED_ACCUMULATE` are gone, and Conv2d ignores
+  `CONFIG_ZERO_ADDR`. `docs/isa-instructions.md`, "Bias and accumulate".
 
 - **The PolarFire flow drops memory initial values too, and a test runs GEMMs from random
   memory** (#27, 2026-11-06; kpugen parity, branes-ai/embodied-ai-soc-generator#38). The
@@ -195,6 +193,22 @@ and weight-stationary. The previous execute path could not:
   column through a shift chain, bottom row first
 
 ### Changed
+
+- **Accumulator loads follow kpugen's design** (#32, 2026-11-09). #30 implemented #10
+  systars-first, and kpugen's esg#47 then resolved esg#17 differently. systars now ports
+  esg#47, so the systolic files are 1:1 again:
+  - the opcodes are renumbered: `CLEAR` = 0x05, `BROADCAST` = 0x06 (they were 0x06 and
+    0x05), and `BROADCAST_TRANSPOSE` = 0x07 is new;
+  - the accumulator slot's LOADED state and `cmd_sync`'s `RESUME` bit are gone. A LOAD into
+    the accumulator takes the slot's credit as the pool's second producer, and the in-order
+    LOAD queue orders it before the COMPUTEs;
+  - Matmul supports a bias and accumulating in IS, and both together;
+  - `CONFIG_ZERO_ADDR` is back as an ignored register;
+  - `LocalAddr` bit 30 on a LOAD into the accumulator adds the rows.
+  - `tests/unit/test_credits.py` replays LOADs into the accumulator as that pool's producer,
+    cycle by cycle on a real `SystolicTop`, for Matmul with a bias, accumulate or both in
+    every dataflow, and Conv2d with a bias row, with and without accumulating onto Y (a
+    review of #33; kpugen's file has the same gap).
 
 - **The GitHub Pages site is built with Astro Starlight** (#20, 2026-11-04), the same
   setup as stillwater-sc/universal and stillwater-sc/mtl5, replacing MkDocs. Pages are
