@@ -27,16 +27,18 @@ import numpy as np
 import pytest
 from amaranth import Elaboratable, Module
 
-from systars.config import SystolicConfig
+from systars.config import Dataflow, SystolicConfig
 from systars.controller.sync import SlotPool, SlotState, Sync
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.conv2d import Conv2d, Conv2dCmd
 from systars.isa.matmul import Matmul, MatmulCmd
+from systars.memory.local_addr import LocalAddr
 from systars.top import SystolicTop
 
 from ._axi import axi_memory
 from ._isa import from_bytes, to_unsigned_bytes
 from ._sim import run_sim
+from .test_conv2d import B_ADDR as CONV_B_ADDR
 from .test_conv2d import F_ADDR, X_ADDR, Y_ADDR, reference
 from .test_conv2d import setup as conv_setup
 
@@ -166,13 +168,13 @@ class Monitor:
         self.produces = {CTRL_LOAD: "l2", CTRL_EXEC: "acc"}
         self.consumes = {CTRL_EXEC: "l2", CTRL_STORE: "acc"}
         self.queued = {t: deque() for t in PROCESSES}
-        self.inflight = {t: {} for t in PROCESSES}  # command ID -> cmd_sync
+        self.inflight = {t: {} for t in PROCESSES}  # command ID -> (cmd_sync, pool it fills)
         self.awaiting_result = {}  # Streamer: command ID -> cmd_sync, until its result
         self.cycles = 0
         self.overlap = 0  # cycles with the BlockMover's LOAD and the Streamer both running
 
     def signals(self, top):
-        sigs = [top.cmd_valid, top.cmd_ready, top.cmd_type, top.cmd_sync]
+        sigs = [top.cmd_valid, top.cmd_ready, top.cmd_type, top.cmd_sync, top.cmd_local_addr]
         for name in PROCESSES.values():
             sigs += [getattr(top, f"{name}_started"), getattr(top, f"{name}_started_id"),
                      getattr(top, f"{name}_completed"), getattr(top, f"{name}_completed_id")]  # fmt: skip
@@ -188,7 +190,7 @@ class Monitor:
             ), f"cycle {self.cycles}: {name} slot {s} is {bits} (free, ready), model {expected}"
 
     def step(self, values):
-        valid, ready, ctype, sync, *rest = values
+        valid, ready, ctype, sync, local_addr, *rest = values
         events, (result, result_id), state = rest[:12], rest[12:14], rest[14:]
         l2_free, l2_ready, acc_free, acc_ready, error, l1_error = state
         assert not error, f"cycle {self.cycles}: protocol error"
@@ -196,14 +198,15 @@ class Monitor:
         # The state this cycle reflects every earlier cycle's events
         self.check_state("l2", l2_free, l2_ready)
         self.check_state("acc", acc_free, acc_ready)
-        if valid and ready:
-            self.queued[ctype].append(sync)
+        if valid and ready:  # a LOAD into the accumulator fills an accumulator slot
+            to_acc = ctype == CTRL_LOAD and local_addr >> LocalAddr.IS_ACC_BIT & 1
+            self.queued[ctype].append((sync, "acc" if to_acc else self.produces.get(ctype)))
 
         moves = []
         for i, t in enumerate(PROCESSES):
             started, started_id, completed, completed_id = events[4 * i : 4 * i + 4]
             if started:
-                s = self.queued[t].popleft()
+                s, fills = self.queued[t].popleft()
                 src, dst = s & 0xF, s >> Sync.DST & 0xF
                 if s & Sync.WAIT:
                     pool = self.pools[self.consumes[t]]
@@ -213,11 +216,11 @@ class Monitor:
                     if s & Sync.RELEASE:  # the consumer takes the token
                         moves.append((self.consumes[t], src, READY, READING))
                 if s & Sync.ACQUIRE:
-                    moves.append((self.produces[t], dst, FREE, OWNED))
+                    moves.append((fills, dst, FREE, OWNED))
                 assert started_id not in self.inflight[t], f"cycle {self.cycles}: ID reused"
-                self.inflight[t][started_id] = s
+                self.inflight[t][started_id] = (s, fills)
             if completed:
-                s = self.inflight[t].pop(completed_id, None)
+                s, fills = self.inflight[t].pop(completed_id, (None, None))
                 assert s is not None, f"cycle {self.cycles}: {PROCESSES[t]} completed unstarted"
                 src, dst = s & 0xF, s >> Sync.DST & 0xF
                 if s & Sync.RELEASE:
@@ -225,7 +228,7 @@ class Monitor:
                 if t == CTRL_EXEC:
                     self.awaiting_result[completed_id] = s
                 elif s & Sync.SIGNAL:
-                    moves.append((self.produces[t], dst, OWNED, READY))
+                    moves.append((fills, dst, OWNED, READY))
         if result:
             s = self.awaiting_result.pop(result_id, None)
             assert s is not None, f"cycle {self.cycles}: a result for no command"
@@ -286,24 +289,44 @@ def run_on_top(cfg, isa, config_cmds, start, memory, *, stall=0.0, max_cycles=40
     return monitor
 
 
-def config(grid=4):
+def config(grid=4, **overrides):
     return SystolicConfig(
-        grid_rows=grid, grid_cols=grid, sp_capacity_kb=4, acc_capacity_kb=4
+        grid_rows=grid, grid_cols=grid, sp_capacity_kb=4, acc_capacity_kb=4, **overrides
     )  # 2 A/B slot pairs and 2 accumulator slots by default
 
 
-A_ADDR, B_ADDR, C_ADDR = 0x1001, 0x4007, 0x8003
+ALL = Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY | Dataflow.A_STATIONARY
 
 
-def matmul_on_top(M, N, K, *, buffers=2, stall=0.0, seed=0):
-    cfg = config()
+A_ADDR, B_ADDR, C_ADDR, D_ADDR = 0x1001, 0x4007, 0x8003, 0xC005
+
+
+def matmul_on_top(
+    M, N, K, *, buffers=2, stall=0.0, seed=0, bias=False, accumulate=False, dataflow=None
+):
+    """``bias``: a dense D matrix; ``accumulate``: onto the existing C."""
+    cfg = config() if dataflow is None else config(dataflow=ALL)
     rng = np.random.default_rng(seed)
     A = rng.integers(-128, 128, (M, K))
     B = rng.integers(-128, 128, (K, N))
+    D = rng.integers(-(1 << 20), 1 << 20, (M, N))
+    C0 = rng.integers(-(1 << 20), 1 << 20, (M, N))
     memory = bytearray(rng.integers(0, 256, 1 << 16, dtype=np.uint8).tobytes())
     memory[A_ADDR : A_ADDR + M * K] = to_unsigned_bytes(A, 8)
     memory[B_ADDR : B_ADDR + K * N] = to_unsigned_bytes(B, 8)
-    cmds = [
+    expected = A @ B
+    cmds = []
+    if bias:
+        memory[D_ADDR : D_ADDR + M * N * 4] = to_unsigned_bytes(D, 32)
+        cmds += [(MatmulCmd.CONFIG_D_ADDR, D_ADDR), (MatmulCmd.CONFIG_D_STRIDE, 4 * N)]
+        expected = expected + D
+    if accumulate:
+        memory[C_ADDR : C_ADDR + M * N * 4] = to_unsigned_bytes(C0, 32)
+        cmds += [(MatmulCmd.CONFIG_OPTIONS, 1)]
+        expected = expected + C0
+    if dataflow is not None:
+        cmds += [(MatmulCmd.CONFIG_DATAFLOW, dataflow)]
+    cmds += [
         (MatmulCmd.CONFIG_DIMS, M | N << 16 | K << 32),
         (MatmulCmd.CONFIG_A_ADDR, A_ADDR),
         (MatmulCmd.CONFIG_B_ADDR, B_ADDR),
@@ -316,7 +339,7 @@ def matmul_on_top(M, N, K, *, buffers=2, stall=0.0, seed=0):
         cfg, Matmul(cfg, buffers=buffers), cmds, MatmulCmd.START, memory, stall=stall
     )
     C = np.array(from_bytes(memory[C_ADDR : C_ADDR + M * N * 4], 32, M * N)).reshape(M, N)
-    np.testing.assert_array_equal(C, A @ B)
+    np.testing.assert_array_equal(C, expected)
     return C, monitor
 
 
@@ -344,24 +367,46 @@ class TestMatmul:
         np.testing.assert_array_equal(C, C_slow)
         assert slow.cycles > fast.cycles
 
+    @pytest.mark.parametrize("dataflow", [0, 1, 2], ids=["os", "ws", "is"])
+    @pytest.mark.parametrize("bias,accumulate", [(True, False), (False, True), (True, True)])
+    @pytest.mark.parametrize("buffers", [1, 2])
+    def test_accumulator_loads_on_top(self, bias, accumulate, dataflow, buffers):
+        """A LOAD into the accumulator is the accumulator pool's second producer: it
+        takes the slot's credit (the D LOAD, or the C LOAD without a D), the COMPUTEs
+        that accumulate onto it take none, and the last signals. The monitor replays
+        every slot each cycle (no credit taken twice, no STORE before the result token)."""
+        matmul_on_top(
+            *self.SHAPE, buffers=buffers, seed=3, stall=0.2,
+            bias=bias, accumulate=accumulate, dataflow=dataflow,
+        )  # fmt: skip
+
 
 @pytest.mark.parametrize("buffers", [1, 2])
-def test_conv2d_credits_on_top(buffers):
-    """Conv2d's X tiles are filled by one LOAD per position: the credit is taken by
-    the first, the token emitted by the last, and the Streamer waits for it."""
+@pytest.mark.parametrize("accumulate", [False, True])
+def test_conv2d_credits_on_top(buffers, accumulate):
+    """Conv2d's X tiles are filled by one LOAD (or CLEAR) per position: the credit is
+    taken by the first, the token emitted by the last, and the Streamer waits for it.
+    Each output tile starts from its bias row (and, accumulating, the existing Y),
+    loaded into the accumulator slot by the pool's second producer."""
     cfg = config()
     X_shape, F_shape, stride, pad = (1, 4, 4, 3), (3, 3, 3, 5), (1, 1), (1, 1)
     rng = np.random.default_rng(7)
     X = rng.integers(-128, 128, X_shape)
     F = rng.integers(-128, 128, F_shape)
-    expected = reference(X, F, stride, pad, (1, 1))
+    bias = rng.integers(-(1 << 20), 1 << 20, F_shape[3])
+    expected = reference(X, F, stride, pad, (1, 1)) + bias
     memory = bytearray(rng.integers(0, 256, 1 << 20, dtype=np.uint8).tobytes())
     memory[X_ADDR : X_ADDR + X.size] = to_unsigned_bytes(X, 8)
     memory[F_ADDR : F_ADDR + F.size] = to_unsigned_bytes(F, 8)
+    memory[CONV_B_ADDR : CONV_B_ADDR + bias.size * 4] = to_unsigned_bytes(bias, 32)
+    if accumulate:
+        Y0 = rng.integers(-(1 << 20), 1 << 20, expected.shape)
+        memory[Y_ADDR : Y_ADDR + Y0.size * 4] = to_unsigned_bytes(Y0, 32)
+        expected = expected + Y0
     run_on_top(
         cfg,
         Conv2d(cfg, buffers=buffers),
-        conv_setup(X_shape, F_shape, stride, pad),
+        conv_setup(X_shape, F_shape, stride, pad, bias=CONV_B_ADDR, options=int(accumulate)),
         Conv2dCmd.START,
         memory,
         stall=0.2,

@@ -248,7 +248,10 @@ credit taken twice, every slot free at the end; the Streamer's events matched to
 commands by ID) and measures the overlap: an 8x8x16 Matmul on a 4x4 array takes 744 cycles
 with two buffers against 907 with one (OS; WS and IS measure the same), bit-identical, and L3
 backpressure changes no value. The Streamer returns a tile's L2 credit a few clocks after it
-starts, so the run is bound by the BlockMover's L3 traffic. `test_slot_pool_second_producer`
-covers the accumulator pool's second producer.
+starts, so the run is bound by the BlockMover's L3 traffic. With a bias, accumulating onto
+the output, or both (Matmul in OS, WS and IS; Conv2d with a bias row, and onto Y), the
+monitor follows each LOAD into the accumulator as the accumulator pool's second producer.
+`test_slot_pool_second_producer` checks that `fill_credit` excludes a slot the Streamer takes
+in the same clock, which the in-order queues never make happen on a real `SystolicTop`.
 
 [The original implementation plan](plan/isa-instructions.md) is superseded by this page.

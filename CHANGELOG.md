@@ -205,6 +205,10 @@ and weight-stationary. The previous execute path could not:
   - Matmul supports a bias and accumulating in IS, and both together;
   - `CONFIG_ZERO_ADDR` is back as an ignored register;
   - `LocalAddr` bit 30 on a LOAD into the accumulator adds the rows.
+  - `tests/unit/test_credits.py` replays LOADs into the accumulator as that pool's producer,
+    cycle by cycle on a real `SystolicTop`, for Matmul with a bias, accumulate or both in
+    every dataflow, and Conv2d with a bias row, with and without accumulating onto Y (a
+    review of #33; kpugen's file has the same gap).
 
 - **The GitHub Pages site is built with Astro Starlight** (#20, 2026-11-04), the same
   setup as stillwater-sc/universal and stillwater-sc/mtl5, replacing MkDocs. Pages are
