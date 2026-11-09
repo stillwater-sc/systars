@@ -50,18 +50,19 @@ No burst crosses a 4 KB boundary, which AXI forbids (#11):
 
 The unit AXI memory model (`tests/unit/_axi.py`) asserts this for every burst a test issues.
 
-The LOAD leg also writes the accumulator: a `local_addr` with the accumulator flag
-(`LocalAddr`, bit 31) writes accumulator rows (`row_bytes` 0 is then a whole accumulator row),
-the starting values of a result tile. The accumulator has one write port and the Streamer has
-it first, since the fabric never stalls: an accumulator row waits for a clock in which the
-Streamer writes none. Two more LOAD opcodes (`DmaOpcode`) fill rows without moving a tile:
+The LOAD leg also writes the accumulator. A LOAD's local address picks its destination
+(`LocalAddr`), as the STORE's addresses do: the scratchpad, or with bit 31 the accumulator
+(`row_bytes` 0 is then a whole accumulator row). With bit 30 too, each row is added onto the
+accumulator row instead of overwriting it. The accumulator's write port is shared: the
+Streamer writes its results whenever they arrive, since the fabric never stalls, and the LOAD
+writes in the clocks the Streamer leaves free, holding its stream meanwhile. Three more LOAD
+opcodes (`DmaOpcode`):
 
 | Opcode | Effect |
 |---|---|
-| `BROADCAST` (0x05) | reads one L3 row and writes it to all `len` rows (kpu-sim's `STR_BROADCAST_ROW`): a bias row for every output row |
-| `CLEAR` (0x06) | writes `len` zero rows, with no L3 read (a state operation, kpu-sim ADR 0002): a padded position's row |
-
-The corner turn writes only the scratchpad: a `TRANSPOSE` into the accumulator is not accepted.
+| `CLEAR` (0x05) | writes `len` zero rows, with no L3 read (a state operation, kpu-sim ADR 0002): a padded position's row |
+| `BROADCAST` (0x06) | reads the row at `dram_addr` once and writes it to all `len` rows (kpu-sim's `STR_BROADCAST_ROW`): a bias row for every output row |
+| `BROADCAST_TRANSPOSE` (0x07) | `BROADCAST` with a corner turn |
 
 ## Corner turns
 
@@ -75,7 +76,10 @@ buffer, back to back, and writes L3 row `i` with element `i` of each: the result
 input-stationary schedule produces as columns of C reach L3 as its rows. The rows still move
 as a MEMCPY's do (any address, stride, partial rows, bursts), and STORE's activation applies
 per element. A TRANSPOSE moves at most one tile: `len` is clamped to `lanes`. The buffers are
-never cleared, since each turn leaves nothing that a later one could write.
+never cleared, since each turn leaves nothing that a later one could write. A LOAD into the
+accumulator turns `acc_bits` elements (`lanes = acc_width // acc_bits`), for IS, whose
+accumulator holds Cᵀ. That buffer is built only for an array with IS; without it, such a LOAD
+completes without moving anything.
 
 ## The fabric, L1 and the Streamer
 
@@ -152,16 +156,14 @@ one credit per slot: there are no row or burst credits, since the BlockMover seq
 bursts inside a tile. A slot is FREE (its credit is available), OWNED (a producer is filling
 it), READY (its tile-ready token waits for the consumer) or READING (a consumer took the token
 at its start and is reading the tile, so the next consumer of the slot waits for the next
-tile's token). An accumulator slot can also be LOADED: an accumulator LOAD filled it with a
-tile's starting values and handed it to the Streamer. Each command's `cmd_sync` names the
-slot it reads (`src`) and the slot it fills (`dst`), with five flags:
+tile's token). Each command's `cmd_sync` names the
+slot it reads (`src`) and the slot it fills (`dst`), with four flags:
 
 | Flag | Effect |
 |---|---|
 | `ACQUIRE` | start only when `dst` is FREE, and take its credit |
 | `SIGNAL` | on completion, emit `dst`'s token (the Streamer: on its result event, so a Streamer command with `SIGNAL` must write a result; one that writes none sets `l1_error`) |
 | `WAIT` | start only when `src` is READY (with `RELEASE`: take the token, READY → READING) |
-| `RESUME` | with `ACQUIRE`: start only when `dst` is LOADED, and take its hand-off token (LOADED → OWNED) instead of a credit |
 | `RELEASE` | on completion, return `src`'s credit (the Streamer: once the tile's last block is in L1) |
 
 A LOAD acquires and signals its L2 slot (a tile filled by several LOADs: the first acquires,
@@ -174,11 +176,12 @@ process is idle, as before. New ports: `cmd_sync`, `{load,store,exec}_started[_i
 action starts, matching `*_completed`), the slot state bits (`l2_free`, `l2_ready`,
 `acc_free`, `acc_ready`) and a sticky `sync_error`.
 
-A tile that starts from loaded values has two producers in turn. The accumulator LOAD
-acquires the accumulator slot (FREE → OWNED) and its `SIGNAL` hands the tile on (OWNED →
-LOADED, the hand-off token); the Streamer's first COMPUTE of the tile acquires it with
-`RESUME` (LOADED → OWNED), and its last signals the result token as before. A STORE waits for
-READY, so it never mistakes the hand-off token for the result.
+A LOAD into the accumulator is the accumulator pool's second producer (`SlotPool(producers=2)`,
+the `fill_*` ports): it acquires the slot (and signals it, if it has `SIGNAL`), and the
+COMPUTEs that accumulate onto it acquire nothing and signal on the last K step. The LOAD queue
+is in order, so the COMPUTE's L2 tiles, loaded after it, are ready only once it is in; no
+extra token is needed. `fill_credit` excludes a slot the Streamer takes in the same clock, so
+a credit is never taken twice.
 
 Matmul and Conv2d use the slots in ring order (`isa.command.TileBuffers`): with two A/B slot
 pairs and two accumulator slots (`buffers=2`, the default) the BlockMover fills the next
@@ -189,29 +192,26 @@ by a command issued earlier.
 ## Layouts
 
 A, B and C (Matmul) and X, F and Y (Conv2d) are dense, at any address, with any M, N and K:
-START rejects (`UNSUPPORTED_LAYOUT`) only a zero stride, or output rows that would overlap.
+with or without a bias: START rejects (`UNSUPPORTED_LAYOUT`) only a zero A or B stride, or
+output rows that would overlap.
 
 ## Bias and accumulate
 
-A bias, or accumulating onto the existing output (`CONFIG_OPTIONS` bit 0), starts each output
-tile from loaded values. On the tile's first K tile, after that K tile's LOADs, one accumulator
-LOAD writes them into the tile's accumulator slot and hands it to the Streamer, and the K tiles'
-results are added onto them (`COMPUTE_ACCUMULATE`):
+Before an output tile's first K step, the BlockMover loads the tile's accumulator slot, and
+every COMPUTE accumulates onto it (`COMPUTE_ACCUMULATE`):
 
 | Instruction | Setting | Loaded into the tile |
 |---|---|---|
 | Matmul | `CONFIG_D_ADDR` != 0, `CONFIG_D_STRIDE` > 0 | the D tile: int32, N per row, rows `D_STRIDE` bytes apart (`C = A @ B + D`) |
 | Matmul | `CONFIG_D_ADDR` != 0, `CONFIG_D_STRIDE` = 0 | one bias row of N int32 values, in every row (`BROADCAST`) |
-| Matmul | `CONFIG_OPTIONS` bit 0 | the C tile (`C = C + A @ B`) |
-| Conv2d | `CONFIG_B_ADDR` != 0 | one bias row of `out_c` int32 values, in every output position (`BROADCAST`) |
-| Conv2d | `CONFIG_OPTIONS` bit 0 | the Y tile (`Y = Y + conv2d(X, F)`) |
+| Matmul | `CONFIG_OPTIONS` bit 0 | the existing C tile, after D and added onto it (`C = A @ B + D + C`) |
+| Conv2d | `CONFIG_B_ADDR` != 0 | one bias row of `out_c` int32 values, under every output position (`BROADCAST`) |
+| Conv2d | `CONFIG_OPTIONS` bit 0 | the existing Y tile, added onto the bias the same way |
 
-OS adds the reduction held in the PEs onto the loaded tile when it writes its results; WS
-accumulates from the first K tile. IS holds Cᵀ in the accumulator, so its loaded values would
-need a corner turn into it: Matmul rejects a bias in IS (`UNSUPPORTED_BIAS`) and accumulating
-in IS (`UNSUPPORTED_ACCUMULATE`). A bias and accumulating together is `UNSUPPORTED_ACCUMULATE`
-for both instructions (add the bias into the output first). Conv2d's padding no longer needs a
-zero row in L3: `CONFIG_ZERO_ADDR` is gone, and a padded position is a `CLEAR`.
+All three Matmul dataflows support both. IS loads with the corner turn (`BROADCAST_TRANSPOSE`
+or `TRANSPOSE` into the accumulator), since its accumulator holds Cᵀ. `UNSUPPORTED_BIAS` and
+`UNSUPPORTED_ACCUMULATE` are retired (their codes are left unused). Conv2d's padding needs no
+zero row in L3: a padded position is a `CLEAR`, and `CONFIG_ZERO_ADDR` is ignored.
 
 ## Examples
 
@@ -231,13 +231,13 @@ not run `SystolicTop` or check numerical results; the unit tests below do.
 bursts past 256 beats, a GEMM with unaligned, strided operands, and rows and streamed tiles
 that cross a 4 KB boundary, for both legs and a GEMM (`TestFourKBoundaries`).
 
-`tests/unit/test_load_controller.py`: accumulator LOADs (streamed and unaligned rows),
-`BROADCAST` (one L3 read) and `CLEAR` (none), with the Streamer holding the accumulator's write
-port on random clocks.
+`test_block_mover.py` also covers LOADs into the accumulator over a busy write port (with
+and without the add flag), `CLEAR` (no L3 read), `BROADCAST` (one) and the accumulator corner
+turn (`TestLoadAccumulator`).
 
 `tests/unit/test_matmul.py` and `tests/unit/test_conv2d.py`: the issued commands run through a
 Python model of `SystolicTop` (`tests/unit/_isa.py`) and match numpy (Matmul tiled in M, N and
-K, with a D matrix, a bias row, or onto C; Conv2d with padding, stride, dilation, several
+K, in every dataflow, with a D matrix, a bias row, onto C, or both; Conv2d with padding, stride, dilation, several
 batches, channel chunks and N tiles, with a bias row or onto Y), and both instructions drive a
 real `SystolicTop` to a correct dense result, leaving every other byte untouched. On the real
 tile, Conv2d reads L3 only inside its operands, and once per X row that is not padding.
@@ -248,8 +248,7 @@ credit taken twice, every slot free at the end; the Streamer's events matched to
 commands by ID) and measures the overlap: an 8x8x16 Matmul on a 4x4 array takes 744 cycles
 with two buffers against 907 with one (OS; WS and IS measure the same), bit-identical, and L3
 backpressure changes no value. The Streamer returns a tile's L2 credit a few clocks after it
-starts, so the run is bound by the BlockMover's L3 traffic. With a bias or accumulation the
-monitor follows each accumulator slot through LOADED, and no STORE starts on a hand-off
-token.
+starts, so the run is bound by the BlockMover's L3 traffic. `test_slot_pool_second_producer`
+covers the accumulator pool's second producer.
 
 [The original implementation plan](plan/isa-instructions.md) is superseded by this page.

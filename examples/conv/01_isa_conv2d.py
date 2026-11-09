@@ -11,8 +11,8 @@ implicit GEMM:
         and chunk of array-dim input channels
 
 For each K tile it LOADs one row per output position (the input pixel that
-kernel offset reads, with stride, dilation and padding applied, or a CLEAR of
-the row in the padding: zeros, with no L3 read) and the filter tile (one command, corner-turned), then COMPUTEs
+kernel offset reads, with stride, dilation and padding applied, or a CLEAR, a
+zero row with no L3 read, in the padding) and the filter tile (one command, corner-turned), then COMPUTEs
 output-stationary: the K tiles are one reduction held in the PEs; after the K
 tiles it STOREs the output tile (one command). X, F and Y are dense NHWC at any address: the tile's BlockMover moves
 rows from and to any byte.
@@ -144,7 +144,7 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
         )
     padded = sum(1 for t in trace if t[0] == CTRL_LOAD and t[1] == DmaOpcode.CLEAR)
 
-    print(f"\n   {len(trace)} commands; {padded} input rows are CLEARed (padding)")
+    print(f"\n   {len(trace)} commands; {padded} input rows are CLEARs (padding, no L3 read)")
     print("   Expected vs actual:")
     ok = True
     for name in expected:

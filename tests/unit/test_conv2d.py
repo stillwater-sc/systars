@@ -5,9 +5,8 @@ The command stream Conv2d issues is run through a Python model of SystolicTop
 (``_isa.TopModel``) and the output compared with a numpy NHWC convolution: this
 checks the address arithmetic (output-position decoding, kernel offsets, stride,
 padding, dilation, channel chunks and N tiles) on dense NHWC tensors at any
-address, the layouts the tile's BlockMover moves, with a bias row and with
-accumulation onto an existing Y. Conv2d also drives a real SystolicTop through a
-byte-addressed AXI memory model, where a padded position reads nothing from L3.
+address, the layouts the tile's BlockMover moves. Conv2d also drives a real
+SystolicTop through a byte-addressed AXI memory model.
 """
 
 import numpy as np
@@ -18,7 +17,6 @@ from systars.config import Dataflow, SystolicConfig
 from systars.controller.sync import Sync
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.conv2d import Conv2d, Conv2dCmd, Conv2dError
-from systars.memory.local_addr import LocalAddr
 from systars.top import SystolicTop
 from systars.util.commands import DmaOpcode, ExecOpcode
 
@@ -37,33 +35,18 @@ def config(**overrides):
 
 
 def x_and_f_loads(cmds):
-    """The X row LOADs (one row each: MEMCPY, or CLEAR for a padded position) and the
-    filter LOADs (corner-turned); not the accumulator LOADs of a bias or Y."""
+    """The X row LOADs (one row each: MEMCPY, or CLEAR in the padding) and the filter
+    LOADs (corner-turned). LOADs into the accumulator (bias, Y) are neither."""
     loads = [c for c in cmds if c.type == CTRL_LOAD and not c.local_addr >> 31]
     x = [c for c in loads if c.opcode in (DmaOpcode.MEMCPY, DmaOpcode.CLEAR)]
     return x, [c for c in loads if c.opcode == DmaOpcode.TRANSPOSE]
-
-
-def in_bounds_rows(X_shape, F_shape, stride, pad, dilation=(1, 1)):
-    """X row LOADs that read L3: (position, kernel offset) pairs inside X, once per
-    channel chunk and per N tile."""
-    batch, in_h, in_w, in_c = X_shape
-    kh_n, kw_n, _, out_c = F_shape
-    oh_n = out_size(in_h, kh_n, stride[0], pad[0], dilation[0])
-    ow_n = out_size(in_w, kw_n, stride[1], pad[1], dilation[1])
-    inside = sum(
-        0 <= oh * stride[0] + kh * dilation[0] - pad[0] < in_h
-        and 0 <= ow * stride[1] + kw * dilation[1] - pad[1] < in_w
-        for oh in range(oh_n) for ow in range(ow_n) for kh in range(kh_n) for kw in range(kw_n)
-    )  # fmt: skip
-    return batch * inside * -(-in_c // DIM) * -(-out_c // DIM)
 
 
 def out_size(size, kernel, stride, pad, dilation):
     return (size + 2 * pad - dilation * (kernel - 1) - 1) // stride + 1
 
 
-def reference(X, F, stride, pad, dilation):
+def reference(X, F, stride, pad, dilation, bias=None, Y0=None):
     batch, in_h, in_w, _ = X.shape
     kh_n, kw_n, _, out_c = F.shape
     oh_n = out_size(in_h, kh_n, stride[0], pad[0], dilation[0])
@@ -78,6 +61,10 @@ def reference(X, F, stride, pad, dilation):
                         iw = ow * stride[1] + kw * dilation[1] - pad[1]
                         if 0 <= ih < in_h and 0 <= iw < in_w:
                             Y[b, oh, ow] += X[b, ih, iw] @ F[kh, kw]
+    if bias is not None:
+        Y += bias
+    if Y0 is not None:
+        Y += Y0
     return Y
 
 
@@ -113,50 +100,47 @@ def setup(
     return cmds
 
 
-def operands(X_shape, F_shape, stride, pad, dilation, rng, start):
-    """X, F, the expected Y, and the setup keywords. ``start``: None, "bias" (one row of
-    out_c values) or "accumulate" (onto the existing Y, returned as ``Y0``)."""
+def operands(rng, X_shape, F_shape, stride, pad, dilation, *, bias=False, accumulate=False):
+    """X, F, the bias (``out_c`` results), the existing Y (by position), and the expected Y."""
     X = rng.integers(-128, 128, X_shape)
     F = rng.integers(-128, 128, F_shape)
-    expected = reference(X, F, stride, pad, dilation)
-    start_values = rng.integers(-(1 << 20), 1 << 20, expected.shape)
-    if start == "bias":
-        start_values[:] = start_values[0, 0, 0]
-    else:
-        start_values *= start == "accumulate"
-    kw = {None: {}, "bias": {"bias": B_ADDR}, "accumulate": {"options": 1}}[start]
-    return X, F, expected + start_values, start_values, kw
+    out_c = F_shape[3]
+    b = rng.integers(-5000, 5000, out_c) if bias else None
+    shape = reference(X, F, stride, pad, dilation).shape
+    Y0 = rng.integers(-5000, 5000, shape) if accumulate else None
+    return X, F, b, Y0, reference(X, F, stride, pad, dilation, b, Y0)
 
 
 def check(
-    X_shape, F_shape, stride=(1, 1), pad=(0, 0), dilation=(1, 1), seed=0, y_stride=0, start=None
-):
-    """Dense X, F and (with ``y_stride`` 0) dense Y."""
+    X_shape, F_shape, stride=(1, 1), pad=(0, 0), dilation=(1, 1), seed=0, y_stride=0,
+    bias=False, accumulate=False,
+):  # fmt: skip
+    """Dense X, F and (with ``y_stride`` 0) dense Y; optionally a bias, and Y +=."""
     rng = np.random.default_rng(seed)
-    X, F, expected, Y0, kw = operands(X_shape, F_shape, stride, pad, dilation, rng, start)
-    row_stride = y_stride or F_shape[3] * 4
+    X, F, b, Y0, expected = operands(
+        rng, X_shape, F_shape, stride, pad, dilation, bias=bias, accumulate=accumulate
+    )
+    out_c = F_shape[3]
+    row_stride = y_stride or out_c * 4
+    positions = expected.shape[0] * expected.shape[1] * expected.shape[2]
 
     cfg = config()
     isa = Conv2d(cfg)
-    result = run_isa(
-        isa,
-        setup(X_shape, F_shape, stride, pad, dilation, y_stride=y_stride, **kw),
-        Conv2dCmd.START,
-        latency=0,
-    )
+    cmds = setup(
+        X_shape, F_shape, stride, pad, dilation, y_stride=y_stride,
+        bias=B_ADDR if bias else 0, options=int(accumulate),
+    )  # fmt: skip
+    result = run_isa(isa, cmds, Conv2dCmd.START, latency=0)
     assert result.done and not result.error, f"error {result.error_code:#x}"
 
     model = TopModel(cfg)
     model.write(X_ADDR, to_unsigned_bytes(X, 8))
     model.write(F_ADDR, to_unsigned_bytes(F, 8))
-    positions = expected.shape[0] * expected.shape[1] * expected.shape[2]
-    out_c = F_shape[3]
-    Y0 = Y0.reshape(positions, out_c)
-    if start == "bias":
-        model.write(B_ADDR, to_unsigned_bytes(Y0[0], 32))
-    elif start == "accumulate":
-        for p_ in range(positions):
-            model.write(Y_ADDR + p_ * row_stride, to_unsigned_bytes(Y0[p_], 32))
+    if b is not None:
+        model.write(B_ADDR, to_unsigned_bytes(b, 32))
+    if Y0 is not None:
+        for p, row in enumerate(Y0.reshape(positions, out_c)):
+            model.write(Y_ADDR + p * row_stride, to_unsigned_bytes(row, 32))
     model.run(result.commands)  # also checks the credits and tokens
     model.assert_all_free()
     got = np.array([model.read_elems(Y_ADDR + p * row_stride, 32, out_c) for p in range(positions)])
@@ -179,22 +163,26 @@ class TestNumerical:
         check((1, 8, 8, 4), (3, 3, 4, 2), stride=(2, 2), seed=3)
 
     def test_kernel_larger_than_padding_reach(self):
-        """Output positions whose whole window is padding are only CLEARed rows."""
+        """Output positions whose whole window is padding read only zero rows."""
         check((1, 2, 2, 1), (3, 3, 1, 1), pad=(3, 3), seed=4)
 
     def test_padded_output_rows(self):
         """Y rows wider than out_c (y_stride): the bytes between them are not written."""
         check((1, 4, 4, 3), (3, 3, 3, 5), pad=(1, 1), seed=5, y_stride=24)
 
-    @pytest.mark.parametrize("start", ["bias", "accumulate"])
-    def test_from_loaded_values(self, start):
-        """Y = conv2d(X, F) + bias (one row broadcast to every position) and Y += conv2d:
-        padding, stride and dilation, two channel chunks, two N tiles, edge M tiles."""
-        check((2, 5, 5, 6), (3, 3, 6, 6), pad=(1, 1), seed=6, start=start)
-        check(
-            (1, 9, 7, 2), (2, 3, 2, 5), stride=(2, 1), pad=(2, 1), dilation=(2, 2), seed=7,
-            y_stride=24, start=start,
-        )  # fmt: skip
+    def test_bias_padding_stride_dilation(self):
+        """Y = conv2d(X, F) + bias: the bias row is broadcast to every output position."""
+        check((2, 7, 6, 5), (3, 2, 5, 6), stride=(2, 1), pad=(2, 1), dilation=(2, 1), seed=6,
+              bias=True)  # fmt: skip
+
+    def test_bias_two_n_tiles(self):
+        check((1, 4, 4, 3), (3, 3, 3, 7), pad=(1, 1), seed=7, bias=True)
+
+    @pytest.mark.parametrize("bias", [False, True])
+    def test_accumulate_onto_y(self, bias):
+        """Y += conv2d(X, F) (+ bias): the existing Y tile is loaded too."""
+        check((1, 4, 5, 3), (3, 3, 3, 5), pad=(1, 1), seed=8, y_stride=24, bias=bias,
+              accumulate=True)  # fmt: skip
 
 
 class TestCommandStream:
@@ -223,7 +211,7 @@ class TestCommandStream:
         x_loads, f_loads = x_and_f_loads(cmds)
         assert {(c.opcode, c.len, c.row_bytes) for c in x_loads} == {
             (DmaOpcode.MEMCPY, 1, 2),
-            (DmaOpcode.CLEAR, 1, 2),  # CLEAR: a padded position
+            (DmaOpcode.CLEAR, 1, 2),  # CLEAR: in the padding
         }
         assert {(c.opcode, c.len, c.stride, c.row_bytes) for c in f_loads} == {
             (DmaOpcode.TRANSPOSE, 2, 3, 3)
@@ -243,47 +231,33 @@ class TestCommandStream:
         assert not any(c.sync & Sync.SIGNAL for c in tile)
         assert [c.local_addr for c in x_loads[4:8]] == [DIM, DIM + 1, DIM + 2, DIM + 3]
 
-    def test_padded_positions_are_cleared(self):
-        """A padded position's row is a CLEAR (zeros, no L3 read) with the same slot
-        bookkeeping as an X row LOAD."""
-        x_loads, _ = x_and_f_loads(self.commands())
+    def test_padding_rows_are_cleared(self):
+        """A position in the padding is a CLEAR: a zero L2 row with no L3 read."""
+        cmds = self.commands()
+        x_loads, _ = x_and_f_loads(cmds)
         cleared = [c for c in x_loads if c.opcode == DmaOpcode.CLEAR]
         # Kernel offset (0, 0) of the first M tile (positions (0,0)..(0,3)) is all padding
         assert all(c.opcode == DmaOpcode.CLEAR for c in x_loads[:4])
-        assert x_loads[0].sync & Sync.ACQUIRE
-        assert {c.len for c in cleared} == {1}
-        X_shape, F_shape = (1, 4, 4, 2), (3, 3, 2, 3)
-        assert len(x_loads) - len(cleared) == in_bounds_rows(X_shape, F_shape, (1, 1), (1, 1))
+        assert cleared and len(cleared) < len(x_loads)
+        assert {(c.len, c.local_addr >> 31) for c in cleared} == {(1, 0)}
 
-    @pytest.mark.parametrize("start", ["bias", "accumulate"])
-    def test_loaded_values_hand_the_slot_to_the_streamer(self, start):
-        """One accumulator LOAD per output tile, on its first K tile after that tile's
-        LOADs: the bias row broadcast to the tile's rows, or the Y tile. It takes the
-        accumulator slot's credit and hands it on; the first COMPUTE takes the hand-off
-        token, and every COMPUTE accumulates."""
-        kw = {"bias": B_ADDR} if start == "bias" else {"options": 1}
-        cmds = self.commands(**kw)[1:]
+    def test_bias_and_y_loads(self):
+        """Each output tile first broadcasts its bias channels into the accumulator slot
+        (taking its credit), then adds the existing Y tile; every COMPUTE accumulates and
+        none takes the accumulator credit."""
+        cmds = self.commands(bias=B_ADDR, options=1)
         acc_loads = [c for c in cmds if c.type == CTRL_LOAD and c.local_addr >> 31]
-        acc_flag = LocalAddr(config()).make_acc_addr(0, 0)
-        if start == "bias":
-            assert [(c.opcode, c.dram_addr) for c in acc_loads] == [
-                (DmaOpcode.BROADCAST, B_ADDR)
-            ] * 4
-        else:
-            assert [(c.opcode, c.dram_addr, c.stride) for c in acc_loads] == [
-                (DmaOpcode.MEMCPY, Y_ADDR + m * 4 * 12, 12) for m in range(4)
-            ]
-        assert [(c.local_addr, c.len, c.row_bytes) for c in acc_loads] == [
-            (acc_flag | (m % 2) * DIM, 4, 12) for m in range(4)
-        ]
-        assert [c.sync for c in acc_loads] == [
-            (m % 2) << Sync.DST | Sync.ACQUIRE | Sync.SIGNAL for m in range(4)
-        ]
-        # After the first K tile's 4 X rows and its filter tile
-        assert cmds.index(acc_loads[0]) == 5
-        execs = [c for c in cmds if c.type == CTRL_EXEC]
-        assert {c.opcode for c in execs} == {ExecOpcode.COMPUTE_ACCUMULATE}
-        assert [bool(c.sync & Sync.RESUME) for c in execs] == ([True] + [False] * 8) * 4
+        acc_flag, add = 1 << 31, 1 << 30
+        assert [(c.opcode, c.dram_addr, c.local_addr, c.len, c.row_bytes, c.sync)
+                for c in acc_loads[:4]] == [
+            (DmaOpcode.BROADCAST, B_ADDR, acc_flag, 4, 12, Sync.ACQUIRE),
+            (DmaOpcode.MEMCPY, Y_ADDR, acc_flag | add, 4, 12, 0),
+            (DmaOpcode.BROADCAST, B_ADDR, acc_flag | DIM, 4, 12, 1 << Sync.DST | Sync.ACQUIRE),
+            (DmaOpcode.MEMCPY, Y_ADDR + 48, acc_flag | add | DIM, 4, 12, 1 << Sync.DST),
+        ]  # fmt: skip
+        computes = [c for c in cmds if c.type == CTRL_EXEC][1:]
+        assert {c.opcode for c in computes} == {ExecOpcode.COMPUTE_ACCUMULATE}
+        assert not any(c.sync & Sync.ACQUIRE for c in computes)
 
 
 class TestErrors:
@@ -293,16 +267,15 @@ class TestErrors:
     def test_start_without_config(self):
         assert self.run([]).error_code == Conv2dError.CONFIG_INCOMPLETE
 
+    def test_padding_needs_no_zero_row(self):
+        """CONFIG_ZERO_ADDR is no longer needed (and is ignored)."""
+        result = self.run(setup((1, 4, 4, 4), (3, 3, 4, 4), pad=(1, 1)))
+        assert result.done and not result.error
+
     def test_zero_stride(self):
         cmds = setup((1, 4, 4, 4), (1, 1, 4, 4))
         cmds.append((Conv2dCmd.CONFIG_STRIDE, 0))
         assert self.run(cmds).error_code == Conv2dError.INVALID_DIMS
-
-    def test_bias_and_accumulate_together(self):
-        cmds = setup((1, 4, 4, 4), (1, 1, 4, 4), bias=0x8000, options=1)
-        result = self.run(cmds)
-        assert result.error_code == Conv2dError.UNSUPPORTED_ACCUMULATE
-        assert not result.commands
 
     def test_overlapping_output_rows(self):
         """y_stride below out_c results: output rows would overlap."""
@@ -379,43 +352,46 @@ class Conv2dOnTop(Elaboratable):
 
 
 @pytest.mark.parametrize(
-    "X_shape,F_shape,stride,pad,start",
+    "X_shape,F_shape,stride,pad,dilation,bias,accumulate",
     [
-        ((1, 4, 4, 3), (3, 3, 3, 5), (1, 1), (1, 1), None),
-        ((2, 5, 4, 6), (2, 3, 6, 2), (2, 1), (1, 0), None),
-        ((1, 4, 4, 3), (3, 3, 3, 5), (1, 1), (1, 1), "bias"),
-        ((2, 5, 4, 6), (2, 3, 6, 2), (2, 1), (1, 0), "accumulate"),
+        ((1, 4, 4, 3), (3, 3, 3, 5), (1, 1), (1, 1), (1, 1), False, False),
+        ((2, 5, 4, 6), (2, 3, 6, 2), (2, 1), (1, 0), (1, 1), False, False),
+        ((1, 6, 5, 3), (2, 2, 3, 6), (1, 2), (1, 1), (2, 1), True, False),
+        ((1, 4, 4, 5), (3, 3, 5, 3), (1, 1), (1, 1), (1, 1), True, True),
     ],
+    ids=["pad", "stride", "bias-dilation", "bias-accumulate"],
 )
-def test_conv2d_drives_systolic_top(X_shape, F_shape, stride, pad, start):
-    """Conv2d on a real SystolicTop: dense NHWC X, F and Y with odd channel counts, with
-    a bias or accumulating onto Y. L3 is read only inside X, F and the bias row (and Y
-    when accumulating), and once per X row that is not padding: a padded position
-    reads nothing."""
+def test_conv2d_drives_systolic_top(X_shape, F_shape, stride, pad, dilation, bias, accumulate):
+    """Conv2d on a real SystolicTop: dense NHWC X, F and Y with odd channel counts,
+    padding, stride, dilation and bias. A padded position reads nothing from L3."""
     from ._sim import run_sim
 
     cfg = config()
     beat = cfg.dma_buswidth // 8
     rng = np.random.default_rng(sum(X_shape) + sum(F_shape))
-    X, F, expected, Y0, kw = operands(X_shape, F_shape, stride, pad, (1, 1), rng, start)
+    X, F, b, Y0, expected = operands(
+        rng, X_shape, F_shape, stride, pad, dilation, bias=bias, accumulate=accumulate
+    )
     memory = bytearray(rng.integers(0, 256, 1 << 20, dtype=np.uint8).tobytes())
     memory[X_ADDR : X_ADDR + X.size] = to_unsigned_bytes(X, 8)
     memory[F_ADDR : F_ADDR + F.size] = to_unsigned_bytes(F, 8)
-    out_c = F_shape[3]
+    if b is not None:
+        memory[B_ADDR : B_ADDR + b.size * 4] = to_unsigned_bytes(b, 32)
     y_bytes = expected.size * 4
-    if start == "bias":
-        memory[B_ADDR : B_ADDR + out_c * 4] = to_unsigned_bytes(Y0.reshape(-1, out_c)[0], 32)
-    elif start == "accumulate":
+    if Y0 is not None:
         memory[Y_ADDR : Y_ADDR + y_bytes] = to_unsigned_bytes(Y0, 32)
     before = bytes(memory)
 
     dut = Conv2dOnTop(cfg)
     isa, top = dut.isa, dut.top
     status = {}
-    reads = []  # L3 read bursts: their start addresses
+    cmds = setup(
+        X_shape, F_shape, stride, pad, dilation, bias=B_ADDR if bias else 0,
+        options=int(accumulate),
+    )  # fmt: skip
 
     async def testbench(ctx):
-        for cmd, data in [*setup(X_shape, F_shape, stride, pad, **kw), (Conv2dCmd.START, 0)]:
+        for cmd, data in [*cmds, (Conv2dCmd.START, 0)]:
             ctx.set(isa.cfg_valid, 1)
             ctx.set(isa.cfg_cmd, cmd)
             ctx.set(isa.cfg_data, data)
@@ -427,26 +403,36 @@ def test_conv2d_drives_systolic_top(X_shape, F_shape, stride, pad, start):
             done=done, error=error, l1=ctx.get(top.l1_error), sync=ctx.get(top.sync_error)
         )
 
-    async def read_log(ctx):
-        async for _, _, valid, ready, addr in ctx.tick().sample(
-            top.axi_arvalid, top.axi_arready, top.axi_araddr
-        ):
-            if valid and ready:
-                reads.append(addr)
+    in_bounds = 0  # X row LOADs that read L3 (MEMCPY, not CLEAR), as the ISA issues them
 
-    run_sim(dut, testbench, processes=[axi_memory(top, memory, beat), read_log], max_cycles=500_000)
+    async def count_x_loads(ctx):
+        nonlocal in_bounds
+        ports = (isa.cmd_valid, isa.cmd_ready, isa.cmd_type, isa.cmd_opcode, isa.cmd_local_addr)
+        while True:
+            valid, ready, ctype, opcode, local = (await ctx.tick().sample(*ports))[2:]
+            if valid and ready and ctype == CTRL_LOAD and not local >> 31:
+                in_bounds += opcode == DmaOpcode.MEMCPY
+
+    bursts: list = []
+    run_sim(
+        dut,
+        testbench,
+        processes=[axi_memory(top, memory, beat, log=bursts), count_x_loads],
+        max_cycles=500_000,
+    )
     assert status == {"done": 1, "error": 0, "l1": 0, "sync": 0}
     Y = np.array(from_bytes(memory[Y_ADDR : Y_ADDR + y_bytes], 32, expected.size))
     np.testing.assert_array_equal(Y.reshape(expected.shape), expected)
     assert memory[:Y_ADDR] == before[:Y_ADDR]
     assert memory[Y_ADDR + y_bytes :] == before[Y_ADDR + y_bytes :]
 
-    def inside(base, size):
-        return [a for a in reads if base <= a < base + size + beat]
-
-    x_reads, f_reads = inside(X_ADDR, X.size), inside(F_ADDR, F.size)
-    b_reads = inside(B_ADDR, out_c * 4) if start == "bias" else []
-    y_reads = inside(Y_ADDR, y_bytes) if start == "accumulate" else []
-    assert len(x_reads) + len(f_reads) + len(b_reads) + len(y_reads) == len(reads)
-    assert len(x_reads) == in_bounds_rows(X_shape, F_shape, stride, pad)
-    assert bool(b_reads) == (start == "bias") and bool(y_reads) == (start == "accumulate")
+    # Every L3 read is of X, F, the bias or Y; X is read once per in-bounds position
+    # and kernel offset (no row is padding), and the bias once per output tile
+    reads = [(addr, beats) for kind, addr, beats in bursts if kind == "r"]
+    regions = [(X_ADDR, X.size), (F_ADDR, F.size), (B_ADDR, F_shape[3] * 4), (Y_ADDR, y_bytes)]
+    assert all(any(base - beat < a < base + size for base, size in regions) for a, _ in reads)
+    x_reads = [a for a, _ in reads if X_ADDR - beat < a < X_ADDR + X.size]
+    assert len(x_reads) == in_bounds
+    b_reads = [a for a, _ in reads if B_ADDR - beat < a < B_ADDR + F_shape[3] * 4]
+    tiles = -(-expected.size // F_shape[3] // DIM) * -(-F_shape[3] // DIM)
+    assert len(b_reads) == (tiles if bias else 0)

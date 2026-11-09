@@ -1,5 +1,5 @@
 """
-Matmul ISA instruction: C = A @ B (+ D, or + C)
+Matmul ISA instruction: C = A @ B
 
 A hardware FSM that tiles a matrix multiply larger than the systolic array and
 issues the LOAD / CONFIG / PRELOAD / COMPUTE / STORE commands for it, on the
@@ -18,7 +18,8 @@ L2 as the Streamer streams it:
 - IS: the same loads, but A (as Aᵀ) is the stationary tile and B streams; the
   accumulator holds Cᵀ, and the STORE's corner turn writes C.
 
-For each output tile (i, j), and each K tile k:
+For each output tile (i, j): with a bias D, or accumulating onto the existing C,
+first LOAD them into the tile's accumulator slot (below); then, for each K tile k:
 
 - LOAD the A tile (``A[i*dim:, k*dim:]``) and the B tile (``B[k*dim:, j*dim:]``),
   one command per tile: the BlockMover moves its rows from any byte address,
@@ -29,15 +30,6 @@ For each output tile (i, j), and each K tile k:
 then STORE the C tile, one command: its rows are written with byte strobes, so an
 edge N tile writes only its own columns and C can be dense.
 
-A bias (``CONFIG_D_ADDR`` != 0: C = A @ B + D) or accumulating onto the existing C
-(``CONFIG_OPTIONS`` bit 0: C = C + A @ B) starts each C tile from loaded values: on
-its first K tile, after that tile's A and B LOADs, one accumulator LOAD writes the D
-tile (or the C tile) into the C tile's accumulator slot, and the Streamer
-accumulates onto it (``COMPUTE_ACCUMULATE``; the first COMPUTE takes the LOAD's
-hand-off token, ``controller/sync.py``). D is int32 (``acc_bits``), ``N`` results
-per row, rows ``CONFIG_D_STRIDE`` bytes apart; a D stride of 0 is one bias row for
-every output row (``BROADCAST``).
-
 The commands are pushed without waiting for each other (``isa.command``): credits
 and tile-ready tokens order them in ``SystolicTop``. Each K tile uses the next A/B
 pair of L2 slots and each C tile the next accumulator slot, in ring order
@@ -45,23 +37,37 @@ pair of L2 slots and each C tile the next accumulator slot, in ring order
 tiles while the Streamer works on the current ones; ``buffers=1`` serializes them,
 with the same results. The instruction is done when its last STORE completes.
 
-So A, B, C and D may be dense row-major at any address, with any M, N and K.
+So A, B and C may be dense row-major at any address, with any M, N and K.
+
+C = A @ B + D, and C += A @ B: the BlockMover loads into the accumulator (a LOAD
+to an accumulator address), and the COMPUTEs accumulate onto what it loaded.
+
+- Bias (``CONFIG_D_ADDR``, 0 = none): D is ``M x N`` results (``acc_bits`` each),
+  rows ``CONFIG_D_STRIDE`` bytes apart. A D stride of 0 makes D one row of N
+  results, added to every row of C (a bias vector): one L3 read per tile row
+  (``BROADCAST``).
+- Accumulate (``CONFIG_OPTIONS`` bit 0): the existing C tile is loaded too, after
+  D and added onto it, so C = A @ B + D + C.
+
+The accumulator tile is loaded with the corner turn when the accumulator holds Cᵀ
+(IS). Its LOAD takes the accumulator slot's credit, so the first COMPUTE does not;
+the LOAD queue is in order, so the COMPUTE's A and B tiles are ready only after it.
+
 Errors (``error_code``): UNSUPPORTED_DATAFLOW for a dataflow the array was not
-built with; UNSUPPORTED_LAYOUT for a zero stride, or a C stride below N results
-(rows would overlap). IS holds Cᵀ in the accumulator, so loaded values would need a
-corner turn into it, which the BlockMover does not have: a bias in IS is
-UNSUPPORTED_BIAS, and accumulating in IS is UNSUPPORTED_ACCUMULATE. A bias and
-accumulating together is UNSUPPORTED_ACCUMULATE (add the bias into C first).
+built with; UNSUPPORTED_LAYOUT for a zero A or B stride, or a C stride below N
+results (rows would overlap).
 
 Usage: configure dimensions, addresses and strides, then issue START.
 """
 
 from enum import IntEnum
 
-from amaranth import Module, Mux, Signal
+from amaranth import Const, Module, Mux, Signal
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import Dataflow, SystolicConfig
+from ..controller.sync import Sync
+from ..memory.local_addr import LocalAddr
 from ..util.commands import DmaOpcode, ExecOpcode
 from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, TileBuffers, command_ports
 
@@ -73,11 +79,11 @@ class MatmulCmd(IntEnum):
     CONFIG_A_ADDR = 0x10
     CONFIG_B_ADDR = 0x11
     CONFIG_C_ADDR = 0x12
-    CONFIG_D_ADDR = 0x13  # Bias (D) address, 0 = no bias
+    CONFIG_D_ADDR = 0x13  # Bias address, 0 = no bias
     CONFIG_A_STRIDE = 0x20  # Row strides in bytes
     CONFIG_B_STRIDE = 0x21
     CONFIG_C_STRIDE = 0x22
-    CONFIG_D_STRIDE = 0x23  # 0 = one bias row for every output row
+    CONFIG_D_STRIDE = 0x23  # 0 = D is one row, added to every row of C
     CONFIG_OPTIONS = 0x30  # data[0]=accumulate, data[3:1]=activation
     CONFIG_DATAFLOW = 0x31  # data[1:0]: 0 = OS, 1 = WS, 2 = IS (default: OS if built, else WS)
     START = 0xF0
@@ -91,8 +97,8 @@ class MatmulError(IntEnum):
     INVALID_DIMS = 0x01  # M, N or K is zero
     CONFIG_INCOMPLETE = 0x04  # START without dimensions and addresses
     UNSUPPORTED_LAYOUT = 0x06  # A zero stride, or C rows that would overlap
-    UNSUPPORTED_BIAS = 0x07  # A bias (D) in IS
-    UNSUPPORTED_ACCUMULATE = 0x08  # Accumulate onto C in IS, or together with a bias
+    # 0x07 and 0x08 were UNSUPPORTED_BIAS and UNSUPPORTED_ACCUMULATE, before the
+    # accumulator could be loaded
     UNSUPPORTED_DATAFLOW = 0x09  # The array was not built with the selected dataflow
 
 
@@ -204,28 +210,31 @@ class Matmul(Component):
                 size.eq(Mux(remaining < dim, remaining[:16], dim)),
             ]
 
-        # Tile addresses (row 0 of the tile)
+        # Tile addresses (row 0 of the tile); a D stride of 0 is one row, every tile's
+        d_tile = Signal(64)
         a_tile = Signal(64)
         b_tile = Signal(64)
         c_tile = Signal(64)
-        d_tile = Signal(64)  # D tile (bias), or the C tile when accumulating
         m.d.comb += [
             a_tile.eq(reg_A + (tile_i << dim_shift) * a_stride + (tile_k << dim_shift) * in_bytes),
             b_tile.eq(reg_B + (tile_k << dim_shift) * b_stride + (tile_j << dim_shift) * in_bytes),
             c_tile.eq(reg_C + (tile_i << dim_shift) * c_stride + (tile_j << dim_shift) * acc_bytes),
-            d_tile.eq(
-                Mux(
-                    reg_accumulate,
-                    c_tile,
-                    reg_D + (tile_i << dim_shift) * d_stride + (tile_j << dim_shift) * acc_bytes,
-                )
-            ),
+            d_tile.eq(reg_D + (tile_i << dim_shift) * d_stride + (tile_j << dim_shift) * acc_bytes),
         ]
 
-        # Each C tile starts from loaded values: a bias (D), or C itself
-        has_bias = Signal()
-        loaded = Signal()
-        m.d.comb += [has_bias.eq(reg_D != 0), loaded.eq(has_bias | reg_accumulate)]
+        # The tile's accumulator slot starts from a load (D, the existing C, or both)
+        has_d = Signal()
+        acc_in = Signal()
+        m.d.comb += [has_d.eq(reg_D != 0), acc_in.eq(has_d | reg_accumulate)]
+        # IS holds Cᵀ in the accumulator, so its tiles are loaded with the corner turn
+        d_opcode = Signal(8)
+        with m.If(df == IS):
+            m.d.comb += d_opcode.eq(
+                Mux(d_stride == 0, DmaOpcode.BROADCAST_TRANSPOSE, DmaOpcode.TRANSPOSE)
+            )
+        with m.Else():
+            m.d.comb += d_opcode.eq(Mux(d_stride == 0, DmaOpcode.BROADCAST, DmaOpcode.MEMCPY))
+        add_flag = 1 << LocalAddr.ACCUMULATE_BIT
 
         # Layout check: rows a stride apart (0 would mean one bus beat to the
         # BlockMover), and C rows that do not overlap
@@ -245,7 +254,7 @@ class Matmul(Component):
             self.dbg_addr_A.eq(a_tile),
             self.dbg_addr_B.eq(b_tile),
             self.dbg_addr_C.eq(c_tile),
-            self.dbg_addr_D.eq(reg_D),
+            self.dbg_addr_D.eq(d_tile),
             self.dbg_tile_M.eq(tile_M),
             self.dbg_tile_N.eq(tile_N),
             self.dbg_tile_K.eq(tile_K),
@@ -306,15 +315,6 @@ class Matmul(Component):
                 with m.If((reg_M == 0) | (reg_N == 0) | (reg_K == 0)):
                     m.d.sync += self.error_code.eq(MatmulError.INVALID_DIMS)
                     m.next = "ERROR"
-                with m.Elif(has_bias & reg_accumulate):
-                    m.d.sync += self.error_code.eq(MatmulError.UNSUPPORTED_ACCUMULATE)
-                    m.next = "ERROR"
-                with m.Elif((df == IS) & has_bias):
-                    m.d.sync += self.error_code.eq(MatmulError.UNSUPPORTED_BIAS)
-                    m.next = "ERROR"
-                with m.Elif((df == IS) & reg_accumulate):
-                    m.d.sync += self.error_code.eq(MatmulError.UNSUPPORTED_ACCUMULATE)
-                    m.next = "ERROR"
                 with m.Elif(~layout_ok):
                     m.d.sync += self.error_code.eq(MatmulError.UNSUPPORTED_LAYOUT)
                     m.next = "ERROR"
@@ -325,10 +325,41 @@ class Matmul(Component):
                     m.d.sync += self.error_code.eq(MatmulError.NONE)
                     m.next = "CONFIG"
 
-            issuer.state("CONFIG", "LOAD_A", CTRL_EXEC, ExecOpcode.CONFIG, rs1=df)
+            issuer.state("CONFIG", "TILE", CTRL_EXEC, ExecOpcode.CONFIG, rs1=df)
 
             first_k = tile_k == 0
             last_k = tile_k + 1 >= tiles_K
+
+            # A new output tile: its accumulator slot starts from D and/or the
+            # existing C, or from the first COMPUTE
+            with m.State("TILE"):
+                with m.If(has_d):
+                    m.next = "LOAD_D"
+                with m.Elif(reg_accumulate):
+                    m.next = "LOAD_C"
+                with m.Else():
+                    m.next = "LOAD_A"
+            with m.State("LOAD_D_NEXT"):
+                with m.If(reg_accumulate):
+                    m.next = "LOAD_C"
+                with m.Else():
+                    m.next = "LOAD_A"
+            # D's LOAD takes the slot's credit; the COMPUTEs accumulate onto it, and
+            # the last emits the token
+            issuer.state(
+                "LOAD_D", "LOAD_D_NEXT", CTRL_LOAD, d_opcode,
+                dram_addr=d_tile, local_addr=bufs.acc_addr, len=tile_M,
+                stride=d_stride, row_bytes=tile_N * acc_bytes,
+                sync=Sync.encode(dst=bufs.acc_slot, acquire=Const(1)),
+            )  # fmt: skip
+            # The existing C, added onto D when there is one
+            issuer.state(
+                "LOAD_C", "LOAD_A", CTRL_LOAD,
+                Mux(df == IS, DmaOpcode.TRANSPOSE, DmaOpcode.MEMCPY),
+                dram_addr=c_tile, local_addr=bufs.acc_addr | Mux(has_d, add_flag, 0),
+                len=tile_M, stride=c_stride, row_bytes=tile_N * acc_bytes,
+                sync=Sync.encode(dst=bufs.acc_slot, acquire=~has_d),
+            )  # fmt: skip
 
             # One LOAD per tile: the A tile (tile_M rows of tile_K), then the B tile
             # (tile_K rows of tile_N). The corner turns lay them out as the Streamer
@@ -340,18 +371,11 @@ class Matmul(Component):
                 stride=a_stride, row_bytes=tile_K * in_bytes,
                 sync=Mux(is_os, bufs.load(bufs.a_slot, last=False), bufs.load(bufs.a_slot)),
             )  # fmt: skip
-
-            def to_compute():
+            with m.State("LOAD_B_NEXT"):
                 with m.If(is_os):
                     m.next = "COMPUTE_OS"
                 with m.Else():
                     m.next = "PRELOAD"
-
-            with m.State("LOAD_B_NEXT"):
-                with m.If(first_k & loaded):
-                    m.next = "LOAD_D"
-                with m.Else():
-                    to_compute()
             issuer.state(
                 "LOAD_B", "LOAD_B_NEXT", CTRL_LOAD, Mux(is_os, DmaOpcode.TRANSPOSE, DmaOpcode.MEMCPY),
                 dram_addr=b_tile, local_addr=bufs.b_addr, len=tile_K,
@@ -359,34 +383,19 @@ class Matmul(Component):
                 sync=Mux(is_os, bufs.load(bufs.a_slot, first=False), bufs.load(bufs.b_slot)),
             )  # fmt: skip
 
-            # The C tile's starting values into its accumulator slot, on its first K
-            # tile: the D tile (one bias row to every row with a D stride of 0), or
-            # the C tile when accumulating. The LOAD hands the slot to the Streamer.
-            issuer.state(
-                "LOAD_D", "LOAD_D_NEXT", CTRL_LOAD,
-                Mux(~reg_accumulate & (d_stride == 0), DmaOpcode.BROADCAST, DmaOpcode.MEMCPY),
-                dram_addr=d_tile, local_addr=bufs.acc_addr, len=tile_M,
-                stride=Mux(reg_accumulate, c_stride, d_stride), row_bytes=tile_N * acc_bytes,
-                sync=bufs.load_acc(),
-            )  # fmt: skip
-            with m.State("LOAD_D_NEXT"):
-                to_compute()
-
             # OS: one COMPUTE per K tile, the K tiles chained into one reduction in
-            # the PEs; the last one sends the C tile to the accumulator (added onto
-            # the loaded values, if any)
+            # the PEs; the last one sends the C tile to the accumulator
             issuer.state(
                 "COMPUTE_OS", "NEXT_K", CTRL_EXEC,
-                Mux(loaded, ExecOpcode.COMPUTE_ACCUMULATE, ExecOpcode.COMPUTE),
+                Mux(acc_in, ExecOpcode.COMPUTE_ACCUMULATE, ExecOpcode.COMPUTE),
                 rs1=bufs.a_addr, rs2=bufs.b_addr, rd=bufs.acc_addr, k_dim=tile_K,
                 chain=bufs.chain(first_k, last_k),
-                sync=bufs.compute(first_k=first_k, last_k=last_k, loaded=loaded),
+                sync=bufs.compute(first_k=first_k, last_k=last_k, acquire=first_k & ~acc_in),
                 then=bufs.next_l2(),
             )  # fmt: skip
 
             # WS: B is stationary and A streams; IS: A (as Aᵀ) is stationary and B
-            # streams, so the accumulator holds Cᵀ. Later K tiles accumulate, and so
-            # does the first onto loaded values (WS only).
+            # streams, so the accumulator holds Cᵀ. Later K tiles accumulate.
             issuer.state(
                 "PRELOAD", "COMPUTE", CTRL_EXEC, ExecOpcode.PRELOAD,
                 rs1=Mux(df == IS, bufs.a_addr, bufs.b_addr), k_dim=tile_K,
@@ -394,13 +403,19 @@ class Matmul(Component):
             )  # fmt: skip
             issuer.state(
                 "COMPUTE", "NEXT_K", CTRL_EXEC,
-                Mux(first_k & ~loaded, ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE),
+                Mux(first_k & ~acc_in, ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE),
                 rs1=Mux(df == IS, bufs.b_addr, bufs.a_addr), rd=bufs.acc_addr,
                 k_dim=Mux(df == IS, tile_N, tile_M),
                 sync=Mux(
                     df == IS,
-                    bufs.compute(first_k=first_k, last_k=last_k, slot=bufs.b_slot),
-                    bufs.compute(first_k=first_k, last_k=last_k, slot=bufs.a_slot, loaded=loaded),
+                    bufs.compute(
+                        first_k=first_k, last_k=last_k, slot=bufs.b_slot,
+                        acquire=first_k & ~acc_in,
+                    ),
+                    bufs.compute(
+                        first_k=first_k, last_k=last_k, slot=bufs.a_slot,
+                        acquire=first_k & ~acc_in,
+                    ),
                 ),
                 then=bufs.next_l2(),
             )  # fmt: skip
@@ -426,10 +441,10 @@ class Matmul(Component):
             with m.State("NEXT_IJ"):
                 with m.If(tile_j + 1 < tiles_N):
                     m.d.sync += tile_j.eq(tile_j + 1)
-                    m.next = "LOAD_A"
+                    m.next = "TILE"
                 with m.Elif(tile_i + 1 < tiles_M):
                     m.d.sync += [tile_i.eq(tile_i + 1), tile_j.eq(0)]
-                    m.next = "LOAD_A"
+                    m.next = "TILE"
                 with m.Else():
                     m.next = "DRAIN"
 

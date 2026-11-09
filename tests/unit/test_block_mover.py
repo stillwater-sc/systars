@@ -15,13 +15,16 @@ L3, each from or to any byte address, ``stride`` bytes between rows, with
   1-beat bursts, a streamed tile ends a burst at it, alone and in a GEMM through
   SystolicTop. The AXI model asserts it for every test.
 - TRANSPOSE (#21): both legs with a corner turn, alone and through SystolicTop.
+- LOAD into the accumulator (#17): rows written over the shared write port in the
+  clocks it is free, overwriting or adding; CLEAR (zero rows, no L3 read);
+  BROADCAST (one L3 read, every row); the accumulator corner turn.
 """
 
 import numpy as np
 import pytest
 from amaranth import Elaboratable, Module, Signal
 
-from systars.config import SystolicConfig
+from systars.config import Dataflow, SystolicConfig
 from systars.controller.load import LoadController
 from systars.controller.store import StoreController
 from systars.dma.reader import StreamReader
@@ -136,20 +139,39 @@ async def issue(
     await ctx.tick().until(ctrl.completed)
 
 
-def run_load(cfg, memory, *, then=(), log=None, **cmd):
+def always_free(_cycle):
+    return True
+
+
+def run_load(cfg, memory, *, then=(), log=None, acc=None, acc_free=always_free, **cmd):
     """Run one LOAD, then the commands in ``then`` (dicts of the same fields); return
-    {scratchpad row: bytes written}."""
+    {scratchpad row: bytes written}. With ``acc`` (a dict), accumulator writes are
+    recorded into it as {row: (bytes, accumulate)}; ``acc_free(cycle)`` says when the
+    shared accumulator write port is free."""
     dut = LoadPath(cfg)
     sp_bytes = cfg.sp_width // 8
+    acc_bytes = cfg.acc_width // 8
     written = {}
 
     async def recorder(ctx):
-        async for _, _, en, addr, data in ctx.tick().sample(
-            dut.ctrl.sp_write_en, dut.ctrl.sp_write_addr, dut.ctrl.sp_write_data
-        ):
+        c = dut.ctrl
+        cycle = 0
+        ctx.set(c.acc_write_ready, acc_free(0))
+        async for _, _, en, addr, data, a_en, a_addr, a_data, a_add in ctx.tick().sample(
+            c.sp_write_en, c.sp_write_addr, c.sp_write_data,
+            c.acc_write_en, c.acc_write_addr, c.acc_write_data, c.acc_write_accumulate,
+        ):  # fmt: skip
             if en:
                 assert addr not in written, f"scratchpad row {addr} written twice"
                 written[addr] = data.to_bytes(sp_bytes, "little")
+            if a_en:
+                assert acc is not None, "an accumulator write from a scratchpad LOAD"
+                assert a_addr >> 31 & 1, f"accumulator write to {a_addr:#x} without the flag"
+                row = a_addr & ((1 << 29) - 1)
+                assert row not in acc, f"accumulator row {row} written twice"
+                acc[row] = (a_data.to_bytes(acc_bytes, "little"), a_add)
+            cycle += 1
+            ctx.set(c.acc_write_ready, acc_free(cycle))
 
     async def testbench(ctx):
         for fields in (cmd, *then):
@@ -721,3 +743,131 @@ def test_round_trip_through_both_corner_turns(dim):
         ]
     )  # fmt: skip
     np.testing.assert_array_equal(CT, (A @ B).T)
+
+
+# ---------------------------------------------------------------------------
+# LOAD into the accumulator, CLEAR and BROADCAST (#17)
+# ---------------------------------------------------------------------------
+
+ACC, ADD = 1 << 31, 1 << 30
+
+
+def busy_two_of_three(cycle):
+    """The Streamer holds the accumulator write port two clocks in three."""
+    return cycle % 3 == 0
+
+
+class TestLoadAccumulator:
+    @pytest.mark.parametrize("offset", [0, 5, 13])
+    @pytest.mark.parametrize("free", [always_free, busy_two_of_three], ids=["free", "busy"])
+    def test_rows_land_in_the_accumulator(self, offset, free):
+        """Accumulator rows (4 int32: 16 bytes) at any byte address, written only in the
+        clocks the Streamer leaves the port free; the scratchpad is not touched."""
+        cfg = config()
+        memory = pattern(1 << 12, seed=30)
+        base, acc = 0x300 + offset, {}
+        written = run_load(
+            cfg, memory, dram_addr=base, local_addr=ACC | 6, rows=3, stride=40, row_bytes=12,
+            acc=acc, acc_free=free,
+        )  # fmt: skip
+        assert written == {}
+        assert acc == {
+            6 + r: (bytes(memory[base + 40 * r : base + 40 * r + 12]) + bytes(4), 0)
+            for r in range(3)
+        }
+
+    def test_streamed_rows_wait_for_the_port(self):
+        """Consecutive beats stream; a busy port holds the stream (no beat is lost)."""
+        cfg = config()
+        beat = cfg.dma_buswidth // 8
+        memory = pattern(1 << 13, seed=31)
+        acc: dict = {}
+        log: list = []
+        run_load(
+            cfg, memory, dram_addr=0x400, local_addr=ACC, rows=20, acc=acc,
+            acc_free=busy_two_of_three, log=log,
+        )  # fmt: skip
+        assert log == [("r", 0x400, 20)]
+        assert acc == {r: (bytes(memory[0x400 + r * beat : 0x400 + (r + 1) * beat]), 0)
+                       for r in range(20)}  # fmt: skip
+
+    def test_add_flag_accumulates(self):
+        cfg = config()
+        memory = pattern(1 << 12, seed=32)
+        acc: dict = {}
+        run_load(cfg, memory, dram_addr=0x101, local_addr=ACC | ADD | 2, rows=2, stride=16,
+                 acc=acc)  # fmt: skip
+        assert {row: add for row, (_, add) in acc.items()} == {2: 1, 3: 1}
+
+    @pytest.mark.parametrize("dest", [0, ACC])
+    def test_clear_writes_zero_rows_without_a_read(self, dest):
+        cfg = config()
+        acc: dict = {}
+        log: list = []
+        written = run_load(
+            cfg, pattern(1 << 12), dram_addr=0x200, local_addr=dest | 4, rows=3,
+            opcode=DmaOpcode.CLEAR, acc=acc, acc_free=busy_two_of_three, log=log,
+        )  # fmt: skip
+        assert log == []
+        if dest:
+            assert written == {} and acc == {4 + r: (bytes(16), 0) for r in range(3)}
+        else:
+            assert written == {4 + r: bytes(4) for r in range(3)} and acc == {}
+
+    @pytest.mark.parametrize("dest", [0, ACC])
+    def test_broadcast_reads_once_and_writes_every_row(self, dest):
+        """One read, written to 5 rows. The 8-byte accumulator row spills into the next
+        beat (a 2-beat read); the scratchpad row is clamped to its 4 bytes (1 beat)."""
+        cfg = config()
+        memory = pattern(1 << 12, seed=33)
+        acc: dict = {}
+        log: list = []
+        written = run_load(
+            cfg, memory, dram_addr=0x10B, local_addr=dest | 1, rows=5, stride=64,
+            row_bytes=8, opcode=DmaOpcode.BROADCAST, acc=acc, log=log,
+        )  # fmt: skip
+        assert log == [("r", 0x100, 2 if dest else 1)]
+        row = bytes(memory[0x10B : 0x10B + 8])
+        if dest:
+            assert written == {} and acc == {1 + r: (row + bytes(8), 0) for r in range(5)}
+        else:
+            assert written == {1 + r: row[:4] for r in range(5)} and acc == {}
+
+    def test_corner_turn_into_the_accumulator(self):
+        """IS holds Cᵀ: L3 row n (int32 elements) becomes element n of each accumulator row."""
+        cfg = config(dataflow=Dataflow.A_STATIONARY | Dataflow.B_STATIONARY)
+        memory = pattern(1 << 12, seed=34)
+        acc: dict = {}
+        run_load(
+            cfg, memory, dram_addr=0x203, local_addr=ACC | 8, rows=3, stride=24, row_bytes=8,
+            opcode=TRANSPOSE, acc=acc, acc_free=busy_two_of_three,
+        )  # fmt: skip
+        tile = [unpack(int.from_bytes(memory[0x203 + 24 * r : 0x203 + 24 * r + 8], "little"),
+                       32, 2) for r in range(3)]  # fmt: skip
+        assert {row: unpack(int.from_bytes(data, "little"), 32, 4) for row, (data, _) in
+                acc.items()} == {8 + j: row for j, row in enumerate(turned(tile, 2, 4))}  # fmt: skip
+
+    def test_broadcast_corner_turn(self):
+        """Every accumulator row holds ``len`` copies of one element of the row."""
+        cfg = config(dataflow=Dataflow.A_STATIONARY | Dataflow.B_STATIONARY)
+        memory = pattern(1 << 12, seed=35)
+        acc: dict = {}
+        run_load(
+            cfg, memory, dram_addr=0x200, local_addr=ACC, rows=3, row_bytes=12,
+            opcode=DmaOpcode.BROADCAST_TRANSPOSE, acc=acc,
+        )  # fmt: skip
+        row = unpack(int.from_bytes(memory[0x200:0x20C], "little"), 32, 3)
+        assert {r: unpack(int.from_bytes(d, "little"), 32, 4) for r, (d, _) in acc.items()} == {
+            j: [row[j]] * 3 + [0] for j in range(3)
+        }
+
+    def test_corner_turn_needs_input_stationary(self):
+        """Without IS the accumulator corner turn is not built: the LOAD moves nothing."""
+        cfg = config(dataflow=Dataflow.OUTPUT_STATIONARY)
+        acc: dict = {}
+        log: list = []
+        written = run_load(
+            cfg, pattern(1 << 12), dram_addr=0x200, local_addr=ACC, rows=3, opcode=TRANSPOSE,
+            acc=acc, log=log,
+        )  # fmt: skip
+        assert (written, acc, log) == ({}, {}, [])
