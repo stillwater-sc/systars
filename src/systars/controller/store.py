@@ -11,6 +11,9 @@ address ``dram_addr + n * stride``.
   it untouched and C can be dense. A row that spills into the next beat is a
   2-beat burst.
 - ``stride`` 0 means rows one bus beat apart.
+- No burst crosses a 4 KB boundary (AXI forbids it): a streamed burst ends at the
+  boundary and the next one starts there, and a row that spills from the last beat
+  of a 4 KB page into the next page is written as two 1-beat bursts.
 - The activation (``cmd_activation``) is applied to each element.
 
 ``TRANSPOSE`` is a MEMCPY with a corner turn, for results the array produces as
@@ -25,9 +28,11 @@ TRANSPOSE moves at most one tile: ``len`` is clamped to ``lanes``.
 State Machine:
     IDLE [-> GATHER (TRANSPOSE: read the tile into the corner-turn buffer)]
          -> NEXT -> ISSUE_BURST -> (READ_ACC -> WAIT_VALID -> SEND_STREAM)* -> WAIT_DONE
-                    (consecutive beats from a beat boundary: one burst of up to 256 rows)
+                    (consecutive beats from a beat boundary: one burst of up to 256 rows,
+                    within one 4 KB page)
                  -> READ_ACC -> WAIT_VALID -> ISSUE_ROW -> SEND_LO [-> SEND_HI] -> WAIT_DONE
-                    (any other row)
+                    (any other row; when its second beat starts the next 4 KB page,
+                    SEND_LO -> WAIT_LO -> ISSUE_HI -> SEND_HI: two 1-beat bursts)
          -> (NEXT | DONE)
 
 Data Flow:
@@ -38,6 +43,7 @@ from amaranth import Cat, Const, Module, Mux, Signal, signed
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
+from ..dma.axi import AXI_4KB
 from ..memory.activation import activate_row
 from ..util.commands import DmaOpcode
 
@@ -107,6 +113,8 @@ class StoreController(Component):
             raise ValueError(
                 f"StoreController: dma_buswidth must be a power-of-two bytes, got {buswidth}"
             )
+        if beat > AXI_4KB:
+            raise ValueError(f"StoreController: a {beat}-byte beat is wider than a 4 KB page")
 
         super().__init__(
             {
@@ -202,15 +210,22 @@ class StoreController(Component):
         ]
 
         # Rows that are consecutive beats from a beat boundary stream as bursts of up
-        # to 256 beats; any other row is its own 1- or 2-beat burst
+        # to 256 beats, ending at the next 4 KB boundary; any other row is its own 1-
+        # or 2-beat burst, or two 1-beat bursts when its beats are in different pages
         contiguous = (offset == 0) & (stride_reg == beat)
         streaming = Signal()
         burst_left = Signal(9)
         remaining = Signal(16)
         m.d.comb += remaining.eq(len_reg - row)
+        page_beats = Signal(range(AXI_4KB // beat + 1))  # beats left in row_addr's page
+        m.d.comb += page_beats.eq((AXI_4KB >> off_bits) - row_addr[off_bits:12])
+        capped = Mux(remaining > 256, 256, remaining)  # AXI4: at most 256 beats
         burst_rows = Signal(9)
-        m.d.comb += burst_rows.eq(Mux(remaining > 256, 256, remaining))
-        m.d.comb += self.dma_req_addr.eq(Cat(Const(0, off_bits), row_addr[off_bits:]))
+        m.d.comb += burst_rows.eq(Mux(page_beats < capped, page_beats, capped))
+        split = Signal()  # a 2-beat row whose second beat starts a new page
+        m.d.comb += split.eq(two_beats & (page_beats == 1))
+        aligned = Cat(Const(0, off_bits), row_addr[off_bits:])
+        m.d.comb += self.dma_req_addr.eq(aligned)
 
         def activated_row():
             # The latched activation applied to each acc_bits element (the
@@ -328,7 +343,7 @@ class StoreController(Component):
 
             # --- One row: a 1- or 2-beat burst at its byte offset ---
             with m.State("ISSUE_ROW"):
-                m.d.comb += [self.dma_req_valid.eq(1), self.dma_req_len.eq(two_beats)]
+                m.d.comb += [self.dma_req_valid.eq(1), self.dma_req_len.eq(two_beats & ~split)]
                 with m.If(self.dma_req_ready):
                     m.next = "SEND_LO"
 
@@ -337,13 +352,29 @@ class StoreController(Component):
                     self.dma_data_valid.eq(1),
                     self.dma_data.eq(data_buf[:W]),
                     self.dma_data_strb.eq(strb_buf[:beat]),
-                    self.dma_data_last.eq(~two_beats),
+                    self.dma_data_last.eq(~two_beats | split),
                 ]
                 with m.If(self.dma_data_ready):
-                    with m.If(two_beats):
+                    with m.If(split):
+                        m.next = "WAIT_LO"
+                    with m.Elif(two_beats):
                         m.next = "SEND_HI"
                     with m.Else():
                         m.next = "WAIT_DONE"
+
+            # The row's second beat starts the next 4 KB page: once the first burst is
+            # acknowledged, the second beat goes as a burst of its own
+            with m.State("WAIT_LO"), m.If(self.dma_done):
+                m.next = "ISSUE_HI"
+
+            with m.State("ISSUE_HI"):
+                m.d.comb += [
+                    self.dma_req_valid.eq(1),
+                    self.dma_req_addr.eq(aligned + beat),
+                    self.dma_req_len.eq(0),
+                ]
+                with m.If(self.dma_req_ready):
+                    m.next = "SEND_HI"
 
             with m.State("SEND_HI"):
                 m.d.comb += [

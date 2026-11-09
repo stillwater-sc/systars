@@ -3,8 +3,10 @@ A byte-addressed AXI memory model for SystolicTop tests, standing in for L3.
 
 Reads return the beat at the (beat-aligned) burst address; writes honour the byte
 strobes, so a test can check that a partial-row STORE leaves the bytes around it
-untouched. Bursts must start on a beat boundary (asserted), as the tile's
-BlockMover issues them.
+untouched. Bursts must start on a beat boundary and must not cross a 4 KB
+boundary (both asserted), as AXI requires and the tile's BlockMover issues them.
+A write burst must also end with WLAST on its last beat. ``log``, when given,
+collects every burst as ``("r" | "w", address, beats)``.
 
 ``stall`` (0..1) is L3 backpressure: on that fraction of cycles, chosen by a
 seeded generator, the model holds back every channel (no address accepted, no
@@ -15,8 +17,27 @@ from __future__ import annotations
 
 import random
 
+from systars.dma.axi import AXI_4KB
 
-def axi_memory(dut, memory: bytearray, beat: int, *, stall: float = 0.0, seed: int = 0):
+
+def check_burst(kind: str, addr: int, beats: int, beat: int) -> None:
+    """Assert an AXI INCR burst is beat aligned and stays in one 4 KB page."""
+    assert addr % beat == 0, f"{kind} burst at {addr:#x} is not beat-aligned"
+    last = addr + beats * beat - 1
+    assert addr // AXI_4KB == last // AXI_4KB, (
+        f"{kind} burst at {addr:#x} of {beats} beats crosses a 4 KB boundary"
+    )
+
+
+def axi_memory(
+    dut,
+    memory: bytearray,
+    beat: int,
+    *,
+    stall: float = 0.0,
+    seed: int = 0,
+    log: list | None = None,
+):
     """An Amaranth simulator process serving ``dut``'s AXI ports from ``memory``."""
     rng = random.Random(seed)
 
@@ -25,7 +46,7 @@ def axi_memory(dut, memory: bytearray, beat: int, *, stall: float = 0.0, seed: i
 
     async def process(ctx):
         reads = []  # [address, beats left]
-        write = None  # [address, beat index]
+        write = None  # [address, beat index, beats]
         bresp_pending = False
         while True:
             go = not (stall and rng.random() < stall)
@@ -50,6 +71,7 @@ def axi_memory(dut, memory: bytearray, beat: int, *, stall: float = 0.0, seed: i
                 rready,
                 awvalid,
                 awaddr,
+                awlen,
                 wvalid,
                 wdata,
                 wstrb,
@@ -62,6 +84,7 @@ def axi_memory(dut, memory: bytearray, beat: int, *, stall: float = 0.0, seed: i
                 dut.axi_rready,
                 dut.axi_awvalid,
                 dut.axi_awaddr,
+                dut.axi_awlen,
                 dut.axi_wvalid,
                 dut.axi_wdata,
                 dut.axi_wstrb,
@@ -74,8 +97,10 @@ def axi_memory(dut, memory: bytearray, beat: int, *, stall: float = 0.0, seed: i
                 if reads[0][1] == 0:
                     reads.pop(0)
             if go and arvalid:
-                assert araddr % beat == 0, f"read burst at {araddr:#x} is not beat-aligned"
+                check_burst("read", araddr, arlen + 1, beat)
                 reads.append([araddr, arlen + 1])
+                if log is not None:
+                    log.append(("r", araddr, arlen + 1))
             if bresp_pending and bready:
                 bresp_pending = False
             if not go:
@@ -87,10 +112,15 @@ def axi_memory(dut, memory: bytearray, beat: int, *, stall: float = 0.0, seed: i
                     if wstrb >> i & 1:
                         memory[base + i] = data[i]
                 write[1] += 1
+                assert bool(wlast) == (write[1] == write[2]), (
+                    f"write burst at {write[0]:#x}: WLAST {wlast} on beat {write[1]} of {write[2]}"
+                )
                 if wlast:
                     write, bresp_pending = None, True
             elif write is None and not bresp_pending and awvalid:
-                assert awaddr % beat == 0, f"write burst at {awaddr:#x} is not beat-aligned"
-                write = [awaddr, 0]
+                check_burst("write", awaddr, awlen + 1, beat)
+                write = [awaddr, 0, awlen + 1]
+                if log is not None:
+                    log.append(("w", awaddr, awlen + 1))
 
     return process

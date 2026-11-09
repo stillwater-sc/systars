@@ -117,8 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or 2-beat burst, shifted into place); a loaded row is zero-filled past `row_bytes`, and a
   stored row writes only its own bytes, with AXI byte strobes (`StreamWriter.data_strb`).
   Consecutive beats from a beat boundary still stream as one burst (up to 256 beats).
-  `tests/unit/test_block_mover.py`. Known limitation: bursts are not split at 4 KB boundaries
-  (#11)
+  `tests/unit/test_block_mover.py`. Bursts were not yet split at 4 KB boundaries; that is
+  fixed by #11 (see Fixed)
 - **Matmul and Conv2d on dense layouts** (#8): Matmul computes any M, N and K with dense
   row-major A, B and C at any address, and Conv2d dense NHWC X, F and Y, both verified end to
   end through a real `SystolicTop`. They issue one LOAD per operand tile (Conv2d: one per
@@ -134,6 +134,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The existing examples 02–05 animate a Python model, not the RTL
 
 ### Fixed
+
+- **The tile's bursts never cross a 4 KB boundary** (2026-11-09, #11; port of
+  branes-ai/embodied-ai-soc-generator#18). AXI forbids a burst that crosses one, and the
+  BlockMover's LOAD and STORE legs could issue them. A streamed burst now ends at the
+  boundary. A row that spills from the last beat of a 4 KB page into the next is now two
+  1-beat bursts; a STORE issues the second once the first is acknowledged.
+  - The unit AXI memory model (`tests/unit/_axi.py`) asserts that no read or write burst
+    crosses 4 KB, and that `WLAST` marks a write burst's last beat. It can also log every
+    burst. `AXI_4KB` is in the new `systars.dma.axi`.
+  - New tests: rows spilling across a boundary and streamed tiles crossing one, for both
+    LOAD and STORE, and a GEMM with each operand straddling a boundary
+    (`TestFourKBoundaries` in `tests/unit/test_block_mover.py`). kpugen's cocotb
+    `systolic_tile` tests have no systars counterpart yet (#12).
 
 #### The Matmul and Conv2d ISA instructions issue commands the tile executes (2026-11-01)
 

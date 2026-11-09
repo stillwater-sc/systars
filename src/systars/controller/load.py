@@ -17,6 +17,9 @@ address ``dram_addr + n * stride`` into scratchpad row ``sp_addr + n``.
   accumulated onto. ``row_bytes`` 0 is then a whole accumulator row. The
   accumulator's write port is the Streamer's first: a row waits for a clock in
   which the Streamer writes none (the fabric never stalls).
+- No burst crosses a 4 KB boundary (AXI forbids it): a streamed burst ends at the
+  boundary and the next one starts there, and a row that spills from the last beat
+  of a 4 KB page into the next page is read as two 1-beat bursts.
 
 ``BROADCAST`` reads one L3 row and writes it to all ``len`` rows (kpu-sim's
 ``STR_BROADCAST_ROW``): a bias row for every output row. ``CLEAR`` writes ``len``
@@ -36,8 +39,9 @@ TRANSPOSE into the accumulator is not accepted.
 
 State Machine (per row):
     IDLE -> ISSUE_DMA -> STREAM (consecutive beats from a beat boundary: one
-                             burst of up to 256 rows)
-                       -> RECV_LO [-> RECV_HI] -> WRITE_SP (any other row)
+                             burst of up to 256 rows, within one 4 KB page)
+                       -> RECV_LO [-> (ISSUE_HI ->) RECV_HI] -> WRITE_SP (any other
+                             row; ISSUE_HI when its second beat is in the next page)
          -> (next burst | TURN (TRANSPOSE: write the tile's columns)
              | REPEAT (BROADCAST: write the row to every row) | DONE)
     IDLE -> REPEAT (CLEAR: zero rows) -> DONE
@@ -50,6 +54,7 @@ from amaranth import Cat, Const, Module, Mux, Signal
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
+from ..dma.axi import AXI_4KB
 from ..memory.local_addr import LocalAddr
 from ..util.commands import DmaOpcode
 
@@ -122,6 +127,8 @@ class LoadController(Component):
             raise ValueError(
                 f"LoadController: dma_buswidth must be a power-of-two bytes, got {buswidth}"
             )
+        if beat > AXI_4KB:
+            raise ValueError(f"LoadController: a {beat}-byte beat is wider than a 4 KB page")
         mask_width = sp_width // 8
         self.lanes = sp_width // config.input_bits  # elements per scratchpad row
 
@@ -233,12 +240,20 @@ class LoadController(Component):
         ]
 
         # Rows that are consecutive beats from a beat boundary stream as bursts of up
-        # to 256 beats; any other row is its own 1- or 2-beat burst
+        # to 256 beats, ending at the next 4 KB boundary; any other row is its own 1-
+        # or 2-beat burst, or two 1-beat bursts when its beats are in different pages
         contiguous = (offset == 0) & (stride_reg == beat)
         remaining = Signal(16)
         m.d.comb += remaining.eq(len_reg - row)
-        burst_rows = Mux(remaining > 256, 256, remaining)
-        m.d.comb += self.dma_req_addr.eq(Cat(Const(0, off_bits), row_addr[off_bits:]))
+        page_beats = Signal(range(AXI_4KB // beat + 1))  # beats left in row_addr's page
+        m.d.comb += page_beats.eq((AXI_4KB >> off_bits) - row_addr[off_bits:12])
+        capped = Mux(remaining > 256, 256, remaining)  # AXI4: at most 256 beats
+        burst_rows = Signal(range(257))
+        m.d.comb += burst_rows.eq(Mux(page_beats < capped, page_beats, capped))
+        split = Signal()  # a 2-beat row whose second beat starts a new page
+        m.d.comb += split.eq(two_beats & (page_beats == 1))
+        aligned = Cat(Const(0, off_bits), row_addr[off_bits:])
+        m.d.comb += self.dma_req_addr.eq(aligned)
 
         # A row can be put down this clock: the scratchpad always, the accumulator
         # when the Streamer is not writing it (nor a BROADCAST, which only keeps it)
@@ -331,7 +346,7 @@ class LoadController(Component):
             with m.State("ISSUE_DMA"):
                 m.d.comb += [
                     self.dma_req_valid.eq(1),
-                    self.dma_req_len.eq(Mux(contiguous, burst_rows - 1, two_beats)),
+                    self.dma_req_len.eq(Mux(contiguous, burst_rows - 1, two_beats & ~split)),
                 ]
                 with m.If(self.dma_req_ready):
                     with m.If(contiguous):
@@ -356,10 +371,22 @@ class LoadController(Component):
                 m.d.comb += self.dma_resp_ready.eq(1)
                 with m.If(self.dma_resp_valid):
                     m.d.sync += [lo.eq(self.dma_resp_data), hi.eq(0)]
-                    with m.If(two_beats):
+                    with m.If(split):
+                        m.next = "ISSUE_HI"
+                    with m.Elif(two_beats):
                         m.next = "RECV_HI"
                     with m.Else():
                         m.next = "WRITE_SP"
+
+            # The row's second beat starts the next 4 KB page: a burst of its own
+            with m.State("ISSUE_HI"):
+                m.d.comb += [
+                    self.dma_req_valid.eq(1),
+                    self.dma_req_addr.eq(aligned + beat),
+                    self.dma_req_len.eq(0),
+                ]
+                with m.If(self.dma_req_ready):
+                    m.next = "RECV_HI"
 
             with m.State("RECV_HI"):
                 m.d.comb += self.dma_resp_ready.eq(1)

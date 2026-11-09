@@ -111,7 +111,8 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
   scratchpad = L2, the stream and result buffers at the array's edges = L1; LOAD/STORE are the BlockMover (L3 <-> L2) and
   the execute controller is the Streamer (L2 -> L1). A LOAD or STORE moves a whole tile from
   or to any byte address (`cmd_stride`, `cmd_row_bytes`; `tests/unit/test_block_mover.py`),
-  with a corner turn when its opcode is `DmaOpcode.TRANSPOSE`. A LOAD to an accumulator
+  with a corner turn when its opcode is `DmaOpcode.TRANSPOSE`. No burst crosses a 4 KB
+  boundary (`tests/unit/_axi.py` enforces it). A LOAD to an accumulator
   address writes a result tile's starting values (sharing the accumulator's write port, the
   Streamer first); `BROADCAST` writes one L3 row to every row and `CLEAR` zero rows with no
   L3 read.
