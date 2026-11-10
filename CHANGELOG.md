@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **cocotb: Matmul and Conv2d on the Verilated `SystolicTop`** (#12, 2026-11-10; port of
+  branes-ai/embodied-ai-soc-generator#19). A new `systolic_top` target (4x4, OS, WS and IS,
+  `systars.targets.systolic_top_config`) and bench, `verif/cocotb/tests/systolic_top/`.
+  `tb/isa.py` records an ISA instruction's command stream in the Amaranth simulator, and
+  the test pushes it onto the tile's command port as a host would, without waiting for
+  completions. `tb/axi.py` serves the AXI master from a byte array and rejects any burst
+  that crosses a 4 KB boundary. Eleven tests:
+  - a 9x7x10 Matmul tiled in M, N and K, in each dataflow, plain and with a bias row and
+    accumulate;
+  - a Conv2d with padding, stride, dilation, odd channel counts and a bias;
+  - LOADs, STOREs and a WS GEMM across 4 KB boundaries;
+  - an OS and a WS GEMM issued command by command.
+
+  Each checks the result against a reference and that every other byte is untouched.
+  kpugen drives its tile through CSRs and builds one tile per dataflow; here commands go
+  straight onto the command port and one build runs every dataflow. `just test-cocotb` runs
+  the new suite, and `just lint-rtl` waives `CASEINCOMPLETE` (Amaranth FSMs, as kpugen
+  does) and `SYMRSVDWORD` (the `interrupt` port).
+
 - **Accumulator loads: Matmul and Conv2d with a bias or accumulating onto the output, and
   padding without a zero row** (#10 in #30, 2026-11-08; realigned with
   branes-ai/embodied-ai-soc-generator#47 by #32, 2026-11-09). A LOAD whose local address has

@@ -254,4 +254,16 @@ monitor follows each LOAD into the accumulator as the accumulator pool's second 
 `test_slot_pool_second_producer` checks that `fill_credit` excludes a slot the Streamer takes
 in the same clock, which the in-order queues never make happen on a real `SystolicTop`.
 
+`verif/cocotb/tests/systolic_top/` runs the same instructions on the Verilated RTL (the
+`systolic_top` target: a 4x4 `SystolicTop` with OS, WS and IS). `verif/cocotb/tb/isa.py`
+records an instruction's command stream in the Amaranth simulator, and the test pushes it
+onto the tile's command port as a host would, credits and tokens included, never waiting
+for a completion. A Python model of L3 (`verif/cocotb/tb/axi.py`) serves the tile's AXI
+master and rejects any burst that crosses a 4 KB boundary. Covered: a 9x7x10 Matmul tiled
+in M, N and K in each dataflow, plain and with a bias row and accumulate; the Conv2d above
+(padding, stride, dilation, odd channel counts, a bias); LOADs, STOREs and a WS GEMM across
+4 KB boundaries; and an OS and a WS GEMM issued command by command. Each checks the result
+against a reference and that every other byte of L3 is untouched. Port of kpugen's
+`tests/systolic_tile` bench (branes-ai/embodied-ai-soc-generator#19).
+
 [The original implementation plan](plan/isa-instructions.md) is superseded by this page.

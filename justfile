@@ -106,6 +106,8 @@ lint-rtl-gen:
         # - UNUSEDSIGNAL: Yosys leaves dead wire declarations
         # - DECLFILENAME: Module name doesn't match filename
         # - PROCASSINIT: Amaranth uses both initial values and procedural assigns
+        # - CASEINCOMPLETE: Amaranth FSMs switch on a state register wider than their states
+        # - SYMRSVDWORD: SystolicTop's `interrupt` port is a C++ word (harmless in Verilog)
         verilator --lint-only -Wall --timing \
             -Wno-MULTITOP \
             -Wno-WIDTHEXPAND \
@@ -113,6 +115,8 @@ lint-rtl-gen:
             -Wno-UNUSEDSIGNAL \
             -Wno-DECLFILENAME \
             -Wno-PROCASSINIT \
+            -Wno-CASEINCOMPLETE \
+            -Wno-SYMRSVDWORD \
             $verilog_files
         echo "Generated RTL lint passed"
     else
@@ -195,7 +199,7 @@ test-cocotb:
     #!/usr/bin/env bash
     set -euo pipefail
     failed=0
-    for component in pe pe_array systolic_array scratchpad accumulator; do
+    for component in pe pe_array systolic_array scratchpad accumulator systolic_top; do
         testdir="{{verif_dir}}/cocotb/tests/$component"
         if [ -d "$testdir" ]; then
             echo "========================================"

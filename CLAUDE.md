@@ -142,7 +142,10 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 ### Test Structure
 
 - **Unit tests** (`tests/unit/`): Amaranth simulator-based tests using `amaranth.sim`
-- **Cocotb tests** (`verif/cocotb/tests/`): RTL simulation tests with Verilator
+- **Cocotb tests** (`verif/cocotb/tests/`): RTL simulation tests with Verilator. `systolic_top`
+  runs Matmul and Conv2d on the Verilated tile (the `systolic_top` target, 4x4, OS/WS/IS):
+  `tb/isa.py` records an instruction's command stream in Amaranth and pushes it onto the
+  command port; `tb/axi.py` is L3 and rejects bursts that cross 4 KB
 
 ### Amaranth HDL Patterns
 
