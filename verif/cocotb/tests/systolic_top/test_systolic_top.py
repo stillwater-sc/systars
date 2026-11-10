@@ -72,10 +72,12 @@ def matmul(A, B):
 
 
 def put(memory, addr, value, nbytes):
+    """Write the integer ``value`` as ``nbytes`` little-endian bytes at ``addr``."""
     memory[addr : addr + nbytes] = value.to_bytes(nbytes, "little")
 
 
 def get(memory, addr, nbytes):
+    """The ``nbytes`` little-endian bytes at ``addr``, as an integer."""
     return int.from_bytes(memory[addr : addr + nbytes], "little")
 
 
@@ -229,10 +231,12 @@ CELL = 4096  # bytes of L3 an instruction's operands and results live in
 
 
 def to_bytes(values, bits):
+    """Pack ``values`` as ``bits``-wide little-endian two's-complement elements."""
     return b"".join((int(v) & ((1 << bits) - 1)).to_bytes(bits // 8, "little") for v in values)
 
 
 def from_bytes(data, bits):
+    """Unpack ``data`` into signed ``bits``-wide little-endian elements."""
     n = bits // 8
     return [int.from_bytes(data[i : i + n], "little", signed=True) for i in range(0, len(data), n)]
 
@@ -308,9 +312,11 @@ def conv2d_reference(X, F, shape, kernel, stride, pad, dilation, bias):
     out_w = (in_w + 2 * pad[1] - dilation[1] * (kw_n - 1) - 1) // stride[1] + 1
 
     def x(b, h, w, c):
+        """X[b, h, w, c] (NHWC)."""
         return X[((b * in_h + h) * in_w + w) * in_c + c]
 
     def f(kh, kw, c, oc):
+        """F[kh, kw, c, oc]."""
         return F[((kh * kw_n + kw) * in_c + c) * out_c + oc]
 
     Y = []

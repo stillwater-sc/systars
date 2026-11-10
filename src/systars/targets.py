@@ -103,6 +103,7 @@ def systolic_top_config() -> SystolicConfig:
 
 
 def _systolic_top() -> Component:
+    """The ``systolic_top`` target: ``SystolicTop`` on ``systolic_top_config()``."""
     from .top import SystolicTop
 
     return SystolicTop(systolic_top_config())

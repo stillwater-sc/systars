@@ -26,6 +26,7 @@ class _Port:
     """``port.name`` -> ``dut.<prefix><name>``."""
 
     def __init__(self, dut, prefix):
+        """Signals of ``dut`` named ``<prefix><name>``."""
         self._dut = dut
         self._prefix = prefix
 
