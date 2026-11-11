@@ -30,8 +30,11 @@ just test-unit              # Run unit tests (pytest)
 just test-cocotb            # Run cocotb simulation tests with Verilator
 just test-file <path>       # Run a specific test file
 just test-k <pattern>       # Run tests matching pattern
-just test-cov               # Run tests with coverage report
+just test-cov               # Run tests with coverage report (CI: just test-cov xml)
 ```
+
+CI (`.github/workflows/`) calls these same recipes, with one RTL Tests job per cocotb suite. A
+new cocotb suite goes in both `just test-cocotb` and the `rtl-tests` matrix in `test.yml`.
 
 ### Linting and Formatting
 
