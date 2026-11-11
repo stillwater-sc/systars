@@ -24,7 +24,7 @@ from pathlib import Path
 from amaranth.back import verilog
 from amaranth.lib.wiring import Component
 
-from .config import SystolicConfig
+from .config import Dataflow, SystolicConfig
 
 
 @dataclass(frozen=True)
@@ -87,6 +87,28 @@ def _accumulator() -> Component:
     return Accumulator(SystolicConfig(acc_banks=2, acc_capacity_kb=4, acc_latency=2))
 
 
+def systolic_top_config() -> SystolicConfig:
+    """The ``systolic_top`` target's configuration: a 4x4 array with every dataflow
+    (OS, WS and IS, chosen per command by CONFIG), a 1 KiB scratchpad and a 2 KiB
+    accumulator. The cocotb bench builds its ISA instructions from it."""
+    return SystolicConfig(
+        grid_rows=4,
+        grid_cols=4,
+        dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY | Dataflow.A_STATIONARY,
+        sp_capacity_kb=1,
+        sp_banks=4,
+        acc_capacity_kb=2,
+        acc_banks=2,
+    )
+
+
+def _systolic_top() -> Component:
+    """The ``systolic_top`` target: ``SystolicTop`` on ``systolic_top_config()``."""
+    from .top import SystolicTop
+
+    return SystolicTop(systolic_top_config())
+
+
 TARGETS: dict[str, Target] = {
     t.name: t
     for t in [
@@ -104,6 +126,12 @@ TARGETS: dict[str, Target] = {
         ),
         Target("scratchpad", "Scratchpad", _scratchpad, "2-bank 4 KiB scratchpad"),
         Target("accumulator", "Accumulator", _accumulator, "2-bank 4 KiB accumulator"),
+        Target(
+            "systolic_top",
+            "SystolicTop",
+            _systolic_top,
+            "4x4 SystolicTop compute tile, OS/WS/IS (cocotb: Matmul, Conv2d)",
+        ),
     ]
 }
 

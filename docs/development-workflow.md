@@ -335,7 +335,12 @@ async def test_scaling(dut):
 just test-cocotb                      # Run all cocotb tests
 just test-cocotb-component pe         # Run specific component
 just test-cocotb-component scratchpad # Run memory tests
+just test-cocotb-component systolic_top  # Matmul and Conv2d on the whole tile
 ```
+
+`systolic_top` simulates the whole tile, so its tests import systars: `tb/isa.py` runs an
+ISA instruction in Amaranth and the test pushes its commands onto the Verilated tile. Its
+Makefile puts `src/` on `PYTHONPATH` for that.
 
 ---
 
