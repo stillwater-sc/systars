@@ -414,6 +414,26 @@ just test-cocotb    # RTL simulation tests
 just synth-check    # Yosys synthesis check
 ```
 
+CI runs the same recipes (`.github/workflows/`). `just ci` covers the lint, unit-test, cocotb and
+`synth-check` jobs; CI also runs `just synth <target>` for each Yosys target, the pre-commit hooks
+and the docs build, so run those too before pushing a change that touches them (`just synth
+ice40`, `pre-commit run --all-files`, `just docs`):
+
+| Workflow | Job | Runs |
+|----------|-----|---------|
+| `lint.yml` | Python Lint | `just lint-python`, `just format-check`, `just typecheck` |
+| `lint.yml` | RTL Lint | `just gen`, `just lint-rtl` (every target; the waivers live in the justfile) |
+| `test.yml` | Unit Tests (3.10, 3.12) | `just test-unit` |
+| `test.yml` | Unit Tests (3.11) | `just test-cov xml` (the same tests, with coverage for Codecov) |
+| `test.yml` | RTL Tests, one job per suite | `just test-cocotb-component <suite>` |
+| `lint.yml` | Pre-commit Hooks | `pre-commit/action`, the same hooks as `pre-commit run --all-files` (not in `just ci`) |
+| `docs.yml` | Build Documentation | `npm run build` in `docs-site/`, what `just docs` runs (not in `just ci`) |
+| `synthesis.yml` | Yosys Synthesis Check | `just gen`, `just synth-check`, `just synth <target>` (`just ci` runs only `synth-check`) |
+
+No workflow generates RTL itself: every file comes from `systars.targets`, through `just gen`
+or a cocotb Makefile's `gen-rtl`. A new cocotb suite goes in both `just test-cocotb` and the
+`rtl-tests` matrix in `test.yml`.
+
 ### Synthesis
 
 `just synth <target>` maps every generated module onto a device's cells with Yosys and

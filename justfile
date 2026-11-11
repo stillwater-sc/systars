@@ -224,9 +224,9 @@ test-cocotb-component component:
 test-verilator:
     just test-cocotb
 
-# Run tests with coverage
-test-cov:
-    python3 -m pytest {{tests_dir}} -v --cov=src/systars --cov-report=html --cov-report=term-missing
+# Run tests with coverage (an HTML report locally; CI writes coverage.xml: `just test-cov xml`)
+test-cov report="html":
+    python3 -m pytest {{tests_dir}} -v --cov=systars --cov-report={{report}} --cov-report=term-missing
 
 # Run a specific test file
 test-file file:

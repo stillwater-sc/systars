@@ -213,6 +213,17 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **CI calls the `just` recipes `just ci` runs** (#29, 2026-11-10). `lint.yml` runs `just
+  lint-python`, `just format-check`, `just typecheck`, `just gen` and `just lint-rtl`, so CI
+  now lints every generated target, not only the PE, with the justfile's waivers. `test.yml`
+  runs `just test-unit` and, on Python 3.11, `just test-cov xml` in its place (the suite ran
+  twice there before). Its cocotb job is now one job per suite (`just test-cocotb-component`): pe,
+  pe_array, systolic_array, scratchpad, accumulator and systolic_top, where only pe ran
+  before. No workflow generates RTL with inline Python any more. The "Amaranth Simulation
+  Tests" job is gone: it re-ran the unit tests matching `-k sim`. `just test-cov` takes the
+  report format (default `html`). `docs/development-workflow.md`, "Running the Full Test
+  Suite".
+
 - **Accumulator loads follow kpugen's design** (#32, 2026-11-09). #30 implemented #10
   systars-first, and kpugen's esg#47 then resolved esg#17 differently. systars now ports
   esg#47, so the systolic files are 1:1 again:

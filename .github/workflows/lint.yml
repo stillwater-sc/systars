@@ -15,6 +15,8 @@ permissions:
   contents: read
 
 jobs:
+  # Every step calls the `just` recipe that `just ci` runs, so CI and a local `just ci`
+  # check the same paths with the same waivers.
   python-lint:
     name: Python Lint
     runs-on: ubuntu-latest
@@ -26,23 +28,23 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        # NOTE: Pin ruff version to match .pre-commit-config.yaml and pyproject.toml
+      - name: Set up just
+        uses: extractions/setup-just@v2
+
+      - name: Install project with dev dependencies
+        # The dev extra pins ruff to match .pre-commit-config.yaml
         run: |
           python -m pip install --upgrade pip
-          pip install ruff==0.14.9 mypy
+          pip install -e ".[dev]"
 
-      - name: Run ruff check
-        run: ruff check src/ tests/ verif/
+      - name: Ruff check
+        run: just lint-python
 
-      - name: Run ruff format check
-        run: ruff format --check src/ tests/ verif/
+      - name: Ruff format check
+        run: just format-check
 
-      - name: Install project for type checking
-        run: pip install -e ".[dev]"
-
-      - name: Run mypy
-        run: mypy src/
+      - name: Mypy
+        run: just typecheck
 
   rtl-lint:
     name: RTL Lint (Verilator)
@@ -55,6 +57,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up just
+        uses: extractions/setup-just@v2
+
       - name: Install OSS CAD Suite
         uses: YosysHQ/setup-oss-cad-suite@v3
         with:
@@ -65,33 +70,11 @@ jobs:
       - name: Install project
         run: pip install -e .
 
-      - name: Generate RTL
-        run: |
-          mkdir -p gen
-          python -c "
-          from systars.config import SystolicConfig
-          from systars.core.pe import PE
-          from amaranth.back import verilog
-          config = SystolicConfig()
-          pe = PE(config)
-          open('gen/pe.v', 'w').write(verilog.convert(pe, name='PE'))
-          print('Generated gen/pe.v')
-          "
+      - name: Generate RTL (every target in systars.targets)
+        run: just gen
 
-      - name: Lint with Verilator
-        run: |
-          # Waivers for Amaranth/Yosys generated code artifacts:
-          # - WIDTHEXPAND/WIDTHTRUNC: Yosys optimizes sign extension
-          # - UNUSEDSIGNAL: Yosys leaves dead wire declarations
-          # - DECLFILENAME: Module name doesn't match filename
-          # - PROCASSINIT: Amaranth uses both initial values and procedural assigns
-          verilator --lint-only -Wall --timing \
-            -Wno-WIDTHEXPAND \
-            -Wno-WIDTHTRUNC \
-            -Wno-UNUSEDSIGNAL \
-            -Wno-DECLFILENAME \
-            -Wno-PROCASSINIT \
-            gen/pe.v
+      - name: Lint with Verilator (waivers in the justfile)
+        run: just lint-rtl
 
   pre-commit:
     name: Pre-commit Hooks
