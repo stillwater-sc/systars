@@ -414,6 +414,21 @@ just test-cocotb    # RTL simulation tests
 just synth-check    # Yosys synthesis check
 ```
 
+CI runs the same recipes (`.github/workflows/`), so a green `just ci` predicts a green CI:
+
+| Workflow | Job | Recipes |
+|----------|-----|---------|
+| `lint.yml` | Python Lint | `just lint-python`, `just format-check`, `just typecheck` |
+| `lint.yml` | RTL Lint | `just gen`, `just lint-rtl` (every target; the waivers live in the justfile) |
+| `test.yml` | Unit Tests (3.10, 3.12) | `just test-unit` |
+| `test.yml` | Unit Tests (3.11) | `just test-cov xml` (the same tests, with coverage for Codecov) |
+| `test.yml` | RTL Tests, one job per suite | `just test-cocotb-component <suite>` |
+| `synthesis.yml` | Yosys Synthesis Check | `just gen`, `just synth-check`, `just synth <target>` |
+
+No workflow generates RTL itself: every file comes from `systars.targets`, through `just gen`
+or a cocotb Makefile's `gen-rtl`. A new cocotb suite goes in both `just test-cocotb` and the
+`rtl-tests` matrix in `test.yml`.
+
 ### Synthesis
 
 `just synth <target>` maps every generated module onto a device's cells with Yosys and

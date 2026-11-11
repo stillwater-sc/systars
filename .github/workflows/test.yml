@@ -15,6 +15,7 @@ permissions:
   contents: read
 
 jobs:
+  # Every step calls a `just` recipe, as `just ci` does.
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -29,6 +30,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up just
+        uses: extractions/setup-just@v2
+
       - name: Install OSS CAD Suite (Yosys)
         uses: YosysHQ/setup-oss-cad-suite@v3
         with:
@@ -42,13 +46,13 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run unit tests
-        run: pytest tests/unit/ -v --tb=short
+        if: matrix.python-version != '3.11'
+        run: just test-unit
 
-      - name: Run tests with coverage
+      # On 3.11 the coverage run is the unit-test run (the same tests, once)
+      - name: Run unit tests with coverage
         if: matrix.python-version == '3.11'
-        run: |
-          pip install pytest-cov
-          pytest tests/unit/ --cov=systars --cov-report=xml --cov-report=term
+        run: just test-cov xml
 
       - name: Upload coverage
         if: matrix.python-version == '3.11'
@@ -58,11 +62,14 @@ jobs:
           fail_ci_if_error: false
 
   rtl-tests:
-    name: RTL Tests (Cocotb)
+    name: RTL Tests (cocotb ${{ matrix.component }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         simulator: [verilator]
+        # The suites `just test-cocotb` runs
+        component: [pe, pe_array, systolic_array, scratchpad, accumulator, systolic_top]
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +77,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Set up just
+        uses: extractions/setup-just@v2
 
       - name: Install OSS CAD Suite
         uses: YosysHQ/setup-oss-cad-suite@v3
@@ -79,43 +89,9 @@ jobs:
           version: "2025-12-12"
 
       - name: Install project with simulation dependencies
-        run: |
-          pip install -e ".[dev,sim]"
+        run: pip install -e ".[dev,sim]"
 
-      - name: Generate RTL
-        run: |
-          mkdir -p gen
-          python -c "
-          from systars.config import SystolicConfig
-          from systars.core.pe import PE
-          from amaranth.back import verilog
-          config = SystolicConfig()
-          pe = PE(config)
-          open('gen/pe.v', 'w').write(verilog.convert(pe, name='PE'))
-          print('Generated gen/pe.v')
-          "
-
-      - name: Run PE cocotb tests
-        working-directory: verif/cocotb/tests/pe
+      - name: Run cocotb tests (each Makefile generates its RTL through systars.targets)
         env:
           SIM: ${{ matrix.simulator }}
-        run: make test-all
-
-  amaranth-sim:
-    name: Amaranth Simulation Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Run Amaranth simulation tests
-        run: pytest tests/unit/ -v -k "sim" --tb=short
+        run: just test-cocotb-component ${{ matrix.component }}
