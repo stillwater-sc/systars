@@ -33,7 +33,9 @@ just test-k <pattern>       # Run tests matching pattern
 just test-cov               # Run tests with coverage report (CI: just test-cov xml)
 ```
 
-CI (`.github/workflows/`) calls these same recipes, with one RTL Tests job per cocotb suite. A
+CI (`.github/workflows/`) calls these same recipes, with one RTL Tests job per cocotb suite;
+it also runs `just synth <target>` per Yosys target, pre-commit and the docs build, which
+`just ci` does not. A
 new cocotb suite goes in both `just test-cocotb` and the `rtl-tests` matrix in `test.yml`.
 
 ### Linting and Formatting
