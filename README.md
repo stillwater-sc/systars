@@ -112,7 +112,7 @@ print(v)
 | PEArray | ✅ Done | Combinational PE grid (tile_rows × tile_cols) |
 | SystolicArray | ✅ Done | Pipelined PEArray grid (grid_rows × grid_cols) |
 | Scratchpad | ✅ Done | Multi-bank local memory |
-| Accumulator | ✅ Done | Result memory with scale/activation |
+| Accumulator | ✅ Done | Result memory with ReLU/ReLU6 on readout (no scaling yet). To be replaced by the [Combiner](docs/architecture/combiner.md) (#38) |
 | ExecuteController | ✅ Done | Execute command handling (CONFIG, PRELOAD, COMPUTE) |
 | LoadController | ✅ Done | DRAM → Scratchpad transfers |
 | StoreController | ✅ Done | Accumulator → DRAM transfers |
