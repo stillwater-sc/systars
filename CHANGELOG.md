@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accumulator. `docs/architecture/combiner.md` compares it with today's accumulator, which
   has no scaling despite its header's diagram. The README and `CLAUDE.md` point to it.
   In kpu-sim the Combiner is the Vector Engine, renamed (stillwater-sc/kpu-sim#429); its
-  activations run on SFU banks, and its first block formats are OCP Microscaling (MX).
+  activations run on SFU banks, and its first block formats are OCP Microscaling (MX), MXINT8 first, then MXFP8.
 - **cocotb: Matmul and Conv2d on the Verilated `SystolicTop`** (#12, 2026-11-10; port of
   branes-ai/embodied-ai-soc-generator#19). A new `systolic_top` target (4x4, OS, WS and IS,
   `systars.targets.systolic_top_config`) and bench, `verif/cocotb/tests/systolic_top/`.

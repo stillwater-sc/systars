@@ -25,7 +25,7 @@ buffers, it can:
   - scaling up or down (requantization, with rounding and saturation);
   - block-format conversion (compression). The first block formats are the OCP Microscaling
     (MX) formats, an open specification: blocks of 32 elements sharing one 8-bit
-    power-of-two scale (MXFP8, MXFP6, MXFP4, MXINT8).
+    power-of-two scale (MXFP8, MXFP6, MXFP4, MXINT8). MXINT8 comes first, then MXFP8.
 
   The activation functions run on the Combiner's SFU banks (special-function units), as in
   kpu-sim.
@@ -49,7 +49,7 @@ separate result memory:
 | A bias is a LOAD into it (the accumulator pool's second producer, `SlotPool(producers=2)`) | Applies the bias as results pass through. No LOAD into a result memory. |
 | ReLU and ReLU6 as rows are read out (`memory/activation.py`) | Activation on the way into L2 |
 | No scaling. The module's header diagram draws "+ Scale", but the RTL has none. | Scaling up or down |
-| No block-format conversion | Block-format conversion, OCP MX first |
+| No block-format conversion | Block-format conversion: MXINT8, then MXFP8 |
 | Results stay in it, and STORE moves them from it | Results land in L2, and STORE moves them from there |
 
 The port is #38, after the rename (#37) that calls the accumulator the Combiner's storage
