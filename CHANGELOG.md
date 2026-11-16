@@ -19,7 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The landing page links them, and the site's Getting Started group opens with them. The
   README's component table, default `dataflow`, project structure and roadmap now match the
   code, and `examples/README.md` lists the directories that exist.
-
+- **Docs: the Combiner** (2026-11-14, #38). A new concept for the KPU tile, defined for kpugen
+  (branes-ai/embodied-ai-soc-generator#68), that systars and kpu-sim don't have yet. It is a
+  unit on the result path between L1 and L2. It merges intermediate partials (the WS/IS
+  reduction across K blocks), fuses bias, activation, scaling and block-format conversion as
+  results are written to L2, and replaces the accumulator: the KPU tile has no separate
+  accumulator. `docs/architecture/combiner.md` compares it with today's accumulator, which
+  has no scaling despite its header's diagram. The README and `CLAUDE.md` point to it.
+  In kpu-sim the Combiner is the Vector Engine, renamed (stillwater-sc/kpu-sim#429); its
+  activations run on SFU banks, and its first block formats are OCP Microscaling (MX), MXINT8 first, then MXFP8.
 - **cocotb: Matmul and Conv2d on the Verilated `SystolicTop`** (#12, 2026-11-10; port of
   branes-ai/embodied-ai-soc-generator#19). A new `systolic_top` target (4x4, OS, WS and IS,
   `systars.targets.systolic_top_config`) and bench, `verif/cocotb/tests/systolic_top/`.

@@ -113,21 +113,19 @@ print(v)
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| PE | ✅ Done | MAC with a registered input on every link; output-stationary or stationary mode at run time |
-| PEArray | ✅ Done | Structural block of PEs (tile_rows × tile_cols) |
-| SystolicArray | ✅ Done | Grid of PEArrays (grid_rows × grid_cols), 8x8 to 64x64 PEs, no skew registers |
-| L1 stream and result buffers | ✅ Done | Stagger the operand streams (the skew) and turn result columns back into rows |
-| Scratchpad (L2) | ✅ Done | Multi-bank local memory with two read ports |
-| Accumulator | ✅ Done | Result memory with scale/activation; also loadable with a bias or an existing C |
-| Streamer (ExecuteController) | ✅ Done | L2 → L1 → fabric → accumulator; CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE |
-| BlockMover (Load/StoreController) | ✅ Done | Whole-tile L3 ↔ L2/accumulator moves at any byte address, with corner turns |
-| StreamReader / StreamWriter | ✅ Done | AXI burst read/write engines; no burst crosses a 4 KB boundary |
-| Credits and tile-ready tokens | ✅ Done | CSP flow control between the processes (`controller/sync.py`) |
-| SystolicTop | ✅ Done | The compute tile; verified Matmul and Conv2d in OS, WS and IS (Conv2d: OS) |
-| Matmul, Conv2d ISA instructions | ✅ Done | Tile an operation larger than the array and push double-buffered command streams |
-| Wavefront tracing | ✅ Done | Records the RTL, checks every PE every clock, renders the docs' animations |
-| DescriptorEngine | 🟡 Standalone | DMA descriptor chains; tested, not wired into SystolicTop |
-| LoopMatmul, LoopConv | 🔲 TODO | Hardware loop unrollers; today the ISA instructions issue the tiled command streams |
+| PE | ✅ Done | Processing Element with MAC |
+| PEArray | ✅ Done | Combinational PE grid (tile_rows × tile_cols) |
+| SystolicArray | ✅ Done | Pipelined PEArray grid (grid_rows × grid_cols) |
+| Scratchpad | ✅ Done | Multi-bank local memory |
+| Accumulator | ✅ Done | Result memory with ReLU/ReLU6 on readout (no scaling yet). To be replaced by the [Combiner](docs/architecture/combiner.md) (#38) |
+| ExecuteController | ✅ Done | Execute command handling (CONFIG, PRELOAD, COMPUTE) |
+| LoadController | ✅ Done | DRAM → Scratchpad transfers |
+| StoreController | ✅ Done | Accumulator → DRAM transfers |
+| StreamReader | ✅ Done | AXI-like burst read DMA engine |
+| StreamWriter | ✅ Done | AXI-like burst write DMA engine |
+| DescriptorEngine | ✅ Done | DMA descriptor chain execution |
+| LoopMatmul | 🔲 TODO | High-level matmul loop unroller |
+| LoopConv | 🔲 TODO | Convolution loop unroller |
 
 ## Configuration
 
