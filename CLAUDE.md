@@ -109,7 +109,11 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 ### Implemented Components
 
 - PE, PEArray, SystolicArray (core compute hierarchy)
-- Scratchpad (two read ports) and Accumulator memory banks
+- Scratchpad (two read ports) and Accumulator memory banks. The accumulator is a
+  Gemmini-style result memory. The KPU tile has none: its **Combiner**, between L1 and L2,
+  merges WS/IS partials and fuses bias, activation, scaling and block-format conversion as
+  results are written to L2 (`docs/architecture/combiner.md`; port #38, after the rename
+  #37).
 - Load/Execute/Store controllers, DMA engines (StreamReader/StreamWriter), and `SystolicTop`,
   which computes a verified GEMM end to end (`tests/unit/test_gemm_systolic.py`)
 - `SystolicTop` is a systolic KPU compute tile following kpu-sim's CSP model: AXI = L3,
