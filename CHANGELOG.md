@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Onboarding documentation** (2026-11-16). New pages for engineers joining the project:
+  [Introduction](docs/getting-started/introduction.md) (systolic arrays, the wavefront, the
+  1988 SYSTARS lineage and the link to the KPU), [Your first week](docs/getting-started/onboarding.md)
+  (setup, running the array, exercises, the verification layers and a map of current, legacy
+  and side-package code), [The systolic tile](docs/architecture/systolic-tile.md) (the data
+  path, memory levels, processes, the three dataflows and current limits, with a data path
+  diagram), [Key ideas](docs/architecture/key-ideas.md) and a [glossary](docs/guides/glossary.md).
+  The landing page links them, and the site's Getting Started group opens with them. The
+  README's component table, default `dataflow`, project structure and roadmap now match the
+  code, and `examples/README.md` lists the directories that exist.
+
 - **cocotb: Matmul and Conv2d on the Verilated `SystolicTop`** (#12, 2026-11-10; port of
   branes-ai/embodied-ai-soc-generator#19). A new `systolic_top` target (4x4, OS, WS and IS,
   `systars.targets.systolic_top_config`) and bench, `verif/cocotb/tests/systolic_top/`.
