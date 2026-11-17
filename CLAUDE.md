@@ -102,14 +102,19 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 
 - **L1 (`memory/stream_buffer.py`)**: `StreamBuffers` (one block per array row or column, one credit each; a buffer takes the next block in the clock its last element leaves) and `ResultBuffers` (one FIFO per column).
 
-- **Streamer (`controller/streamer.py`)**: It reads L2 (the scratchpad's two read ports) into L1 on schedule and never stalls: with `K >= R, C` tiles stream back to back, and a reduction's end waits for the OS north drain (`2R - 1` clocks between reductions). It reports each command's L2 release (`completed`, once its last block is in L1) and its result (`result`) separately. The command semantics (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE; `cmd_chain`; OS, WS and IS operand layouts) are in its module docstring.
+- **Streamer (`controller/streamer.py`)**: It reads L2 (its two read ports, one per bank group) into L1 on schedule and never stalls: with `K >= R, C` tiles stream back to back, and a reduction's end waits for the OS north drain (`2R - 1` clocks between reductions). It reports each command's L2 release (`completed`, once its last block is in L1) and its result (`result`) separately. The command semantics (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE; `cmd_chain`; OS, WS and IS operand layouts) are in its module docstring.
 
 - **Config (`config.py`)**: Central `SystolicConfig` dataclass with all hardware parameters. Pre-defined configs: `DEFAULT_CONFIG`, `LEAN_CONFIG`, `CHIP_CONFIG`, `LARGE_CONFIG`
 
 ### Implemented Components
 
 - PE, PEArray, SystolicArray (core compute hierarchy)
-- Scratchpad (two read ports) and the Combiner's storage (`memory/combiner.py`), today a
+- L2 (`memory/scratchpad.py`): two bank groups of 1R1W banks. A tiles go in the lower half
+  of its rows and B tiles in the upper half (`l2_group_rows`), in every dataflow, so the
+  Streamer's two reads of a clock never share a macro; the sticky `l2_error` flags any
+  access that would (`docs/architecture/l2.md`). Hand-written commands must place tiles the
+  same way. `l2_ideal` builds the idealized two-read-port model, kept as the reference.
+- The Combiner's storage (`memory/combiner.py`), today a
   Gemmini-style result memory (the accumulator until #37). The KPU's **Combiner**, between L1
   and L2, merges WS/IS partials and fuses bias, activation, scaling and block-format
   conversion as results are written to L2 (`docs/architecture/combiner.md`; port #38).

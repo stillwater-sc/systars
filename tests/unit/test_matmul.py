@@ -182,17 +182,17 @@ class TestCommandStream:
         assert [(c.dram_addr, c.row_bytes) for c in loads_b] == [(B_ADDR, 4), (B_ADDR + 4, 2)]
         assert [(c.dram_addr, c.row_bytes) for c in stores] == [(C_ADDR, 16), (C_ADDR + 16, 8)]
 
-    def test_scratchpad_addresses_use_low_bank_bits(self):
-        """Tile rows are consecutive local addresses (banks in the low bits), not bank << 16.
-
-        Two K tiles use the two A/B slot pairs: A slots at rows 0 and dim, B slots at
-        rows 2*dim and 3*dim."""
+    def test_a_tiles_in_the_a_group_and_b_tiles_in_the_b_group(self):
+        """Tile rows are consecutive L2 rows. Two K tiles use the two A/B slot pairs: A
+        slots at rows 0 and dim (L2's A bank group), B slots from the B group's first
+        row, ``l2_group_rows`` (#24)."""
         cfg = config()
+        g = cfg.l2_group_rows
         cmds = run_isa(Matmul(cfg), setup(4, 4, 8, 8, 4, 16, dataflow=WS), MatmulCmd.START).commands
         loads = [c.local_addr for c in cmds if c.type == CTRL_LOAD]
-        assert loads == [0, 8, 4, 12]
+        assert loads == [0, g, 4, g + 4]
         preloads = [c for c in cmds if c.opcode == ExecOpcode.PRELOAD and c.type == CTRL_EXEC]
-        assert [(c.rs1, c.k_dim) for c in preloads] == [(8, 4), (12, 4)]
+        assert [(c.rs1, c.k_dim) for c in preloads] == [(g, 4), (g + 4, 4)]
 
     @pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
     def test_credits_and_tokens(self, dataflow):
@@ -249,7 +249,7 @@ class TestCommandStream:
     def test_buffers_must_fit(self):
         with pytest.raises(ValueError, match="L2 slots"):
             Matmul(config(), buffers=3)
-        with pytest.raises(ValueError, match="scratchpad rows"):
+        with pytest.raises(ValueError, match="rows in each L2 bank group"):
             Matmul(config(grid=16, sp_capacity_kb=1, l2_slots=16, combiner_slots=8), buffers=8)
 
     def test_activation_reaches_store(self):
@@ -401,11 +401,13 @@ class MatmulOnTop(Elaboratable):
         return m
 
 
-def run_on_top(cfg, M, N, K, dataflow, *, seed, bias=None, accumulate=False):
+def run_on_top(cfg, M, N, K, dataflow, *, seed, bias=None, accumulate=False, stats=None):
     """Run Matmul on a real SystolicTop: A, B, C (and D) dense at odd addresses.
 
     Returns C read back from L3, the expected C, and whether every byte outside C
-    kept its value."""
+    kept its value. With ``stats`` (a dict), also counts L2's traffic per clock until
+    the instruction is done: ``cycles``, ``both_reads`` (clocks with two reads),
+    ``reads``, ``writes``, ``write_beside_read`` (a write in a clock with a read)."""
     beat = cfg.blockmover_buswidth // 8
     rng = np.random.default_rng(seed)
     A, B, D, C0, expected = operands(rng, M, N, K, bias=bias, accumulate=accumulate)
@@ -440,11 +442,29 @@ def run_on_top(cfg, M, N, K, dataflow, *, seed, bias=None, accumulate=False):
         done, error = await ctx.tick().sample(isa.done, isa.error).until(isa.done | isa.error)
         # Both are sticky: a schedule or protocol violation anywhere in the run stays set
         status.update(
-            done=done, error=error, l1=ctx.get(top.l1_error), sync=ctx.get(top.sync_error)
-        )
+            done=done, error=error, l1=ctx.get(top.l1_error), sync=ctx.get(top.sync_error),
+            l2=ctx.get(top.l2_error),
+        )  # fmt: skip
 
-    run_sim(dut, testbench, processes=[axi_memory(top, memory, beat)], max_cycles=200_000)
-    assert status == {"done": 1, "error": 0, "l1": 0, "sync": 0}
+    async def probe(ctx):
+        """L2's traffic, every clock until the instruction is done."""
+        sp = top.scratchpad
+        counts = {"cycles": 0, "both_reads": 0, "reads": 0, "writes": 0, "write_beside_read": 0}
+        async for _, _, a, b, w, done in ctx.tick().sample(
+            sp.read_req, sp.read_b_req, sp.write_req, isa.done
+        ):
+            if done:
+                break
+            counts["cycles"] += 1
+            counts["reads"] += a + b
+            counts["writes"] += w
+            counts["both_reads"] += a & b
+            counts["write_beside_read"] += w & (a | b)
+        if stats is not None:
+            stats.update(counts)
+
+    run_sim(dut, testbench, processes=[axi_memory(top, memory, beat), probe], max_cycles=200_000)
+    assert status == {"done": 1, "error": 0, "l1": 0, "sync": 0, "l2": 0}
     c_bytes = M * N * 4
     C = np.array(from_bytes(memory[c_addr : c_addr + c_bytes], 32, M * N)).reshape(M, N)
     untouched = (
@@ -488,3 +508,56 @@ def test_matmul_with_bias_drives_systolic_top(bias, accumulate, dataflow):
 def test_helpers_round_trip():
     data = to_unsigned_bytes([-1, 2, -128, 127], 8)
     assert from_bytes(data, 8, 4) == [-1, 2, -128, 127]
+
+
+@pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
+def test_banked_l2_sustains_the_stream_and_matches_the_ideal_model(dataflow):
+    """#24: a long, double-buffered GEMM on the banked L2.
+
+    - No bank conflict (``l2_error`` stays 0) while the Streamer reads and the
+      BlockMover writes L2. In OS the Streamer reads an A and a B row in the same
+      clocks, and the BlockMover's writes land beside the reads. (The stationary
+      mode's two-read clocks, PRELOAD beside a stream, are in
+      ``test_execute_controller.py``, ``TestOnTheBankedL2``: Matmul's WS and IS here
+      are bound by their loads.)
+    - C is bit-identical to the idealized two-read-port model, in the same number of
+      cycles, with the same L2 traffic: the banked L2 never stalls anything."""
+    M, N, K = 16, 16, 24
+    out = {}
+    for ideal in (False, True):
+        stats = {}
+        C, expected, untouched = run_on_top(
+            config(l2_ideal=ideal), M, N, K, dataflow, seed=24, stats=stats
+        )
+        np.testing.assert_array_equal(C, expected)
+        assert untouched
+        out[ideal] = (C, stats)
+    (c_banked, banked), (c_ideal, ideal) = out[False], out[True]
+    np.testing.assert_array_equal(c_banked, c_ideal)
+    assert banked == ideal
+    if dataflow == OS:
+        assert banked["both_reads"] > 0 and banked["write_beside_read"] > 0
+
+
+def test_a_and_b_in_one_group_raise_the_l2_error():
+    """The bank-conflict monitor at the top: an OS COMPUTE whose A and B tiles both
+    sit in L2's A group reads that group twice a clock, and ``l2_error`` is set."""
+    cfg = config()
+    top = SystolicTop(cfg)
+    rows = cfg.grid_rows
+    seen = {}
+
+    async def testbench(ctx):
+        fields = {"cmd_type": SystolicTop.CTRL_EXEC, "cmd_opcode": ExecOpcode.COMPUTE,
+                  "cmd_rs1": 0, "cmd_rs2": 2 * rows, "cmd_rd": 0, "cmd_k_dim": rows}  # fmt: skip
+        for field, value in fields.items():
+            ctx.set(getattr(top, field), value)
+        assert not ctx.get(top.l2_error)
+        ctx.set(top.cmd_valid, 1)
+        await ctx.tick().until(top.cmd_ready)
+        ctx.set(top.cmd_valid, 0)
+        await ctx.tick().repeat(4 * rows)
+        seen["l2"] = ctx.get(top.l2_error)
+
+    run_sim(top, testbench, max_cycles=2_000)
+    assert seen == {"l2": 1}

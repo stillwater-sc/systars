@@ -6,7 +6,7 @@ These tests verify the Scratchpad module behavior using cycle-accurate RTL simul
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge
+from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge
 
 
 async def reset_dut(dut):
@@ -81,62 +81,73 @@ async def test_scratchpad_write_read(dut):
     )
 
 
+# The ``scratchpad`` target: a 4 KiB L2 of 16-byte rows, 256 rows in two bank groups
+# of 128 (A below, B above), each two 64-row banks (memory/scratchpad.py, #24)
+GROUP_ROWS = 128
+
+
+async def write_rows(dut, rows):
+    dut.write_mask.value = 0xFFFF
+    for addr, value in rows.items():
+        dut.write_req.value = 1
+        dut.write_addr.value = addr
+        dut.write_data.value = value
+        await RisingEdge(dut.clk)
+    dut.write_req.value = 0
+
+
 @cocotb.test()
-async def test_scratchpad_bank_selection(dut):
-    """Test that different banks can be accessed independently."""
+async def test_scratchpad_two_reads_per_clock_from_the_two_groups(dut):
+    """An A-group row on port A and a B-group row on port B, every clock, walking the
+    banks: every row comes back, in order, and nothing conflicts."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
-
     await reset_dut(dut)
 
-    # Write different data to bank 0 and bank 1
-    # Address bit 0 selects bank (with 2 banks)
-    data_bank0 = 0x11111111
-    data_bank1 = 0x22222222
+    rows = {r: 0x1000_0000 + r for r in range(8)}
+    rows.update({GROUP_ROWS + r: 0x2000_0000 + r for r in range(8)})
+    await write_rows(dut, rows)
 
-    # Write to bank 0 (address with bit 0 = 0)
-    dut.write_req.value = 1
-    dut.write_addr.value = 0  # Bank 0, row 0
-    dut.write_data.value = data_bank0
-    dut.write_mask.value = 0xFFFF
-    dut.read_req.value = 0
-    await RisingEdge(dut.clk)
+    got_a, got_b = [], []
+    for i in range(8 + 3):
+        issue = i < 8
+        dut.read_req.value = int(issue)
+        dut.read_addr.value = i if issue else 0
+        dut.read_b_req.value = int(issue)
+        dut.read_b_addr.value = GROUP_ROWS + i if issue else 0
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        if dut.read_valid.value:
+            got_a.append(dut.read_data.value.to_unsigned() & 0xFFFF_FFFF)
+        if dut.read_b_valid.value:
+            got_b.append(dut.read_b_data.value.to_unsigned() & 0xFFFF_FFFF)
+        await NextTimeStep()
+    assert got_a == [0x1000_0000 + r for r in range(8)], got_a
+    assert got_b == [0x2000_0000 + r for r in range(8)], got_b
+    assert dut.error.value == 0, "no access the macros can't take"
 
-    # Write to bank 1 (address with bit 0 = 1)
-    dut.write_addr.value = 1  # Bank 1, row 0
-    dut.write_data.value = data_bank1
-    await RisingEdge(dut.clk)
 
-    dut.write_req.value = 0
-    await RisingEdge(dut.clk)
+@cocotb.test()
+async def test_scratchpad_flags_two_reads_in_one_group(dut):
+    """Both reads of a clock in the A group: the macros can't take it, and the
+    sticky ``error`` says so."""
+    clock = Clock(dut.clk, 10, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
 
-    # Read from bank 0
-    dut.read_req.value = 1
-    dut.read_addr.value = 0
-    await RisingEdge(dut.clk)
-    dut.read_req.value = 0
-
-    # Wait for latency
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    read_bank0 = dut.read_data.value.to_unsigned() & 0xFFFFFFFF
-    assert read_bank0 == data_bank0, f"Bank 0 data mismatch: got {hex(read_bank0)}"
-
-    # Read from bank 1
+    assert dut.error.value == 0
     dut.read_req.value = 1
     dut.read_addr.value = 1
+    dut.read_b_req.value = 1
+    dut.read_b_addr.value = 2
     await RisingEdge(dut.clk)
     dut.read_req.value = 0
-
-    # Wait for latency
+    dut.read_b_req.value = 0
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
-
-    read_bank1 = dut.read_data.value.to_unsigned() & 0xFFFFFFFF
-    assert read_bank1 == data_bank1, f"Bank 1 data mismatch: got {hex(read_bank1)}"
-
-    dut._log.info(f"Bank selection test passed: bank0={hex(read_bank0)}, bank1={hex(read_bank1)}")
+    assert dut.error.value == 1, "error is set"
+    await RisingEdge(dut.clk)
+    assert dut.error.value == 1, "and stays set"
 
 
 @cocotb.test()

@@ -47,7 +47,7 @@ from .controller.sync import SlotPool, Sync
 from .core.systolic_array import SystolicArray
 from .memory.combiner import Combiner
 from .memory.local_addr import LocalAddr
-from .memory.scratchpad import Scratchpad
+from .memory.scratchpad import make_l2
 
 
 class SystolicTop(Component):
@@ -88,6 +88,7 @@ class SystolicTop(Component):
             l2_free, l2_ready, combiner_free, combiner_ready: Slot states (OWNED = neither)
             sync_error: Sticky credit/token protocol error
             l1_error: Sticky L1/fabric schedule error
+            l2_error: Sticky L2 access its macros can't take (memory/scratchpad.py)
             interrupt: Interrupt request
     """
 
@@ -190,6 +191,8 @@ class SystolicTop(Component):
             "sync_error": Out(1),
             # Sticky L1/fabric schedule error (controller/streamer.py)
             "l1_error": Out(1),
+            # Sticky L2 bank conflict (memory/scratchpad.py)
+            "l2_error": Out(1),
         }
 
         super().__init__(ports)
@@ -209,7 +212,7 @@ class SystolicTop(Component):
         m.submodules.systolic_array = array = SystolicArray(cfg)
 
         # Local memories
-        m.submodules.scratchpad = scratchpad = Scratchpad(cfg)
+        m.submodules.scratchpad = scratchpad = make_l2(cfg)
         m.submodules.combiner = combiner = Combiner(cfg)
         self.scratchpad, self.combiner = scratchpad, combiner  # for testbenches (no hardware)
 
@@ -430,7 +433,7 @@ class SystolicTop(Component):
         # Streamer <-> Scratchpad <-> SystolicArray <-> Combiner
         # =====================================================================
 
-        # Streamer reads A and B on the scratchpad's two read ports
+        # Streamer reads A and B on L2's two read ports (A and B bank groups)
         # (no other block reads the scratchpad)
         m.d.comb += [
             scratchpad.read_req.eq(streamer.sp_a_read_req),
@@ -546,6 +549,7 @@ class SystolicTop(Component):
             self.streamer_result.eq(streamer.result),
             self.streamer_result_id.eq(streamer.result_id),
             self.l1_error.eq(streamer.error),
+            self.l2_error.eq(scratchpad.error),
         ]
 
         # Summary completion (priority: load > store > exec). Lossy when two

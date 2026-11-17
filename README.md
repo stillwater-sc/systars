@@ -116,7 +116,7 @@ print(v)
 | PE | ✅ Done | Processing Element with MAC |
 | PEArray | ✅ Done | Combinational PE grid (tile_rows × tile_cols) |
 | SystolicArray | ✅ Done | Pipelined PEArray grid (grid_rows × grid_cols) |
-| Scratchpad | ✅ Done | Multi-bank local memory |
+| Scratchpad (L2) | ✅ Done | Two bank groups of 1R1W banks, two reads per clock ([L2](docs/architecture/l2.md)) |
 | Combiner (storage) | ✅ Done | Result memory with ReLU/ReLU6 on readout (no scaling yet); the [Combiner](docs/architecture/combiner.md)'s function is #38 |
 | Streamer | ✅ Done | L2 → L1 → fabric: EXECUTE commands (CONFIG, PRELOAD, COMPUTE) |
 | BlockMoverIn | ✅ Done | The BlockMover's inbound leg, L3 → L2 (LOAD) |

@@ -110,10 +110,11 @@ class CommandIssuer:
 class TileBuffers:
     """Ring-ordered tile slots for an instruction on a ``dim x dim`` array.
 
-    L2 slot ``n`` (A) is scratchpad rows ``[n*dim, (n+1)*dim)``; L2 slot
-    ``buffers + n`` (B) is the ``n``-th tile after the A tiles; Combiner slot
-    ``n`` is Combiner rows ``[n*dim, (n+1)*dim)``. Scratchpad and Combiner
-    rows are linear in the local address (``LocalAddr``: the bank is the low bits).
+    L2 slot ``n`` (A) is L2 rows ``[n*dim, (n+1)*dim)``, in L2's A bank group (the
+    lower half); L2 slot ``buffers + n`` (B) is the ``n``-th tile of the B group,
+    from ``l2_group_rows`` (the upper half). So the Streamer's two reads of a clock
+    are always in different groups (``memory/scratchpad.py``). Combiner slot ``n`` is
+    Combiner rows ``[n*dim, (n+1)*dim)``. Rows are linear in the local address.
     """
 
     def __init__(self, config: SystolicConfig, dim: int, buffers: int, owner: str):
@@ -125,12 +126,14 @@ class TileBuffers:
                 f"{buffers} Combiner slots (config has {config.l2_slots} and "
                 f"{config.combiner_slots})"
             )
-        if config.sp_total_rows < 2 * buffers * dim or config.combiner_total_rows < buffers * dim:
+        if config.l2_group_rows < buffers * dim or config.combiner_total_rows < buffers * dim:
             raise ValueError(
-                f"{owner} with {buffers} buffers needs {2 * buffers * dim} scratchpad rows "
-                f"and {buffers * dim} Combiner rows"
+                f"{owner} with {buffers} buffers needs {buffers * dim} rows in each L2 bank "
+                f"group and {buffers * dim} Combiner rows (config has "
+                f"{config.l2_group_rows} and {config.combiner_total_rows})"
             )
         self.dim, self.buffers = dim, buffers
+        self.b_base = config.l2_group_rows
         self.combiner_flag = LocalAddr(config).make_combiner_addr(0, 0)
 
     def build(self, m: Module):
@@ -149,7 +152,7 @@ class TileBuffers:
             self.b_slot.eq(buffers + self.l2_n),
             self.combiner_slot.eq(self.combiner_n),
             self.a_addr.eq(self.l2_n * dim),
-            self.b_addr.eq((buffers + self.l2_n) * dim),
+            self.b_addr.eq(self.b_base + self.l2_n * dim),
             self.combiner_addr.eq(self.combiner_flag | (self.combiner_n * dim)),
         ]
         return self

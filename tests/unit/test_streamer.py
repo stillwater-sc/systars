@@ -1,7 +1,7 @@
 """
 Unit tests for Streamer (the Streamer), wired to a real SystolicArray.
-Python models serve the scratchpad's two read ports and record the Combiner
-writes. Commands are untracked (one at a time, ``cmd_sync`` 0) or tracked (pushed
+Python models serve the scratchpad's two read ports, or the real banked L2 does
+(``Harness(cfg, l2=True)``, #24), and the Combiner writes are recorded. Commands are untracked (one at a time, ``cmd_sync`` 0) or tracked (pushed
 back to back, ``cmd_sync`` != 0), where the Streamer overlaps them.
 """
 
@@ -17,6 +17,7 @@ from systars.controller.streamer import (
 )
 from systars.controller.sync import Sync
 from systars.core.systolic_array import SystolicArray
+from systars.memory.scratchpad import Scratchpad
 from systars.util.commands import ExecOpcode
 
 from ._sim import run_sim, skip_without_yosys
@@ -33,16 +34,30 @@ def config(**overrides):
 
 
 class Harness(Elaboratable):
-    def __init__(self, cfg):
+    """The Streamer and the fabric. With ``l2``, the real banked L2 serves the reads:
+    ``b_base`` is then its B group's first row, where stationary and B tiles go."""
+
+    def __init__(self, cfg, *, l2=False):
         self.cfg = cfg
         self.ctrl = Streamer(cfg)
         self.array = SystolicArray(cfg)
         self.rows, self.cols, self.kb = self.ctrl.rows, self.ctrl.cols, self.ctrl.block
+        self.l2 = Scratchpad(cfg) if l2 else None
+        self.b_base = cfg.l2_group_rows if l2 else 1000
 
     def elaborate(self, _platform):
         m = Module()
         m.submodules.ctrl = ctrl = self.ctrl
         m.submodules.array = array = self.array
+        if self.l2 is not None:
+            m.submodules.l2 = l2 = self.l2
+            for port, prefix in (("a", "read"), ("b", "read_b")):
+                m.d.comb += [
+                    getattr(l2, f"{prefix}_req").eq(getattr(ctrl, f"sp_{port}_read_req")),
+                    getattr(l2, f"{prefix}_addr").eq(getattr(ctrl, f"sp_{port}_read_addr")),
+                    getattr(ctrl, f"sp_{port}_read_data").eq(getattr(l2, f"{prefix}_data")),
+                    getattr(ctrl, f"sp_{port}_read_valid").eq(getattr(l2, f"{prefix}_valid")),
+                ]
         m.d.comb += [
             array.in_control_dataflow.eq(ctrl.array_in_dataflow),
             ctrl.array_out_collision.eq(array.out_collision),
@@ -85,16 +100,22 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect
     log = {
         "a_reads": [], "b_reads": [], "writes": [], "completed": [], "results": [],
         "dataflow": [], "streaming": [], "accepted": [], "error": 0,
+        "a_clocks": [], "b_clocks": [],
     }  # fmt: skip
 
     def port_model(port):
         async def process(ctx):
             pipe = [None] * SP_LATENCY
+            t = 0
             async for _clk, _, req, addr in ctx.tick().sample(
                 getattr(ctrl, f"sp_{port}_read_req"), getattr(ctrl, f"sp_{port}_read_addr")
             ):
+                t += 1
                 if req:
                     log[f"{port}_reads"].append(addr)
+                    log[f"{port}_clocks"].append(t)
+                if harness.l2 is not None:
+                    continue  # the real L2 answers
                 pipe = [addr if req else None, *pipe[:-1]]
                 out = pipe[-1]
                 ctx.set(getattr(ctrl, f"sp_{port}_read_valid"), out is not None)
@@ -131,6 +152,11 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect
 
     async def testbench(ctx):
         nonlocal producing
+        if harness.l2 is not None:  # the rows, straight into the banks
+            lay, n_banks = harness.l2.layout, harness.l2.layout.banks
+            for row, value in scratchpad.items():
+                group, bank, bank_row = lay.place(row)
+                ctx.set(harness.l2.banks[group * n_banks + bank].mem.data[bank_row], value)
         for n, (opcode, fields) in enumerate(commands):
             ctx.set(ctrl.cmd_opcode, opcode)
             ctx.set(ctrl.cmd_id, n + 1)
@@ -146,6 +172,8 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect
         while ctx.get(ctrl.busy) or len(log["completed"]) < len(commands):
             await ctx.tick()
         await ctx.tick().repeat(2)
+        if harness.l2 is not None:
+            log["l2_error"] = ctx.get(harness.l2.error)
 
     run_sim(
         harness,
@@ -447,7 +475,7 @@ class TestStationary:
         As = rng.integers(-128, 128, (n, 2 if reuse else 1, m, R))
         sp, cmds, expect = {}, [(ExecOpcode.CONFIG, {"rs1": mode})], {}
         for t in range(n):
-            w_base, a_base = 1000 + t * C, t * 2 * R
+            w_base, a_base = harness.b_base + t * C, t * 2 * R
             sp.update({w_base + j: pack(Ws[t][:, j], harness.cfg.weight_bits) for j in range(C)})
             cmds.append((ExecOpcode.PRELOAD, {"rs1": w_base, "k_dim": R}))
             for u, A in enumerate(As[t]):
@@ -485,6 +513,55 @@ class TestStationary:
         log = self.weight_tiles(harness, 3, harness.rows, seed=19, reuse=True)
         on = [t for t, v in enumerate(log["streaming"]) if v]
         assert on[-1] - on[0] + 1 == len(on)
+
+
+class TestOnTheBankedL2:
+    """#24: the Streamer's schedules on the real banked L2, A and stationary tiles in
+    the A group, B and weight tiles in the B group. Two reads a clock, no stall, no
+    bank conflict."""
+
+    def harness(self, **fields):
+        return Harness(config(**{"sp_capacity_kb": 1, "l2_macro_rows": 32, **fields}), l2=True)
+
+    def test_os_tiles_back_to_back(self):
+        harness = self.harness(grid_rows=4, grid_cols=4)
+        R = harness.rows
+        rng = np.random.default_rng(24)
+        sp, cmds, expected = {}, [], []
+        for n in range(3):
+            A = rng.integers(-128, 128, (R, 2 * harness.kb))
+            B = rng.integers(-128, 128, (2 * harness.kb, harness.cols))
+            tile_sp, tile_cmds = os_tiles(harness, A, B, n * 16, harness.b_base + n * 16)
+            sp.update(tile_sp)
+            cmds += [(ExecOpcode.COMPUTE, {**c, "rd": n * R}) for c in tile_cmds]
+            expected.append(A @ B)
+        log = run(harness, sp, cmds, tracked=True)
+        out = written(log)
+        np.testing.assert_array_equal([out[i] for i in range(3 * R)], np.vstack(expected))
+        on = [t for t, v in enumerate(log["streaming"]) if v]
+        assert len(on) == 3 * 2 * harness.kb and on[-1] - on[0] + 1 == len(on)
+        assert set(log["a_clocks"]) == set(log["b_clocks"])  # an A and a B row every clock
+        assert log["l2_error"] == 0
+
+    @pytest.mark.parametrize("mode", [WS, IS])
+    @pytest.mark.parametrize("occupancy", [1, 2, 3])
+    def test_new_weight_tiles_stream_back_to_back(self, mode, occupancy):
+        """PRELOAD reads the B group while COMPUTE streams the A group, every tile,
+        whatever the banks' occupancy: the streams have no bubbles."""
+        # l2_macro_rows=0: the banks come from the occupancy alone (3 -> 4 under a
+        # 4x4 array, so the wrap from one tile to the next never meets a busy bank)
+        harness = self.harness(
+            grid_rows=4, grid_cols=4, l2_bank_occupancy=occupancy, l2_macro_rows=0
+        )
+        m = max(harness.rows, harness.cols)
+        log = TestStationary().weight_tiles(harness, 4, m, seed=16, mode=mode)
+        on = [t for t, v in enumerate(log["streaming"]) if v]
+        assert len(on) == 4 * m and on[-1] - on[0] + 1 == len(on)
+        # The two ports read in the same clocks: one per group, never both in one
+        g = harness.cfg.l2_group_rows
+        assert all(a < g for a in log["a_reads"]) and all(b >= g for b in log["b_reads"])
+        assert set(log["a_clocks"]) & set(log["b_clocks"]), "PRELOAD never ran beside a stream"
+        assert log["l2_error"] == 0
 
 
 class TestWavefrontSchedule:

@@ -76,9 +76,10 @@ def _systolic_array(
 
 
 def _scratchpad() -> Component:
+    """A small L2 (4 KiB, read delay 2): two bank groups of two 64-row banks."""
     from .memory.scratchpad import Scratchpad
 
-    return Scratchpad(SystolicConfig(sp_banks=2, sp_capacity_kb=4, spad_read_delay=2))
+    return Scratchpad(SystolicConfig(sp_capacity_kb=4, spad_read_delay=2, l2_macro_rows=64))
 
 
 def _combiner() -> Component:
@@ -96,7 +97,6 @@ def systolic_top_config() -> SystolicConfig:
         grid_cols=4,
         dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY | Dataflow.A_STATIONARY,
         sp_capacity_kb=1,
-        sp_banks=4,
         combiner_capacity_kb=2,
         combiner_banks=2,
     )
@@ -124,7 +124,7 @@ TARGETS: dict[str, Target] = {
         Target(
             "systolic_array_4x4", "SystolicArray_4x4", _systolic_array(4, 4), "4x4 SystolicArray"
         ),
-        Target("scratchpad", "Scratchpad", _scratchpad, "2-bank 4 KiB scratchpad"),
+        Target("scratchpad", "Scratchpad", _scratchpad, "4 KiB L2: 2 groups x 2 banks"),
         Target("combiner", "Combiner", _combiner, "2-bank 4 KiB Combiner memory"),
         Target(
             "systolic_top",

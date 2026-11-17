@@ -37,6 +37,8 @@ from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
 ROWS = COLS = 4
 BEAT = systolic_top_config().blockmover_buswidth // 8  # 16 bytes: one Combiner row
+# The first row of L2's B bank group: B and stationary tiles go there, A tiles below (#17)
+B_BASE = systolic_top_config().l2_group_rows
 L3 = 1 << 16  # bytes of L3 the model serves
 DATAFLOWS = {"os": 0, "ws": 1, "is": 2}  # CONFIG rs1, CONFIG_DATAFLOW
 LOAD, STORE, EXEC = SystolicTop.CTRL_LOAD, SystolicTop.CTRL_STORE, SystolicTop.CTRL_EXEC
@@ -131,7 +133,7 @@ async def test_top_gemm_across_4kb(dut):
     rng = random.Random(46)
     A = [[rng.randint(-128, 127) for _ in range(ROWS)] for _ in range(ROWS)]
     B = [[rng.randint(-128, 127) for _ in range(COLS)] for _ in range(ROWS)]
-    sp_a, sp_b = 0, 64
+    sp_a, sp_b = 0, B_BASE
 
     # A column-major (L2 row k = A[:, k]), one beat per row, streamed across 0x1000
     a_addr = 0x1000 - 2 * BEAT
@@ -208,7 +210,7 @@ async def test_top_gemm(dut, dataflow):
         put(memory, a_addr + n * BEAT, pack(row, 8), BEAT)
     for n, row in enumerate(b_rows):
         put(memory, b_addr + n * BEAT, pack(row, 8), BEAT)
-    sp_a, sp_b = 0, 64
+    sp_a, sp_b = 0, B_BASE
 
     await run_command(dut, LOAD, BlockMoverOpcode.MEMCPY, 1, dram_addr=a_addr, local_addr=sp_a,
                       len=len(a_rows))  # fmt: skip
