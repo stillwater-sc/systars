@@ -70,7 +70,7 @@ This document provides a comprehensive plan for rewriting the SYSTARS systolic a
 │                              │                                 │
 │                              ▼                                 │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │                   Accumulator Memory                    │   │
+│  │                     Combiner Memory                     │   │
 │  │  ┌──────────────┐ ┌──────────────┐                      │   │
 │  │  │   Bank 0     │ │   Bank 1     │                      │   │
 │  │  │ + Adders     │ │ + Adders     │                      │   │
@@ -535,46 +535,35 @@ class SystolicArray(Elaboratable):
 
 ```python
 # memory/local_addr.py
-from amaranth import *
-from ..config import SYSTARSConfig
+from amaranth import Signal
 
-class LocalAddr(StructLayout):
+class LocalAddr:
     """
-    Unified address format for scratchpad and accumulator.
+    Unified address format for the scratchpad and the Combiner (32 bits).
 
-    Bit layout (32 bits):
     [31]    is_combiner    - 1 = Combiner, 0 = scratchpad
     [30]    accumulate     - 1 = accumulate mode
     [29]    read_full_row  - 1 = full width read
-    [28:0]  address        - Bank + row address
+    [28:0]  data           - bank + row address
     """
 
-    def __init__(self, config: SYSTARSConfig):
-        sp_addr_bits = (config.sp_banks * config.sp_bank_entries - 1).bit_length()
-        combiner_addr_bits = (config.combiner_banks * config.combiner_bank_entries - 1).bit_length()
-        self.addr_bits = max(sp_addr_bits, combiner_addr_bits)
+    IS_COMBINER_BIT = 31
+    ACCUMULATE_BIT = 30
+    READ_FULL_ROW_BIT = 29
+    DATA_BITS = 29
 
-        super().__init__({
-            "data": unsigned(self.addr_bits),
-            "garbage": unsigned(1),
-            "norm_cmd": unsigned(4),
-            "read_full_row": unsigned(1),
-            "accumulate": unsigned(1),
-            "is_combiner": unsigned(1),
-        })
+    @staticmethod
+    def is_combiner(addr: Signal) -> Signal:
+        return addr[LocalAddr.IS_COMBINER_BIT]
 
-    def sp_bank(self, addr):
-        """Extract scratchpad bank from address"""
-        # Implementation based on config
-        pass
-
-    def sp_row(self, addr):
-        """Extract scratchpad row within bank"""
-        pass
-
-    def is_garbage(self, addr):
-        """Check if address is garbage (invalid)"""
-        return addr.garbage & addr.is_combiner & addr.accumulate & addr.read_full_row
+    @staticmethod
+    def is_garbage(addr: Signal) -> Signal:
+        """All three flags set: an invalid (null) address"""
+        return (
+            addr[LocalAddr.IS_COMBINER_BIT]
+            & addr[LocalAddr.ACCUMULATE_BIT]
+            & addr[LocalAddr.READ_FULL_ROW_BIT]
+        )
 ```
 
 ### 2.2 Scratchpad Memory
@@ -658,15 +647,15 @@ class Scratchpad(Elaboratable):
         return m
 ```
 
-### 2.3 Accumulator with Scaling
+### 2.3 Combiner Storage with Scaling
 
 ```python
-# memory/accumulator.py
+# memory/combiner.py
 from amaranth import *
 
-class AccumulatorBank(Elaboratable):
+class CombinerBank(Elaboratable):
     """
-    Accumulator bank with:
+    Combiner storage bank with:
     - In-place accumulation (read-modify-write)
     - Output scaling
     - Activation functions
@@ -694,8 +683,8 @@ class AccumulatorBank(Elaboratable):
 1. **LocalAddr** encoding/decoding utilities
 2. **ScratchpadBank** with masked writes
 3. **Scratchpad** multi-bank with arbitration
-4. **AccumulatorBank** with scale/activation pipeline
-5. **Accumulator** multi-bank module
+4. **CombinerBank** with scale/activation pipeline
+5. **Combiner** multi-bank storage module
 6. **Integration tests** for memory system
 
 ---
@@ -773,9 +762,9 @@ class ExecuteController(Elaboratable):
         self.sp_read_data = Signal(config.sp_width)
         self.sp_read_valid = Signal()
 
-        # Accumulator interface
-        self.acc_read_req = Signal()
-        self.acc_write_req = Signal()
+        # Combiner interface
+        self.combiner_read_req = Signal()
+        self.combiner_write_req = Signal()
         # ...
 
         # Completion
@@ -814,7 +803,7 @@ class LoadController(Component):
 class StoreController(Component):
     """
     DMA store orchestration.
-    Handles MEMCPY commands for Accumulator -> DRAM transfers.
+    Handles MEMCPY commands for Combiner -> DRAM transfers.
     """
     # See src/systars/controller/store.py for implementation
 ```
@@ -931,7 +920,7 @@ class LoopMatmul(Elaboratable):
                 pass
 
             with m.State("STORE_C"):
-                # Generate MEMCPY for C tile (Accumulator -> DRAM)
+                # Generate MEMCPY for C tile (Combiner -> DRAM)
                 pass
 
             with m.State("NEXT"):
@@ -1001,7 +990,7 @@ class SYSTARS(Elaboratable):
         # Instantiate all submodules
         m.submodules.rob = rob = ReservationStation(self.config)
         m.submodules.scratchpad = sp = Scratchpad(self.config)
-        m.submodules.accumulator = acc = Accumulator(self.config)
+        m.submodules.combiner = combiner = Combiner(self.config)
         m.submodules.exe_ctrl = exe = ExecuteController(self.config)
         m.submodules.load_ctrl = ld = LoadController(self.config)
         m.submodules.store_ctrl = st = StoreController(self.config)
@@ -1130,7 +1119,7 @@ def compare_matmul_output():
 | 4 | LocalAddr | Low | None |
 | 5 | ScratchpadBank | Medium | None |
 | 6 | Scratchpad | Medium | ScratchpadBank |
-| 7 | AccumulatorBank | High | None |
+| 7 | CombinerBank | High | None |
 | 8 | Transposer | Medium | None |
 | 9 | SystolicArrayWithDelays | High | SystolicArray, Transposer |
 | 10 | ReservationStation | High | None |
