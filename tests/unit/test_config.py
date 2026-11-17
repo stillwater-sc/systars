@@ -30,13 +30,29 @@ def rtl_sources() -> list[Path]:
     )
 
 
+# The names the RTL holds a SystolicConfig under: ``config.x``, ``cfg.x``, and any
+# ``<expr>.config.x`` / ``<expr>.cfg.x`` (``self.config``, ``self.t.config``)
+CONFIG_NAMES = {"config", "cfg"}
+
+
+def is_config(node: ast.expr) -> bool:
+    return (isinstance(node, ast.Name) and node.id in CONFIG_NAMES) or (
+        isinstance(node, ast.Attribute) and node.attr in CONFIG_NAMES
+    )
+
+
 def attribute_reads(sources: list[str]) -> set[str]:
-    """The attribute names the sources read (``x.name``), from their syntax trees: a name in
-    a comment, a docstring or another string is no read."""
+    """The attribute names the sources read from a config (``config.name``), from their
+    syntax trees: a name in a comment, a docstring or another string is no read, and
+    neither is the same name on another object (``packet.input_bits``)."""
     names: set[str] = set()
     for text in sources:
         for node in ast.walk(ast.parse(text)):
-            if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.ctx, ast.Load)
+                and is_config(node.value)
+            ):
                 names.add(node.attr)
     return names
 
@@ -85,6 +101,16 @@ def test_a_field_named_only_in_a_comment_or_docstring_is_not_read():
         "depth = cfg.st_queue_length\n"
     )
     assert attribute_reads([src]) == {"st_queue_length"}
+
+
+def test_a_field_name_on_another_object_is_not_read():
+    src = (
+        "n = packet.input_bits\n"
+        "rows = self.dim\n"
+        "w = self.config.acc_bits\n"
+        "k = self.t.cfg.l2_slots\n"
+    )
+    assert attribute_reads([src]) == {"acc_bits", "l2_slots"}
 
 
 def test_a_field_read_through_a_property_is_read():
