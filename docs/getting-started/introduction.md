@@ -56,6 +56,12 @@ systolic/wavefront arrays built at Delft University of Technology: E.T.L. Omtzig
 repository is a modern reimplementation of that idea: describe the array in a high-level
 language, then generate, analyse and visualise the hardware.
 
+SYSTARS synthesised arrays from recurrence equations by space-time mapping, the method of
+Karp, Miller and Winograd, Moldovan, Quinton and S. Y. Kung. The three dataflows systars
+builds are three projections in that method. [Lineage](../architecture/lineage.md) explains
+it, credits Gemmini for the parts systars took from it, and shows the schedules beyond a
+systolic array that the KPU executes.
+
 ## The link to the KPU
 
 The Stillwater KPU is a Domain Flow Architecture: it executes systems of recurrence equations

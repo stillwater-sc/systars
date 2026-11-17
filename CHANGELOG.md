@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Lineage and credits** (2026-11-16). A new [Lineage](docs/architecture/lineage.md) page
+  sets out where systars's method comes from: Karp, Miller and Winograd's uniform recurrence
+  equations, and Moldovan's, Quinton's and S. Y. Kung's space-time mapping with a schedule
+  vector τ and a projection P. It shows OS, WS and IS as three projections of matrix multiply
+  under one linear schedule, and the hexagonal array as a fourth. The free schedule
+  `max(i, j) + k`, which no τ produces, is the kind of schedule the KPU executes and a
+  systolic array cannot (after branes-ai/domain_flow). The page credits Gemmini for the
+  execute command set, the local address encoding and the accumulator, and the module
+  docstrings of those three point to it. New `NOTICE` (Gemmini's BSD-3 notice) and
+  `CITATION.cff` (SYSTARS 1988 as the preferred citation, the foundations as references).
+  The README's Acknowledgments become "Lineage and credits", and the 2025 implementation
+  plan is marked historical.
 - **Onboarding documentation** (2026-11-16). New pages for engineers joining the project:
   [Introduction](docs/getting-started/introduction.md) (systolic arrays, the wavefront, the
   1988 SYSTARS lineage and the link to the KPU), [Your first week](docs/getting-started/onboarding.md)

@@ -13,6 +13,8 @@ Address Layout (32 bits):
 The lower bits of data contain:
     - Bank index (log2(num_banks) bits)
     - Row address within bank (remaining bits)
+
+The encoding follows Gemmini's ``local_addr_t`` (ucb-bar/gemmini; see NOTICE).
 """
 
 from amaranth import Signal

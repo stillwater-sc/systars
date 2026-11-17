@@ -1,5 +1,10 @@
 # SYSTARS Python RTL Rewrite Plan
 
+> **Historical.** This is the first plan, written when the project was `pygemmini`, a Python
+> generator modelled on Gemmini. systars has since followed the KPU's data movement
+> architecture; [Lineage](../architecture/lineage.md) says what it keeps from Gemmini and
+> where its method comes from.
+
 This document provides a comprehensive plan for rewriting the SYSTARS systolic array layout generator from C to a modern Python-based RTL framework.
 
 ---

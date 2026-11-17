@@ -40,8 +40,8 @@ BlockMover and the Streamer, and DMA belongs to the SoC's memory control layer.
 
 ## What systars has today
 
-The accumulator (`memory/accumulator.py`) comes from Gemmini, systars's origin. It is a
-separate result memory:
+The accumulator (`memory/accumulator.py`) follows Gemmini's, from the Gemmini-modelled first
+plan of systars ([lineage](lineage.md#gemmini)). It is a separate result memory:
 
 | The accumulator today | The Combiner |
 |---|---|
