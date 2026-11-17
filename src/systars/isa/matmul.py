@@ -13,10 +13,11 @@ L2 as the Streamer streams it:
 - OS: the A tile row-major (MEMCPY) and the B tile column-major (TRANSPOSE); one
   COMPUTE per K tile, the K tiles chained into one reduction held in the PEs
   (``cmd_chain``), so with K >= 2 * dim - 1 the tiles stream with no bubbles.
-- WS: the A tile column-major (TRANSPOSE) streams through the B tile, row-major
-  (MEMCPY), preloaded as the stationary tile; later K tiles accumulate.
-- IS: the same loads, but A (as Aᵀ) is the stationary tile and B streams; the
-  Combiner holds Cᵀ, and the STORE's corner turn writes C.
+- WS: the A tile column-major (TRANSPOSE) streams through the B tile, preloaded as
+  the stationary tile, also column-major (TRANSPOSE); later K tiles accumulate.
+- IS: A (as Aᵀ) is the stationary tile, column-major, so A row-major (MEMCPY), and
+  B streams, row-major (MEMCPY); the Combiner holds Cᵀ, and the STORE's corner
+  turn writes C.
 
 For each output tile (i, j): with a bias D, or accumulating onto the existing C,
 first LOAD them into the tile's Combiner slot (below); then, for each K tile k:
@@ -369,10 +370,11 @@ class Matmul(Component):
 
             # One LOAD per tile: the A tile (tile_M rows of tile_K), then the B tile
             # (tile_K rows of tile_N). The corner turns lay them out as the Streamer
-            # streams them: OS takes A row-major and B column-major, WS and IS A
-            # column-major and B row-major. OS tracks the pair with the A slot.
+            # streams them: OS takes A row-major and B column-major, WS both
+            # column-major, IS both row-major (the stationary tile, WS's B or IS's
+            # Aᵀ, is column-major). OS tracks the pair with the A slot.
             issuer.state(
-                "LOAD_A", "LOAD_B", CTRL_LOAD, Mux(is_os, BlockMoverOpcode.MEMCPY, BlockMoverOpcode.TRANSPOSE),
+                "LOAD_A", "LOAD_B", CTRL_LOAD, Mux(df == WS, BlockMoverOpcode.TRANSPOSE, BlockMoverOpcode.MEMCPY),
                 dram_addr=a_tile, local_addr=bufs.a_addr, len=tile_M,
                 stride=a_stride, row_bytes=tile_K * in_bytes,
                 sync=Mux(is_os, bufs.load(bufs.a_slot, last=False), bufs.load(bufs.a_slot)),
@@ -383,7 +385,7 @@ class Matmul(Component):
                 with m.Else():
                     m.next = "PRELOAD"
             issuer.state(
-                "LOAD_B", "LOAD_B_NEXT", CTRL_LOAD, Mux(is_os, BlockMoverOpcode.TRANSPOSE, BlockMoverOpcode.MEMCPY),
+                "LOAD_B", "LOAD_B_NEXT", CTRL_LOAD, Mux(df == IS, BlockMoverOpcode.MEMCPY, BlockMoverOpcode.TRANSPOSE),
                 dram_addr=b_tile, local_addr=bufs.b_addr, len=tile_K,
                 stride=b_stride, row_bytes=tile_N * in_bytes,
                 sync=Mux(is_os, bufs.load(bufs.a_slot, first=False), bufs.load(bufs.b_slot)),

@@ -23,11 +23,21 @@ the stationary mode, and differ only in the operands the ISA lays out):
   several commands (``cmd_chain``): C stays in the PEs between them. The command
   that ends a reduction sends the C tile north and writes its ``R`` rows to the
   Combiner at ``rd``.
-- **Stationary.** ``PRELOAD``: loads the stationary tile ``W`` (``R x C``,
-  row-major) from ``rs1``; ``k_dim`` rows (at most ``R``) are read and the rows
-  below them get zero. ``COMPUTE``: ``rs1`` is a streamed tile, column-major (``R``
-  rows, row ``k`` = ``X[m0:m0+M, k]``), ``M = k_dim`` (at most ``KB``); the ``M`` rows
-  of ``X @ W`` are written to the Combiner at ``rd``.
+- **Stationary.** ``PRELOAD``: loads the stationary tile ``W`` (``R x C``) from
+  ``rs1``, column-major (``C`` rows, row ``j`` = ``W[0:R, j]``, element 0 in the low
+  bits); its ``k_dim`` rows (at most ``R``) are used and the rows below them get
+  zero. ``COMPUTE``: ``rs1`` is a streamed tile, column-major (``R`` rows, row ``k`` =
+  ``X[m0:m0+M, k]``), ``M = k_dim`` (at most ``KB``); the ``M`` rows of ``X @ W`` are
+  written to the Combiner at ``rd``. The first ``COMPUTE`` after a ``PRELOAD``
+  swaps the new weights in (``first`` on its stream, see ``PE``); later ones reuse
+  them.
+
+**PRELOAD runs beside the streams.** In the stationary mode only PRELOAD reads the
+scratchpad's B port, so it has its own issue path there: it reads one L2 row (one
+column of ``W``) per clock into the column's L1 weight buffer, and the buffers
+stream their columns down the fabric's weight chains, bottom row first, staggered
+one clock per column. The weights land in the PEs' shadow registers while the
+previous stream still runs on the active ones.
 
 ``COMPUTE_ACCUMULATE`` adds the result rows to the Combiner instead of
 overwriting them. ``cmd_chain`` (OS): bit 0 = this command continues the previous
@@ -40,13 +50,20 @@ then runs to the end without stopping:
 
 - Streams: a command's reads are issued on consecutive clocks, and the next
   command's start ``I`` clocks later: ``I = max(K, R, C)`` (OS), ``max(M, R)``
-  (stationary), ``R`` (PRELOAD). With ``K >= R, C`` the next tile's blocks reach
-  L1 exactly in the clock the previous blocks' last elements leave, so the
-  streams have no bubbles between tiles.
+  (stationary). With ``K >= R, C`` the next tile's blocks reach L1 exactly in the
+  clock the previous blocks' last elements leave, so the streams have no bubbles
+  between tiles.
+- PRELOAD: its first read is issued in the clock it is accepted, and the next
+  PRELOAD starts ``max(R, C)`` clocks later (the weight buffers stream ``R``
+  elements). A stationary COMPUTE starts at least ``R - 1`` clocks after the last
+  PRELOAD, so every PE's shadow holds its weight when the swap reaches it. A
+  PRELOAD need not wait for the stream before it: its first weight reaches a PE
+  after that stream's swap has passed it. So with ``M >= max(R, C)``, tiles with
+  new weights (``PRELOAD``, ``COMPUTE``, ``PRELOAD``, ``COMPUTE``, ...) stream back
+  to back.
 - The OS drain: a command that ends a reduction starts only when its results
   will leave ``2R - 1`` clocks after the previous reduction's, so results never
   meet on a north link: with ``K >= 2R - 1`` that costs nothing.
-- ``PRELOAD`` starts only once the previous stationary stream has left the array.
 - ``CONFIG`` waits until the Streamer is idle (every result written).
 
 **Untracked commands** (``cmd_sync = 0``: a host issuing one command at a time)
@@ -54,11 +71,13 @@ run alone: one starts only when the Streamer is idle, nothing starts while it is
 in flight, and a command with results completes once they are in the Combiner,
 so a host can issue a STORE as soon as it sees the completion.
 
-**Events**, each in command order and at most one per clock:
+**Events**, at most one of each per clock, ``result`` in command order:
 
 - ``completed`` (``completed_id``, ``completed_sync``): the command is done with
-  L2: its last block is in L1 (or its last preload row in the fabric). ``SystolicTop``
-  returns the command's L2 credit on it.
+  L2: its last block is in L1. ``SystolicTop`` returns the command's L2 credit on it
+  (by slot, so order does not matter). A PRELOAD's completion is a clock late,
+  behind any other completion in the same clock, and may come before that of the
+  COMPUTE issued ahead of it (the two paths run side by side).
 - ``result`` (``result_id``, ``result_sync``): the command's results are in the
   Combiner. ``SystolicTop`` emits the Combiner tile's token on it.
 
@@ -85,7 +104,6 @@ from .sync import Sync
 # Read kinds, carried with each read to its return
 KIND_OS = 0
 KIND_STATIONARY = 1
-KIND_PRELOAD = 2
 
 CHAIN_CONTINUES = 0b01  # cmd_chain bit 0: continues the previous reduction
 CHAIN_MORE = 0b10  # cmd_chain bit 1: the reduction continues into the next command
@@ -107,6 +125,7 @@ class Streamer(Component):
     """
 
     def __init__(self, config: SystolicConfig):
+        """Build the ports for ``config``'s array and the L1 stream and result buffers."""
         self.config = config
         rows = config.grid_rows * config.tile_rows
         cols = config.grid_cols * config.tile_cols
@@ -117,6 +136,14 @@ class Streamer(Component):
             raise ValueError(
                 f"a {config.sp_width}-bit scratchpad row cannot hold {rows} A elements "
                 f"({config.input_bits}-bit) and {cols} B elements ({config.weight_bits}-bit)"
+            )
+        if (
+            config.dataflow & (Dataflow.A_STATIONARY | Dataflow.B_STATIONARY)
+            and rows * config.weight_bits > config.sp_width
+        ):
+            raise ValueError(
+                f"a {config.sp_width}-bit scratchpad row cannot hold a {rows}-row column "
+                f"of weights ({config.weight_bits}-bit)"
             )
         self.rows, self.cols = rows, cols
         self.block = min(
@@ -171,11 +198,11 @@ class Streamer(Component):
         for j in range(cols):
             ports[f"array_in_b_{j}"] = Out(signed(config.weight_bits))
             ports[f"array_in_w_{j}"] = Out(signed(config.weight_bits))
+            ports[f"array_in_w_valid_{j}"] = Out(1)
             ports[f"array_out_c_{j}"] = In(signed(config.acc_bits))
             ports[f"array_out_c_valid_{j}"] = In(1)
             ports[f"array_out_psum_{j}"] = In(signed(config.acc_bits))
             ports[f"array_out_psum_valid_{j}"] = In(1)
-        ports["array_in_shift"] = Out(1)
         ports["array_in_dataflow"] = Out(1)
         ports["array_out_collision"] = In(1)
         super().__init__(ports)
@@ -198,8 +225,16 @@ class Streamer(Component):
         if self.supports_os:
             m.submodules.b_buffers = b_buf = StreamBuffers(C, KB, cfg.weight_bits)
             m.submodules.north_results = north = ResultBuffers(C, C + 1, cfg.acc_bits)
+        w_buf = None
         if self.supports_stationary:
             m.submodules.south_results = south = ResultBuffers(C, C + 1, cfg.acc_bits)
+            # One per column: a column of W, streamed down the weight chain
+            m.submodules.w_buffers = w_buf = StreamBuffers(C, R, cfg.weight_bits)
+            for j in range(C):
+                m.d.comb += [
+                    getattr(self, f"array_in_w_{j}").eq(getattr(w_buf, f"out_{j}")),
+                    getattr(self, f"array_in_w_valid_{j}").eq(getattr(w_buf, f"out_valid_{j}")),
+                ]
 
         stationary = Signal(init=0 if self.supports_os else 1)
         m.d.comb += [self.cfg_dataflow.eq(stationary), self.array_in_dataflow.eq(stationary)]
@@ -261,15 +296,16 @@ class Streamer(Component):
         # Schedule countdowns (clocks until the fabric can take the next ...)
         stream_wait = Signal(range(2 * (KB + n_max) + 1))  # ... stream
         drain_wait = Signal(range(KB + 2 * R + 1))  # ... OS reduction end (north drain)
-        w_busy = Signal(range(R + KB + C + 1))  # ... PRELOAD (stationary stream gone)
-        for reg in (stream_wait, drain_wait, w_busy):
+        preload_wait = Signal(range(n_max + 1))  # ... PRELOAD (weight buffers free)
+        swap_wait = Signal(range(R + 1))  # ... stationary COMPUTE (weights in the shadows)
+        for reg in (stream_wait, drain_wait, preload_wait, swap_wait):
             with m.If(reg != 0):
                 m.d.sync += reg.eq(reg - 1)
 
         # Reads in flight, one entry per issue clock: what to do when they return
         meta_layout = [
             ("a_req", 1), ("b_req", 1), ("kind", 2), ("index", range(n_max)),
-            ("len", range(KB + 1)), ("first", 1), ("last", 1), ("zero", 1),
+            ("len", range(KB + 1)), ("first", 1), ("last", 1),
             ("final", 1), ("serial", 1), ("hold", 1), ("id", 8), ("sync", Sync.BITS),
         ]  # fmt: skip
         meta_width = sum(Signal(shape).shape().width for _, shape in meta_layout)
@@ -289,7 +325,10 @@ class Streamer(Component):
         res_layout = [("rd", 32), ("accumulate", 1), ("rows", range(KB + R + 1)),
                       ("hold", 1), ("id", 8), ("sync", Sync.BITS)]  # fmt: skip
         res_width = sum(Signal(shape).shape().width for _, shape in res_layout)
-        m.submodules.results = res_q = SyncFIFO(width=res_width, depth=4)
+        # Deep enough for every tile in flight: a command's last row is written about
+        # D + R + C + KB clocks after it starts, and streams start R or more apart
+        res_depth = 2 + -(-(cfg.spad_read_delay + 6 + R + C + KB) // R)
+        m.submodules.results = res_q = SyncFIFO(width=res_width, depth=max(4, res_depth))
 
         def unpack_res(word):
             out, offset = {}, 0
@@ -308,7 +347,6 @@ class Streamer(Component):
         blk_len = Signal(range(KB + 1))
         blk_first = Signal()
         blk_last = Signal()
-        w_rows = Signal(range(R + 1))
         cur_id = Signal(8)
         cur_sync = Signal(Sync.BITS)
         cur_serial = Signal()
@@ -325,29 +363,65 @@ class Streamer(Component):
         direct_id = Signal(8)
         direct_sync = Signal(Sync.BITS)
 
+        # The PRELOAD path (stationary mode): its own issue counter and reads on port B
+        p_left = Signal(range(C + 1))
+        p_n = Signal(range(C + 1))
+        p_base = Signal(32)
+        p_rows = Signal(range(R + 1))
+        p_id = Signal(8)
+        p_sync = Signal(Sync.BITS)
+        p_serial = Signal()
+        p_layout = [("index", range(C)), ("rows", range(R + 1)), ("final", 1),
+                    ("serial", 1), ("id", 8), ("sync", Sync.BITS)]  # fmt: skip
+        p_width = sum(Signal(shape).shape().width for _, shape in p_layout)
+        m.submodules.preload_reads = p_reads = SyncFIFO(
+            width=p_width, depth=cfg.spad_read_delay + 4
+        )
+
+        def unpack_preload(word):
+            """Split a ``preload_reads`` FIFO word back into its ``p_layout`` fields."""
+            out, offset = {}, 0
+            for name, shape in p_layout:
+                width = Signal(shape).shape().width
+                out[name] = word[offset : offset + width]
+                offset += width
+            return out
+
+        # A PRELOAD's completion, waiting a clock behind any other in the same one
+        p_done = Signal()
+        p_done_id = Signal(8)
+        p_done_sync = Signal(Sync.BITS)
+        p_done_serial = Signal()
+        swap_pending = Signal()  # a PRELOAD's weights wait for a COMPUTE to swap them in
+
         quiet = Signal()  # nothing issued and nothing in flight on the read side
-        m.d.comb += quiet.eq((left == 0) & ~reads.r_rdy & ~direct_pending)
+        m.d.comb += quiet.eq(
+            (left == 0) & ~reads.r_rdy & ~direct_pending & (p_left == 0) & ~p_reads.r_rdy & ~p_done
+        )
         l1_busy = a_buf.busy
-        if b_buf is not None:
-            l1_busy = l1_busy | b_buf.busy
+        for sb in (b_buf, w_buf):
+            if sb is not None:
+                l1_busy = l1_busy | sb.busy
         for rb in (north, south):
             if rb is not None:
                 l1_busy = l1_busy | rb.busy
         idle = Signal()
-        m.d.comb += idle.eq(quiet & (stream_wait == 0) & (w_busy == 0) & ~res_q.r_rdy & ~l1_busy)
+        m.d.comb += idle.eq(quiet & (stream_wait == 0) & ~res_q.r_rdy & ~l1_busy)
 
         ok = Signal()
         with m.If(serial | (untracked & ~idle)):
             m.d.comb += ok.eq(0)
         with m.Elif(direct):
             m.d.comb += ok.eq(Mux(is_config, idle, quiet))
+        with m.Elif(preload):
+            m.d.comb += ok.eq((preload_wait == 0) & (p_left == 0) & ~direct_pending)
         with m.Else():
             m.d.comb += ok.eq(
                 (stream_wait == 0)
                 & ~direct_pending
                 & (~produces | res_q.w_rdy)
                 & (~(os_stream & last) | (k_len >= drain_wait))
-                & (~preload | (w_busy == 0))
+                & (~st_stream | (swap_wait == 0))
             )
         m.d.comb += self.cmd_ready.eq(ok)
         accept = Signal()
@@ -372,15 +446,31 @@ class Streamer(Component):
                 with m.If(is_config):
                     if self.supports_os and self.supports_stationary:
                         m.d.sync += stationary.eq(self.cmd_rs1[0] | self.cmd_rs1[1])
+            with m.Elif(preload):
+                # The first read is issued now (below); the rest follow, one per clock
+                m.d.sync += [
+                    p_n.eq(1),
+                    p_left.eq(C - 1),
+                    p_base.eq(self.cmd_rs1),
+                    p_rows.eq(clamp(self.cmd_k_dim, R)),
+                    p_id.eq(self.cmd_id),
+                    p_sync.eq(self.cmd_sync),
+                    p_serial.eq(untracked),
+                    serial.eq(untracked),
+                    preload_wait.eq(n_max - 1),
+                    swap_wait.eq(max(R - 2, 0)),
+                    swap_pending.eq(1),
+                ]
             with m.Else():
                 m.d.sync += [
                     n.eq(0),
                     base_a.eq(self.cmd_rs1),
                     base_b.eq(self.cmd_rs2),
                     blk_len.eq(k_len),
-                    blk_first.eq(first),
+                    # Stationary: ``first`` is the swap marker, on the first COMPUTE
+                    # after a PRELOAD
+                    blk_first.eq(Mux(st_stream, swap_pending, first)),
                     blk_last.eq(last),
-                    w_rows.eq(clamp(self.cmd_k_dim, R)),
                     cur_id.eq(self.cmd_id),
                     cur_sync.eq(self.cmd_sync),
                     cur_serial.eq(untracked),
@@ -392,16 +482,14 @@ class Streamer(Component):
                     m.d.sync += [kind.eq(KIND_OS), left.eq(n_max), stream_wait.eq(interval - 1)]
                     with m.If(last):
                         m.d.sync += drain_wait.eq(k_len + 2 * R - 2)
-                with m.Elif(st_stream):
+                with m.Else():  # stationary
                     interval = Mux(k_len > R, k_len, R)
                     m.d.sync += [
                         kind.eq(KIND_STATIONARY),
                         left.eq(R),
                         stream_wait.eq(interval - 1),
-                        w_busy.eq(R + k_len + C - 2),
+                        swap_pending.eq(0),
                     ]
-                with m.Else():  # PRELOAD
-                    m.d.sync += [kind.eq(KIND_PRELOAD), left.eq(R), stream_wait.eq(R - 1)]
                 with m.If(produces):
                     m.d.comb += [
                         res_q.w_en.eq(1),
@@ -421,7 +509,6 @@ class Streamer(Component):
         with m.If(left != 0):
             a_req = Signal()
             b_req = Signal()
-            zero = Signal()
             with m.Switch(kind):
                 with m.Case(KIND_OS):
                     m.d.comb += [a_req.eq(n < R), b_req.eq(n < C)]
@@ -431,59 +518,123 @@ class Streamer(Component):
                     ]
                 with m.Case(KIND_STATIONARY):
                     m.d.comb += [a_req.eq(1), self.sp_a_read_addr.eq(base_a + n)]
-                with m.Case(KIND_PRELOAD):
-                    row = (R - 1) - n
-                    m.d.comb += [
-                        b_req.eq(1),
-                        zero.eq(row >= w_rows),
-                        self.sp_b_read_addr.eq(base_a + Mux(row >= w_rows, 0, row)),
-                    ]
+            if b_buf is not None:
+                m.d.comb += self.sp_b_read_req.eq(b_req)
             m.d.comb += [
                 self.sp_a_read_req.eq(a_req),
-                self.sp_b_read_req.eq(b_req),
                 reads.w_en.eq(1),
                 reads.w_data.eq(
                     Cat(
                         a_req, b_req, kind, n[: Signal(range(n_max)).shape().width],
-                        blk_len, blk_first, blk_last, zero, left == 1, cur_serial, cur_hold,
+                        blk_len, blk_first, blk_last, left == 1, cur_serial, cur_hold,
                         cur_id, cur_sync,
                     )
                 ),
             ]  # fmt: skip
             # A command accepted in this clock (the last slot of the previous one)
             # restarts the count instead
-            with m.If(~(accept & ~direct)):
+            with m.If(~(accept & ~direct & ~preload)):
                 m.d.sync += [n.eq(n + 1), left.eq(left - 1)]
 
-        # A read returns: load L1 (or the stationary chain)
+        # Issue one PRELOAD read (port B): the first in the clock it is accepted
+        p_issue = Signal()
+        p_index = Signal(range(C + 1))
+        p_addr = Signal(32)
+        p_issue_rows = Signal(range(R + 1))
+        p_issue_id = Signal(8)
+        p_issue_sync = Signal(Sync.BITS)
+        p_issue_serial = Signal()
+        with m.If(accept & preload):
+            m.d.comb += [
+                p_issue.eq(1),
+                p_index.eq(0),
+                p_addr.eq(self.cmd_rs1),
+                p_issue_rows.eq(clamp(self.cmd_k_dim, R)),
+                p_issue_id.eq(self.cmd_id),
+                p_issue_sync.eq(self.cmd_sync),
+                p_issue_serial.eq(untracked),
+            ]
+        with m.Elif(p_left != 0):
+            m.d.comb += [
+                p_issue.eq(1),
+                p_index.eq(p_n),
+                p_addr.eq(p_base + p_n),
+                p_issue_rows.eq(p_rows),
+                p_issue_id.eq(p_id),
+                p_issue_sync.eq(p_sync),
+                p_issue_serial.eq(p_serial),
+            ]
+            m.d.sync += [p_n.eq(p_n + 1), p_left.eq(p_left - 1)]
+        if w_buf is not None:
+            with m.If(p_issue):
+                m.d.comb += [
+                    self.sp_b_read_req.eq(1),
+                    self.sp_b_read_addr.eq(p_addr),
+                    p_reads.w_en.eq(1),
+                    p_reads.w_data.eq(
+                        Cat(
+                            p_index[: Signal(range(C)).shape().width], p_issue_rows,
+                            p_index == C - 1, p_issue_serial, p_issue_id, p_issue_sync,
+                        )
+                    ),
+                ]  # fmt: skip
+
+        # A read returns: load L1
         ret = unpack_meta(reads.r_data)
         returned = Signal()
-        m.d.comb += returned.eq(reads.r_rdy & (self.sp_a_read_valid | self.sp_b_read_valid))
+        # (In the stationary mode port B returns PRELOAD reads, on their own queue)
+        m.d.comb += returned.eq(
+            reads.r_rdy & (self.sp_a_read_valid | (~stationary & self.sp_b_read_valid))
+        )
         m.d.comb += reads.r_en.eq(returned)
-        with m.If(returned), m.Switch(ret["kind"]):
-            with m.Case(KIND_OS, KIND_STATIONARY):
+        with m.If(returned):  # a stream block: into its L1 buffers
+            m.d.comb += [
+                a_buf.load_valid.eq(ret["a_req"]),
+                a_buf.load_index.eq(ret["index"]),
+                a_buf.load_data.eq(self.sp_a_read_data),
+                a_buf.load_len.eq(ret["len"]),
+                a_buf.load_first.eq(ret["first"]),
+                a_buf.load_last.eq(ret["last"] & (ret["kind"] == KIND_OS)),
+            ]
+            if b_buf is not None:
                 m.d.comb += [
-                    a_buf.load_valid.eq(ret["a_req"]),
-                    a_buf.load_index.eq(ret["index"]),
-                    a_buf.load_data.eq(self.sp_a_read_data),
-                    a_buf.load_len.eq(ret["len"]),
-                    a_buf.load_first.eq(ret["first"] & (ret["kind"] == KIND_OS)),
-                    a_buf.load_last.eq(ret["last"] & (ret["kind"] == KIND_OS)),
+                    b_buf.load_valid.eq(ret["b_req"]),
+                    b_buf.load_index.eq(ret["index"]),
+                    b_buf.load_data.eq(self.sp_b_read_data),
+                    b_buf.load_len.eq(ret["len"]),
                 ]
-                if b_buf is not None:
-                    m.d.comb += [
-                        b_buf.load_valid.eq(ret["b_req"]),
-                        b_buf.load_index.eq(ret["index"]),
-                        b_buf.load_data.eq(self.sp_b_read_data),
-                        b_buf.load_len.eq(ret["len"]),
-                    ]
-            with m.Case(KIND_PRELOAD):
-                m.d.comb += self.array_in_shift.eq(1)
-                for j in range(C):
-                    lane = self.sp_b_read_data[j * cfg.weight_bits : (j + 1) * cfg.weight_bits]
-                    m.d.comb += getattr(self, f"array_in_w_{j}").eq(
-                        Mux(ret["zero"], 0, lane.as_signed())
+
+        # A PRELOAD read returns: one column of W into its weight buffer, bottom row
+        # first (the chain fills from the bottom), rows from ``k_dim`` on zero
+        p_ret = unpack_preload(p_reads.r_data)
+        p_returned = Signal()
+        m.d.comb += p_returned.eq(p_reads.r_rdy & stationary & self.sp_b_read_valid)
+        m.d.comb += p_reads.r_en.eq(p_returned)
+        if w_buf is not None:
+            wb = cfg.weight_bits
+            column = Cat(
+                *[
+                    Mux(
+                        R - 1 - e < p_ret["rows"],
+                        self.sp_b_read_data[(R - 1 - e) * wb : (R - e) * wb],
+                        0,
                     )
+                    for e in range(R)
+                ]
+            )
+            m.d.comb += [
+                w_buf.load_valid.eq(p_returned),
+                w_buf.load_index.eq(p_ret["index"]),
+                w_buf.load_data.eq(column),
+                w_buf.load_len.eq(R),
+            ]
+        with m.If(p_returned & p_ret["final"]):
+            m.d.sync += [
+                p_done.eq(1),
+                p_done_id.eq(p_ret["id"]),
+                p_done_sync.eq(p_ret["sync"]),
+                p_done_serial.eq(p_ret["serial"]),
+            ]
 
         # Completion: a command's last read returned (an untracked command with
         # results completes with them instead), or a direct command
@@ -504,6 +655,16 @@ class Streamer(Component):
                 self.completed_sync.eq(tile["sync"]),
             ]
             m.d.sync += serial.eq(0)
+        with m.Elif(p_done):
+            m.d.comb += [
+                self.completed.eq(1),
+                self.completed_id.eq(p_done_id),
+                self.completed_sync.eq(p_done_sync),
+            ]
+            with m.If(~(p_returned & p_ret["final"])):
+                m.d.sync += p_done.eq(0)
+            with m.If(p_done_serial):
+                m.d.sync += serial.eq(0)
         with m.Elif(direct_pending):
             m.d.comb += [
                 self.completed.eq(1),
@@ -552,7 +713,7 @@ class Streamer(Component):
         with m.If(self.array_out_collision):
             m.d.sync += error.eq(1)
         any_error = error | a_buf.error
-        for unit in (b_buf, north, south):
+        for unit in (b_buf, w_buf, north, south):
             if unit is not None:
                 any_error = any_error | unit.error
         m.d.comb += [

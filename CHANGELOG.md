@@ -244,6 +244,33 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **Nearest-neighbour weight loading, overlapped with compute** (#34, 2026-11-17; port of
+  branes-ai/embodied-ai-soc-generator#55, kpugen PR #56). The fabric no longer broadcasts a
+  weight-shift enable. A weight travels down its column's chain with a `w_valid` marker, one
+  PE per clock. Each PE takes it into a `shadow` register and passes the old one south. A
+  stationary stream's first element (`first`) swaps the shadow in, so the weights change
+  with the wavefront.
+  - **PRELOAD beside the stream.** PRELOAD goes through new north-edge L1 weight buffers,
+    with its own issue path on the scratchpad's B port, running beside the stream on port A.
+    It doesn't wait for the previous stream, so WS and IS tiles with new weights stream back
+    to back when `M >= max(R, C)`. Before, every weight change cost about `2R + C - 1` idle
+    clocks (5 on 2x2, 11 on 4x4).
+  - **Breaking: PRELOAD's L2 tile is column-major** (`C` rows, row `j` = `W[:, j]`).
+    Matmul's WS now loads B with `TRANSPOSE` and IS loads A with `MEMCPY`. A host that lays
+    out its own stationary tile must do the same.
+  - **Static and registered signals.** `in_control_dataflow` is documented static
+    configuration, registered once per PEArray. `out_collision` is a registered OR tree, so
+    the sticky error is set one or two clocks late.
+  - **Events.** A PRELOAD's `completed` event may come before that of the COMPUTE ahead of
+    it, so `completed` is no longer in command order. The L2 credit is returned by the slot
+    `cmd_sync` names, and `result` events stay in command order
+    (`docs/isa-instructions.md`).
+  - **New structural test.** `tests/unit/test_fabric_structure.py` checks on the elaborated
+    PEArray and SystolicArray that every cell input comes from its neighbour or its own edge.
+  - **Wavefront views.** They draw the weights coming down the chains (`wN`), and the WS
+    animations are regenerated. systars's progression (`wavefront.py`) was ported by hand,
+    since kpugen has the earlier, single-tile recorder.
+
 - **The control processes carry the KPU model's names** (#43, 2026-11-17; port of
   branes-ai/embodied-ai-soc-generator#97, kpugen PR #99). `LoadController`, `StoreController`
   and `ExecuteController` become `BlockMoverIn` (the BlockMover's L3 → L2 leg, a LOAD),

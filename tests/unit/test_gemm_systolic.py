@@ -12,8 +12,10 @@ block, ``controller/streamer.py``) and moves it with MEMCPY:
 
 - OS: per K tile, A row-major (row ``i`` = ``A[i, k0:k0+KB]``) and B column-major
   (row ``j`` = ``B[k0:k0+KB, j]``); the K tiles are one reduction (``cmd_chain``).
-- WS: B row-major (PRELOAD); per M tile, A column-major (row ``k`` = ``A[m0:, k]``).
-- IS: A column-major (PRELOAD: the stationary tile is Aᵀ); B row-major streamed
+- WS: B column-major (PRELOAD, row ``j`` = ``B[:, j]``); per M tile, A column-major
+  (row ``k`` = ``A[m0:, k]``).
+- IS: A row-major (PRELOAD: the stationary tile is Aᵀ, column-major, so row ``i`` =
+  ``A[i, :]``); B row-major streamed
   (row ``k`` = ``B[k, n0:]``); the Combiner holds Cᵀ and STORE TRANSPOSE writes C.
 """
 
@@ -169,7 +171,7 @@ def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1, poison=None):
             )
         preload, out_rows = None, R
     elif mode == WS:
-        b_rows = [list(row) for row in B]
+        b_rows = [list(B[:, j]) for j in range(B.shape[1])]  # the stationary tile, by column
         a_rows = []
         m_tiles = tiles(A.shape[0], KB)
         for m0, mn in m_tiles:
@@ -177,8 +179,8 @@ def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1, poison=None):
         for t, (m0, mn) in enumerate(m_tiles):
             exec_cmds.append({"rs1": A_SP + t * R, "rd": m0, "k_dim": mn})
         preload, out_rows = weight_rows or B.shape[0], A.shape[0]
-    else:  # IS: the stationary tile is Aᵀ (row k = A[:, k]); B rows stream
-        b_rows = [list(A[:, k]) for k in range(A.shape[1])]
+    else:  # IS: the stationary tile is Aᵀ, by column (row i = A[i, :]); B rows stream
+        b_rows = [list(A[i]) for i in range(A.shape[0])]
         a_rows = []
         n_tiles = tiles(B.shape[1], KB)
         for n0, nn in n_tiles:

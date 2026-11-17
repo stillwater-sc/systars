@@ -73,18 +73,19 @@ def os_schedule(A, B, *, start: int = 0, first: bool = True, last: bool = True) 
 
 
 def stationary_schedule(A, W, *, start: int = 0) -> dict:
-    """Shift W into the stationary chain (last row first), then stream A's rows."""
+    """Stream W down the weight chains (column ``j`` from clock ``start + j``, bottom
+    row first), then stream A's rows, the first element marked ``first`` (the swap)."""
     sched: dict = {}
     rows, cols = len(W), len(W[0])
-    for n in range(rows):
-        at = sched.setdefault(start + n, {})
-        at["in_shift"] = 1
-        at.update({f"in_w_{j}": W[rows - 1 - n][j] for j in range(cols)})
+    for j in range(cols):
+        for e in range(rows):
+            at = sched.setdefault(start + j + e, {})
+            at.update({f"in_w_{j}": W[rows - 1 - e][j], f"in_w_valid_{j}": 1})
     s = start + rows
     for m, row in enumerate(A):
         for r in range(rows):
             at = sched.setdefault(s + r + m, {})
-            at.update({f"in_a_{r}": row[r], f"in_valid_{r}": 1})
+            at.update({f"in_a_{r}": row[r], f"in_valid_{r}": 1, f"in_first_{r}": m == 0})
     return sched
 
 

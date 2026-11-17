@@ -14,13 +14,22 @@ def pe():
 
 
 def test_ports(pe):
+    """Every PE port has the width its config gives it."""
     cfg = pe.config
     assert pe.in_a.shape().width == cfg.input_bits
     assert pe.in_b.shape().width == cfg.weight_bits
     assert pe.in_w.shape().width == cfg.weight_bits
     for name in ("in_psum", "in_c", "out_psum", "out_c"):
         assert getattr(pe, name).shape().width == cfg.acc_bits
-    for name in ("in_valid", "in_first", "in_last", "in_c_valid", "in_shift", "out_collision"):
+    for name in (
+        "in_valid",
+        "in_first",
+        "in_last",
+        "in_c_valid",
+        "in_w_valid",
+        "out_w_valid",
+        "out_collision",
+    ):
         assert getattr(pe, name).shape().width == 1
 
 
@@ -113,20 +122,28 @@ def test_output_stationary_collision(pe):
     run_sim(pe, tb)
 
 
+async def _load_shadow(ctx, pe, value):
+    """One weight down the chain: it is in the shadow two clocks later."""
+    ctx.set(pe.in_w, value)
+    ctx.set(pe.in_w_valid, 1)
+    await ctx.tick()
+    ctx.set(pe.in_w_valid, 0)
+    ctx.set(pe.in_w, 0)
+    await ctx.tick()
+
+
 def test_stationary(pe):
-    """The chain loads w; psum_out = psum_in + a * w while a is valid."""
+    """The chain loads the shadow; ``first`` swaps it in; psum_out = psum_in + a * w."""
 
     async def tb(ctx):
         ctx.set(pe.in_control_dataflow, STATIONARY)
-        ctx.set(pe.in_w, -3)
-        ctx.set(pe.in_shift, 1)
-        await ctx.tick()
-        ctx.set(pe.in_shift, 0)
+        await _load_shadow(ctx, pe, -3)
         assert ctx.get(pe.out_w) == -3
-        for a, psum, valid in [(7, 0, 1), (-128, 1000, 1), (127, -5, 0)]:
+        for n, (a, psum, valid) in enumerate([(7, 0, 1), (-128, 1000, 1), (127, -5, 0)]):
             ctx.set(pe.in_a, a)
             ctx.set(pe.in_psum, psum)
             ctx.set(pe.in_valid, valid)
+            ctx.set(pe.in_first, n == 0)  # the swap
             ctx.set(pe.in_b, 99)  # ignored
             await ctx.tick()
             assert ctx.get(pe.out_psum) == psum + (a * -3 if valid else 0)
@@ -136,15 +153,45 @@ def test_stationary(pe):
     run_sim(pe, tb)
 
 
-def test_shift_holds_w_otherwise(pe):
+def test_weights_load_behind_the_active_one(pe):
+    """A new weight in the shadow leaves the active one in use until the next swap."""
+
     async def tb(ctx):
-        ctx.set(pe.in_w, 5)
-        ctx.set(pe.in_shift, 1)
-        await ctx.tick()
-        ctx.set(pe.in_shift, 0)
+        ctx.set(pe.in_control_dataflow, STATIONARY)
+
+        async def product(a, *, swap=False):
+            ctx.set(pe.in_a, a)
+            ctx.set(pe.in_valid, 1)
+            ctx.set(pe.in_first, swap)
+            await ctx.tick()
+            ctx.set(pe.in_valid, 0)
+            ctx.set(pe.in_first, 0)
+            return ctx.get(pe.out_psum)
+
+        await _load_shadow(ctx, pe, 5)
+        assert await product(2, swap=True) == 10
+        await _load_shadow(ctx, pe, -4)
+        assert await product(3) == 15  # still 5
+        assert await product(3, swap=True) == -12
+        assert await product(1) == -4
+
+    run_sim(pe, tb)
+
+
+def test_the_chain_passes_the_old_shadow_on(pe):
+    """An arriving weight pushes the shadow's old value south, one clock later."""
+
+    async def tb(ctx):
+        await _load_shadow(ctx, pe, 5)
         ctx.set(pe.in_w, 6)
+        ctx.set(pe.in_w_valid, 1)
         await ctx.tick()
-        assert ctx.get(pe.out_w) == 5
+        ctx.set(pe.in_w_valid, 0)
+        assert (ctx.get(pe.out_w), ctx.get(pe.out_w_valid)) == (5, 1)  # the old one, south
+        await ctx.tick()
+        assert (ctx.get(pe.out_w), ctx.get(pe.out_w_valid)) == (6, 0)
+        await ctx.tick()
+        assert ctx.get(pe.out_w) == 6  # held without w_valid
 
     run_sim(pe, tb)
 

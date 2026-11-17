@@ -81,8 +81,12 @@ several commands (`cmd_chain`), with C held in the PEs between them. On `last`, 
 `c + a * b` into the `c_up` register of the PE to its north. PE(i, j)'s result leaves the north
 edge in clock `s + K + j + 2i`, so each column delivers one result every other clock.
 
-**Stationary.** The stationary register `w` is loaded through a registered chain down each
-column while `in_shift` is high; only the shift enable is broadcast. Each PE computes
+**Stationary.** Each PE has an active weight `w` and a `shadow`. A weight travels down its
+column's registered chain with a `w_valid` marker, one PE per clock; each PE takes it into its
+shadow and passes the old shadow south, so a column streamed bottom row first leaves every PE
+with its own weight. A stream's first element (`first`) swaps the shadow in, so the weights
+change with the wavefront. Nothing is broadcast but the static `in_control_dataflow`
+(`tests/unit/test_fabric_structure.py` checks it). Each PE computes
 `out_psum = in_psum + a * w`, and the column sum leaves the south edge as a finished result.
 
 ### Schedule rules
@@ -90,13 +94,16 @@ column while `in_shift` is high; only the shift enable is broadcast. Each PE com
 These come from the Streamer's docstring and are checked by the tests:
 
 - The next command starts `I` clocks after the previous one: `I = max(K, R, C)` for OS,
-  `max(M, R)` for stationary and `R` for `PRELOAD`. With `K >= R, C`, the next tile's blocks reach L1 as the previous ones
+  `max(M, R)` for stationary. A `PRELOAD` has its own issue path on the scratchpad's B port,
+  beside the stream on port A, and the next `PRELOAD` starts `max(R, C)` clocks later. With `K >= R, C`, the next tile's blocks reach L1 as the previous ones
   finish. In OS, back-to-back reductions are also bound by the drain rule below.
 - **The OS drain rule.** A command that ends a reduction starts so its results leave `2R - 1`
   clocks after the previous reduction's, so two results never collide on a north link. With `K >= 2R - 1` (chained K tiles count) the rule costs nothing; on a 4x4 array
   with `K = 4`, consecutive single-command reductions start 7 clocks apart instead of 4.
-- `PRELOAD` waits until the previous stationary stream has left the array; `CONFIG` waits
-  until the Streamer is idle.
+- `PRELOAD` does not wait for the stream ahead of it: its weights reach each PE's shadow
+  after that stream's swap has passed. A stationary `COMPUTE` starts at least `R - 1` clocks
+  after the last `PRELOAD`, so with `M >= max(R, C)` tiles with new weights stream back to
+  back. `CONFIG` waits until the Streamer is idle.
 
 ## Current limits
 

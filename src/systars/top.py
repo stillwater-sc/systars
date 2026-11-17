@@ -467,7 +467,6 @@ class SystolicTop(Component):
         # =====================================================================
 
         m.d.comb += [
-            array.in_shift.eq(streamer.array_in_shift),
             array.in_control_dataflow.eq(streamer.array_in_dataflow),
             streamer.array_out_collision.eq(array.out_collision),
         ]
@@ -480,6 +479,7 @@ class SystolicTop(Component):
             m.d.comb += [
                 getattr(array, f"in_b_{j}").eq(getattr(streamer, f"array_in_b_{j}")),
                 getattr(array, f"in_w_{j}").eq(getattr(streamer, f"array_in_w_{j}")),
+                getattr(array, f"in_w_valid_{j}").eq(getattr(streamer, f"array_in_w_valid_{j}")),
             ]
             for name in ("c", "c_valid", "psum", "psum_valid"):
                 m.d.comb += getattr(streamer, f"array_out_{name}_{j}").eq(

@@ -349,8 +349,8 @@ def gemm_any_layout(
 ):  # fmt: skip
     """WS GEMM (one tile) through SystolicTop, operands and C at unaligned, strided addresses.
 
-    A is row-major in L3; the LOAD's corner turn lays it column-major in L2, as the
-    Streamer streams it. C is written with row_bytes = N results, so the bytes past
+    A and B are row-major in L3; the LOADs' corner turns lay them column-major in L2, as
+    the Streamer streams A and preloads B. C is written with row_bytes = N results, so the bytes past
     each row keep their canary."""
     dim = cfg.grid_rows * cfg.tile_rows
     beat = cfg.blockmover_buswidth // 8
@@ -377,7 +377,8 @@ def gemm_any_layout(
         await host.run(SystolicTop.CTRL_LOAD, TRANSPOSE, dram_addr=a_addr, local_addr=0, len=M)
         ctx.set(dut.cmd_stride, b_stride)
         ctx.set(dut.cmd_row_bytes, N)
-        await host.load(b_addr, sp_b, K)
+        # K rows of N -> N L2 rows of K: B's columns (the stationary tile)
+        await host.run(SystolicTop.CTRL_LOAD, TRANSPOSE, dram_addr=b_addr, local_addr=sp_b, len=K)
         await host.execute(ExecOpcode.CONFIG, rs1=WS)
         await host.execute(ExecOpcode.PRELOAD, rs1=sp_b, k_dim=K)
         await host.execute(ExecOpcode.COMPUTE, rs1=0, rd=0, k_dim=M)
@@ -702,7 +703,7 @@ class TestStoreTranspose:
 @pytest.mark.parametrize("dim", [4, 8])
 def test_round_trip_through_both_corner_turns(dim):
     """Through SystolicTop: LOAD TRANSPOSE of row-major A puts A's columns in L2 (the
-    layout WS streams), a WS GEMM computes A @ B, and STORE TRANSPOSE writes Cᵀ, all
+    layout WS streams; B's the same, the layout it preloads), a WS GEMM computes A @ B, and STORE TRANSPOSE writes Cᵀ, all
     at unaligned addresses."""
     cfg = config(dim)
     beat = cfg.blockmover_buswidth // 8
@@ -727,7 +728,8 @@ def test_round_trip_through_both_corner_turns(dim):
         await host.run(SystolicTop.CTRL_LOAD, TRANSPOSE, dram_addr=a_addr, local_addr=0, len=M)
         ctx.set(dut.cmd_stride, N)
         ctx.set(dut.cmd_row_bytes, N)
-        await host.load(b_addr, sp_b, K)
+        # K rows of B, N elements each -> N L2 rows of K: B's columns (stationary)
+        await host.run(SystolicTop.CTRL_LOAD, TRANSPOSE, dram_addr=b_addr, local_addr=sp_b, len=K)
         await host.execute(ExecOpcode.CONFIG, rs1=WS)
         await host.execute(ExecOpcode.PRELOAD, rs1=sp_b, k_dim=K)
         await host.execute(ExecOpcode.COMPUTE, rs1=0, rd=0, k_dim=M)

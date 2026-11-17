@@ -44,23 +44,26 @@ class Schedule:
             for j in range(cols):
                 self.put(s + j + k, f"in_b_{j}", B[k, j])
 
-    def stationary_stream(self, s: int, A) -> None:
-        """One stationary stream: row ``k`` presents ``A[m, k]`` from clock ``s + k``."""
+    def stationary_stream(self, s: int, A, *, swap=True) -> None:
+        """One stationary stream: row ``k`` presents ``A[m, k]`` from clock ``s + k``.
+        ``swap`` marks element 0 ``first``: the preloaded weights become active."""
         m_len, rows = A.shape
         for m in range(m_len):
             for k in range(rows):
                 self.put(s + k + m, f"in_a_{k}", A[m, k])
                 self.put(s + k + m, f"in_valid_{k}", 1)
+                self.put(s + k + m, f"in_first_{k}", swap and m == 0)
 
-    def preload(self, s: int, W) -> int:
-        """Shift ``W`` into the stationary chain from clock ``s``, last row first.
-        Returns the first clock after the preload."""
+    def preload(self, p: int, W) -> int:
+        """Stream ``W`` down the weight chain: column ``j`` presents ``W[R-1-e, j]``
+        in clock ``p + j + e`` (bottom row first, the L1 stagger). Returns the first
+        clock a stream may start and swap the weights in (``p + R``)."""
         rows, cols = W.shape
-        for n in range(rows):
-            self.put(s + n, "in_shift", 1)
-            for j in range(cols):
-                self.put(s + n, f"in_w_{j}", W[rows - 1 - n, j])
-        return s + rows
+        for j in range(cols):
+            for e in range(rows):
+                self.put(p + j + e, f"in_w_{j}", W[rows - 1 - e, j])
+                self.put(p + j + e, f"in_w_valid_{j}", 1)
+        return p + rows
 
 
 @dataclass

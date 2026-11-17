@@ -44,7 +44,6 @@ class Harness(Elaboratable):
         m.submodules.ctrl = ctrl = self.ctrl
         m.submodules.array = array = self.array
         m.d.comb += [
-            array.in_shift.eq(ctrl.array_in_shift),
             array.in_control_dataflow.eq(ctrl.array_in_dataflow),
             ctrl.array_out_collision.eq(array.out_collision),
         ]
@@ -57,6 +56,7 @@ class Harness(Elaboratable):
             m.d.comb += [
                 getattr(array, f"in_b_{j}").eq(getattr(ctrl, f"array_in_b_{j}")),
                 getattr(array, f"in_w_{j}").eq(getattr(ctrl, f"array_in_w_{j}")),
+                getattr(array, f"in_w_valid_{j}").eq(getattr(ctrl, f"array_in_w_valid_{j}")),
             ]
             for name in ("c", "c_valid", "psum", "psum_valid"):
                 m.d.comb += getattr(ctrl, f"array_out_{name}_{j}").eq(
@@ -103,17 +103,20 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect
         return process
 
     async def monitor(ctx):
+        """Log every clock's Combiner writes, completions, results and accepts."""
         t = 0
         async for sample in ctx.tick().sample(
             ctrl.combiner_write_req, ctrl.combiner_write_addr, ctrl.combiner_write_data, ctrl.combiner_accumulate,
             ctrl.completed, ctrl.completed_id, ctrl.completed_sync,
             ctrl.result, ctrl.result_id, ctrl.result_sync,
-            ctrl.array_in_valid_0, ctrl.error,
+            ctrl.array_in_valid_0, ctrl.error, ctrl.cmd_valid, ctrl.cmd_ready, ctrl.cmd_id,
         ):  # fmt: skip
             _, _, req, addr, data, acc, done, done_id, done_sync, res, res_id, res_sync = sample[
                 :12
             ]
-            streaming, error = sample[12], sample[13]
+            streaming, error, valid, ready, cmd_id = sample[12:17]
+            if valid and ready:
+                log["accepted"].append((t, cmd_id))
             if req:
                 log["writes"].append((addr, unpack(data, cfg.acc_bits, harness.cols), acc))
             if done:
@@ -363,9 +366,9 @@ class TestOutputStationary:
 
 class TestStationary:
     def preload_compute(self, harness, W, A, *, w_base=50, a_base=0, rd=30):
-        """Lay out W (row-major) and A (column-major, M tiles) in L2."""
+        """Lay out W and A (both column-major; A in M tiles) in L2."""
         cfg, R, KB = harness.cfg, harness.rows, harness.kb
-        sp = {w_base + r: pack(W[r], cfg.weight_bits) for r in range(W.shape[0])}
+        sp = {w_base + j: pack(W[:, j], cfg.weight_bits) for j in range(W.shape[1])}
         cmds = [(ExecOpcode.PRELOAD, {"rs1": w_base, "k_dim": W.shape[0]})]
         for t, m0 in enumerate(range(0, A.shape[0], KB)):
             mn = min(KB, A.shape[0] - m0)
@@ -377,6 +380,7 @@ class TestStationary:
 
     @pytest.mark.parametrize("tracked", [False, True])
     def test_preload_and_compute(self, tracked):
+        """A column-major PRELOAD then a COMPUTE gives ``A @ W`` in WS."""
         harness = Harness(config(grid_rows=2, grid_cols=2, tile_rows=2, tile_cols=2))
         R, C = harness.rows, harness.cols
         rng = np.random.default_rng(12)
@@ -385,7 +389,7 @@ class TestStationary:
         sp, cmds = self.preload_compute(harness, W, A)
         log = run(harness, sp, [(ExecOpcode.CONFIG, {"rs1": WS}), *cmds], tracked=tracked)
 
-        assert log["b_reads"] == [50 + r for r in reversed(range(R))]  # last row first
+        assert log["b_reads"] == [50 + j for j in range(C)]  # one column per read
         out = written(log)
         np.testing.assert_array_equal([out[30 + m] for m in range(9)], A @ W)
 
@@ -403,7 +407,7 @@ class TestStationary:
         on = [t for t, v in enumerate(log["streaming"]) if v]
         assert len(on) == A.shape[0] and on[-1] - on[0] + 1 == len(on)
 
-    def test_preload_waits_for_the_previous_stream(self):
+    def test_new_weights_load_behind_the_stream(self):
         """New weights after a stream: the first stream's results use the old weights."""
         harness = Harness(config(grid_rows=4, grid_cols=4))
         R, C = harness.rows, harness.cols
@@ -433,6 +437,54 @@ class TestStationary:
         log = run(Harness(config(dataflow=Dataflow.B_STATIONARY)), {},
                   [(ExecOpcode.PRELOAD, {"rs1": 0, "k_dim": 9})])  # fmt: skip
         assert sorted(log["b_reads"]) == [0, 1]
+
+    def weight_tiles(self, harness, n, m, *, seed, mode=WS, reuse=False):
+        """``n`` tiles, each PRELOAD W_t then COMPUTE A_t (``m`` rows), tracked. With
+        ``reuse`` every tile adds a second COMPUTE under the same weights."""
+        R, C = harness.rows, harness.cols
+        rng = np.random.default_rng(seed)
+        Ws = rng.integers(-128, 128, (n, R, C))
+        As = rng.integers(-128, 128, (n, 2 if reuse else 1, m, R))
+        sp, cmds, expect = {}, [(ExecOpcode.CONFIG, {"rs1": mode})], {}
+        for t in range(n):
+            w_base, a_base = 1000 + t * C, t * 2 * R
+            sp.update({w_base + j: pack(Ws[t][:, j], harness.cfg.weight_bits) for j in range(C)})
+            cmds.append((ExecOpcode.PRELOAD, {"rs1": w_base, "k_dim": R}))
+            for u, A in enumerate(As[t]):
+                base, rd = a_base + u * R, 100 * t + 50 * u
+                sp.update({base + k: pack(A[:, k], harness.cfg.input_bits) for k in range(R)})
+                cmds.append((ExecOpcode.COMPUTE, {"rs1": base, "rd": rd, "k_dim": m}))
+                expect[rd] = A @ Ws[t]
+        log = run(harness, sp, cmds, tracked=True)
+        out = written(log)
+        for rd, rows in expect.items():
+            np.testing.assert_array_equal([out[rd + r] for r in range(m)], rows)
+        return log
+
+    @pytest.mark.parametrize("mode", [WS, IS])
+    @pytest.mark.parametrize("shape", [(1, 1, 2, 2), (2, 2, 1, 1), (1, 1, 2, 3), (2, 2, 2, 2)])
+    def test_new_weight_tiles_stream_back_to_back(self, shape, mode):
+        """PRELOAD, COMPUTE, PRELOAD, COMPUTE, ...: with M >= max(R, C) the weights
+        of the next tile load behind the stream, and the streams have no bubbles."""
+        tr, tc, gr, gc = shape
+        harness = Harness(config(tile_rows=tr, tile_cols=tc, grid_rows=gr, grid_cols=gc))
+        m = max(harness.rows, harness.cols)
+        log = self.weight_tiles(harness, 4, m, seed=16, mode=mode)
+        on = [t for t, v in enumerate(log["streaming"]) if v]
+        assert len(on) == 4 * m and on[-1] - on[0] + 1 == len(on)
+
+    def test_short_streams_wait_for_the_weights(self):
+        """M < R: a stream cannot outrun the weights it swaps in; results stay right."""
+        harness = Harness(config(grid_rows=4, grid_cols=4))
+        self.weight_tiles(harness, 3, 1, seed=17)
+        self.weight_tiles(harness, 3, 2, seed=18)
+
+    def test_reused_weights_are_not_swapped_again(self):
+        """A second COMPUTE under the same weights keeps them while the next load."""
+        harness = Harness(config(grid_rows=4, grid_cols=4))
+        log = self.weight_tiles(harness, 3, harness.rows, seed=19, reuse=True)
+        on = [t for t, v in enumerate(log["streaming"]) if v]
+        assert on[-1] - on[0] + 1 == len(on)
 
 
 class TestWavefrontSchedule:

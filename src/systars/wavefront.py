@@ -15,7 +15,11 @@ inputs, so the wavefront advances one PE per clock in every direction:
 - Stationary (WS; IS is the same fabric mode): element ``m`` of the stream meets
   W[r, j] at PE(r, j) in clock ``s + 1 + r + j + m``, and leaves with the partial
   sum ``A[m, :r+1] @ W[:r+1, j]``; it leaves the south edge of column ``j`` in clock
-  ``s + R + j + m`` (``SystolicArray.stationary_result_clock``).
+  ``s + R + j + m`` (``SystolicArray.stationary_result_clock``). The weights come
+  down the chain the same way: column ``j`` streams from clock ``s + j - R``, bottom
+  row first, so W[r, j] reaches PE(r, j)'s shadow register in clock ``s + 1 + r + j``,
+  the clock the swap marker on element 0 does. Loading and swapping sweep the array
+  as one wavefront (the preload overlaps the stream's first clocks).
 
 A run is one tile or several back to back, started on the Streamer's schedule
 (``streamer_starts``, which ``tests/unit/test_streamer.py`` checks
@@ -59,7 +63,7 @@ from .core.systolic_array import SystolicArray
 OS, WS = OUTPUT_STATIONARY, WEIGHT_STATIONARY
 
 #: A west/north edge entry: (tile, element index), or (WEIGHTS, row) for a weight
-#: shifting in during a stationary preload
+#: coming down a column's chain (stationary)
 WEIGHTS = -1
 
 
@@ -112,11 +116,12 @@ class Frame:
     cycle: int
     phase: str  # "preload" (stationary weights), "stream", or "drain" (OS results north)
     valid: np.ndarray
-    shift: np.ndarray
+    shift: np.ndarray  # a weight is arriving on the PE's chain link
     a: np.ndarray
     b: np.ndarray
     psum_out: np.ndarray
-    w: np.ndarray  # the stationary register
+    w: np.ndarray  # the stationary operand the PE multiplies by this clock
+    w_in: np.ndarray  # the weight arriving on the chain link (with ``shift``)
     c: np.ndarray  # the OS result each PE sends north this clock
     c_valid: np.ndarray
     west: list = field(default_factory=list)  # per row: (tile, k) entering, or None
@@ -310,7 +315,9 @@ def record(config: SystolicConfig, dataflow: int, A, B, *, starts=None) -> Trace
     OS: ``A`` is R x K and ``B`` K x C, or lists of them (one reduction per tile).
     Stationary: ``A`` is M x R (or a list of them) and ``B`` the R x C weights.
     ``starts`` (default: ``streamer_starts``) are the clocks each tile's stream
-    starts. Stream clocks are numbered from 0; preload clocks are negative.
+    starts. Stream clocks are numbered from 0; preload clocks are negative
+    (stationary: the weight chain starts ``R`` clocks before the first stream and
+    overlaps its first clocks).
     """
     as_list = isinstance(A, (list, tuple))
     As = [np.asarray(a) for a in (A if as_list else [A])]
@@ -329,6 +336,9 @@ def record(config: SystolicConfig, dataflow: int, A, B, *, starts=None) -> Trace
     if starts is None:
         starts = streamer_starts(dataflow, rows, cols, lengths)
     tiles = [Tile(s, n, a, b) for s, n, a, b in zip(starts, lengths, As, Bs, strict=True)]
+    # Stationary: the first tile with a stream swaps the weights in, and the chain is
+    # timed to it; later tiles reuse them (None: nothing streams, no weights load)
+    swap = next((n for n, tile in enumerate(tiles) if tile.length), None)
     trace = Trace(config, dataflow, tiles, W, np.zeros((0, cols), dtype=np.int64))
     sim = Simulator(dut)  # elaborates the design, so the PE references below exist
     pes = [
@@ -347,6 +357,8 @@ def record(config: SystolicConfig, dataflow: int, A, B, *, starts=None) -> Trace
     drain_clocks = 2 * rows + 1 if dataflow == OS else 0
 
     def snapshot(ctx, cycle, phase, edges):
+        """Append a Frame with every PE's registers as they stand at ``cycle``."""
+
         def grid(name):
             return np.array(
                 [[ctx.get(getattr(pes[i][j], name)) for j in range(cols)] for i in range(rows)]
@@ -358,11 +370,12 @@ def record(config: SystolicConfig, dataflow: int, A, B, *, starts=None) -> Trace
                 cycle,
                 phase,
                 grid("out_valid").astype(bool),
-                grid("in_shift").astype(bool),
+                grid("out_w_valid").astype(bool),
                 grid("out_a"),
                 grid("out_b"),
                 grid("out_psum"),
-                grid("out_w"),
+                grid("weight"),
+                grid("w_link"),
                 grid("out_c"),
                 grid("out_c_valid").astype(bool),
                 west,
@@ -400,37 +413,46 @@ def record(config: SystolicConfig, dataflow: int, A, B, *, starts=None) -> Trace
                 })  # fmt: skip
             else:
                 a = tiles[n].A[k, i] if e else 0
-                values.update({f"in_a_{i}": a, f"in_valid_{i}": e is not None})
+                values.update({
+                    f"in_a_{i}": a, f"in_valid_{i}": e is not None,
+                    # the swap: the first stream after the weights load (later
+                    # tiles reuse them, as later COMPUTEs after a PRELOAD do)
+                    f"in_first_{i}": e is not None and n == swap and k == 0,
+                })  # fmt: skip
             west_values.append(int(a))
         for j in range(cols):
-            e = entry(t, j) if dataflow == OS else None
-            north.append(e)
-            b = tiles[e[0]].B[e[1], j] if e else 0
             if dataflow == OS:
+                e = entry(t, j)
+                north.append(e)
+                b = tiles[e[0]].B[e[1], j] if e else 0
                 values[f"in_b_{j}"] = b
-            north_values.append(int(b))
+                north_values.append(int(b))
+                continue
+            # the weight chain, bottom row first, R clocks ahead of the first stream
+            r = t + rows - tiles[swap].start - stream_start(j) if swap is not None else -1
+            on = W is not None and 0 <= r < rows
+            w = int(W[rows - 1 - r, j]) if on else 0
+            values.update({f"in_w_{j}": w, f"in_w_valid_{j}": on})
+            north.append((WEIGHTS, rows - 1 - r) if on else None)
+            north_values.append(w)
         return values, (west, north, west_values, north_values)
 
     async def run(ctx):
+        """Drive the edges clock by clock (stationary from -R, preloading), snapshot,
+        collect outputs."""
         drive(ctx, in_control_dataflow=dataflow)
-        if dataflow == WS:
-            drive(ctx, in_shift=1)
-            for step, r in enumerate(reversed(range(rows))):
-                drive(ctx, **{f"in_w_{j}": W[r, j] for j in range(cols)})
-                edges = ([None] * rows, [(WEIGHTS, r)] * cols, [0] * rows, [int(v) for v in W[r]])
-                snapshot(ctx, step - rows, "preload", edges)
-                await ctx.tick()
-            drive(ctx, in_shift=0)
         # The order results leave each column: (tile, row) per result
         if dataflow == OS:
             order = [(n, i) for n, t in enumerate(tiles) if t.length for i in range(rows)]
         else:
             order = [(n, m) for n, t in enumerate(tiles) for m in range(t.length)]
         out = {j: [] for j in range(cols)}
-        for t in range(stream_clocks + drain_clocks):
+        first = -rows if dataflow == WS else 0
+        for t in range(first, stream_clocks + drain_clocks):
             values, edges = edge_inputs(t)
             drive(ctx, **values)
-            snapshot(ctx, t, "stream" if t < stream_clocks else "drain", edges)
+            phase = "preload" if t < 0 else "stream" if t < stream_clocks else "drain"
+            snapshot(ctx, t, phase, edges)
             for j in range(cols):
                 kind = "c" if dataflow == OS else "psum"
                 if ctx.get(getattr(dut, f"out_{kind}_valid_{j}")):
@@ -458,8 +480,10 @@ def record(config: SystolicConfig, dataflow: int, A, B, *, starts=None) -> Trace
 
 def _index_label(trace: Trace, frame: Frame, i: int, j: int) -> tuple[str, str]:
     """(label, kind) for one PE in one frame; kind is idle/active/mismatch/shift."""
+    if frame.shift[i, j] and not frame.valid[i, j]:
+        return f"w{frame.w_in[i, j]}", "shift"  # a weight arriving for the shadow
     if frame.phase == "preload":
-        return f"w{frame.w[i, j]}", "shift"
+        return ".", "idle"
     index, agree = trace.observed(frame, i, j)
     if not agree:
         return "X", "mismatch"
@@ -669,7 +693,7 @@ class _Renderer:
     def caption(self, f: Frame) -> str:
         phase = self.t.phase_label(f)
         if phase == "preload":
-            return f"clock {f.cycle}  preload: the weights shift in, one row per clock"
+            return f"clock {f.cycle}  preload: the weights come down the column chains"
         busy = f"  {self.t.utilization(f):.0%} of PEs busy" if self.view == "front" else ""
         return f"clock {f.cycle}  {phase}{busy}"
 
@@ -683,6 +707,7 @@ class _Renderer:
                 ]
             return [
                 "w: the stationary weight; a: the streamed element; Σ: the partial sum leaving south",
+                "w ↓: a weight coming down the column's chain (no broadcast shift)",
             ]
         lines = [
             f"{self.idx}N: element N meets there (one colour per {self.idx}: a wavefront); "
@@ -704,8 +729,10 @@ class _Renderer:
     # -- per-cell content ----------------------------------------------------
 
     def fill(self, f: Frame, i: int, j: int) -> str:
+        if f.shift[i, j] and not f.valid[i, j]:
+            return _SHIFT  # a weight arriving for the shadow
         if f.phase == "preload":
-            return _SHIFT if f.shift[i, j] else "none"
+            return "none"
         index, agree = self.t.observed(f, i, j)
         if not agree:
             return _MISMATCH
@@ -723,8 +750,10 @@ class _Renderer:
             label, kind = _index_label(t, f, i, j)
             return ["" if kind == "idle" else label]
         # value view
+        if f.shift[i, j] and not f.valid[i, j]:
+            return ["", f"w {f.w_in[i, j]}", "↓"]  # a weight arriving for the shadow
         if f.phase == "preload":
-            return ["", f"w {f.w[i, j]}", "↓"] if f.shift[i, j] else ["", "", ""]
+            return ["", "", ""]
         index, agree = t.observed(f, i, j)
         if not agree:
             return ["", "X", ""]
