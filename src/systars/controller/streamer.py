@@ -224,6 +224,16 @@ class Streamer(Component):
         ports["array_out_collision"] = In(1)
         super().__init__(ports)
 
+        # L1, built here so a testbench or a trace's probes reach it (None: the dataflow
+        # lacks it)
+        R, C, KB = rows, cols, self.block
+        self.a_buf = StreamBuffers(R, KB, config.input_bits)
+        self.b_buf = StreamBuffers(C, KB, config.weight_bits) if self.supports_os else None
+        self.north = ResultBuffers(C, C + 1, config.acc_bits) if self.supports_os else None
+        self.south = ResultBuffers(C, C + 1, config.acc_bits) if self.supports_stationary else None
+        # One per column: a column of W, streamed down the weight chain
+        self.w_buf = StreamBuffers(C, R, config.weight_bits) if self.supports_stationary else None
+
     STATE_IDLE = 0
     STATE_BUSY = 1
 
@@ -236,17 +246,14 @@ class Streamer(Component):
         # ---------------------------------------------------------------------
         # L1
         # ---------------------------------------------------------------------
-        m.submodules.a_buffers = a_buf = StreamBuffers(R, KB, cfg.input_bits)
-        b_buf = None
-        north = south = None
+        m.submodules.a_buffers = a_buf = self.a_buf
+        b_buf, north, south, w_buf = self.b_buf, self.north, self.south, self.w_buf
         if self.supports_os:
-            m.submodules.b_buffers = b_buf = StreamBuffers(C, KB, cfg.weight_bits)
-            m.submodules.north_results = north = ResultBuffers(C, C + 1, cfg.acc_bits)
-        w_buf = None
+            m.submodules.b_buffers = b_buf
+            m.submodules.north_results = north
         if self.supports_stationary:
-            m.submodules.south_results = south = ResultBuffers(C, C + 1, cfg.acc_bits)
-            # One per column: a column of W, streamed down the weight chain
-            m.submodules.w_buffers = w_buf = StreamBuffers(C, R, cfg.weight_bits)
+            m.submodules.south_results = south
+            m.submodules.w_buffers = w_buf
             for j in range(C):
                 m.d.comb += [
                     getattr(self, f"array_in_w_{j}").eq(getattr(w_buf, f"out_{j}")),

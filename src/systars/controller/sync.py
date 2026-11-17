@@ -159,7 +159,7 @@ class SlotPool(Component):
             cons_take: Strobe: the head command was dispatched with WAIT and RELEASE
             cons_release, cons_release_slot: Strobe: a command with RELEASE completed
         Status:
-            free, ready: Per-slot state bits (OWNED and READING = neither)
+            free, ready, reading: Per-slot state bits (OWNED = none of them)
             error: Sticky protocol error (see the module docstring)
             error_kind: The first such error's ``SlotError`` (tiles/systolic/errors.py),
                 from the clock ``error`` rises
@@ -201,6 +201,7 @@ class SlotPool(Component):
                 "cons_release_slot": In(SLOT_BITS),
                 "free": Out(slots),
                 "ready": Out(slots),
+                "reading": Out(slots),
                 "error": Out(1),
                 "error_kind": Out(4),
                 # The first error came from a completion's transition (a signal or a
@@ -218,6 +219,7 @@ class SlotPool(Component):
             m.d.comb += [
                 self.free[s].eq(state[s] == SlotState.FREE),
                 self.ready[s].eq(state[s] == SlotState.READY),
+                self.reading[s].eq(state[s] == SlotState.READING),
             ]
             with m.If(self.prod_slot == s):
                 m.d.comb += self.prod_credit.eq(state[s] == SlotState.FREE)
