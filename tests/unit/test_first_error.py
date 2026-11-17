@@ -288,11 +288,14 @@ def test_a_completion_fault_names_its_command_though_a_later_one_started():
 
 
 def test_every_l1_buffer_has_its_kind():
-    """Each L1 buffer reports its own kind; together they are every buffer kind."""
+    """Each L1 buffer reports its own kind; together they are every buffer kind. The
+    stream buffers are the Streamer's, the result buffers the result path's (#98)."""
+    from systars.controller.result_path import ResultPath
     from systars.controller.streamer import Streamer
 
-    names = [name for name, _ in Streamer.L1_UNITS]
-    kinds = [k for _, k in Streamer.L1_UNITS]
+    units = Streamer.L1_UNITS + ResultPath.L1_UNITS
+    names = [name for name, _ in units]
+    kinds = [k for _, k in units]
     assert names == ["a_buf", "b_buf", "w_buf", "north", "south"]
     assert sorted(kinds) == sorted(set(L1Error) - {L1Error.SIGNAL_NO_RESULT,
                                                     L1Error.RESULT_WITHOUT_COMMAND,
@@ -301,13 +304,16 @@ def test_every_l1_buffer_has_its_kind():
 
 @pytest.mark.parametrize("first", range(1, 6), ids=lambda i: L1Error(i + 3).name)
 def test_the_first_buffer_to_fail_names_the_kind(first):
-    """Six sources as in Streamer (its own errors, then the five buffers in
-    L1_UNITS order): the first to rise names the kind from that very clock, and keeps it
-    when another rises later."""
+    """Six sources, an own error and the five L1 buffers (the Streamer's stream buffers,
+    then the result path's result buffers, in L1_UNITS order): the first to rise names
+    the kind from that very clock, and keeps it when another rises later."""
+    from systars.controller.result_path import ResultPath
     from systars.controller.streamer import Streamer
     from systars.errors import FirstErrorKind
 
-    kinds = [L1Error.RESULT_WITHOUT_COMMAND] + [k for _, k in Streamer.L1_UNITS]
+    kinds = [L1Error.RESULT_WITHOUT_COMMAND] + [
+        k for _, k in Streamer.L1_UNITS + ResultPath.L1_UNITS
+    ]
     dut = FirstErrorKind(len(kinds), 4)
 
     async def tb(ctx):

@@ -325,6 +325,27 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **The tile's control is organised as CSP processes, one per hop** (#44, 2026-11-17; port
+  of branes-ai/embodied-ai-soc-generator#98, kpugen PRs #100 and #101).
+  - **One BlockMover** (`controller/blockmover.py`). Its inbound leg (`BlockMoverIn`,
+    L3 → L2 or the Combiner) and outbound leg (`BlockMoverOut`, the Combiner → L3) share
+    the tile's one L3 port with their engines. `SystolicTop` has one `blockmover`
+    submodule in place of four.
+  - **The result path** (`controller/result_path.py`) is a process of its own, the L1 → L2
+    hop. `ResultPath` holds L1's result buffers (north, south), the result tiles'
+    descriptors and the row writes into the Combiner. It emits each tile's `result` (was
+    `streamer_result`), on which `SystolicTop` emits the Combiner slot's token. The
+    Streamer keeps L2 → L1 → fabric and describes each producing COMPUTE's result tile to
+    the result path as the command starts.
+  - **Firing rules.** Each process's docstring states its inputs, firing rule, outputs and
+    the credits it returns, and `SystolicTop`'s has the tile's hop table. `l1_error` and the
+    first-error capture merge both processes' L1 errors.
+  - **Unchanged.** The command interface is still one stream (`cmd_type` names the process).
+    No behaviour changes: the schedule tests, which check exact clocks, pass unchanged.
+  - **Ported 1:1.** `blockmover.py`, `result_path.py` and `test_result_path.py` are identical
+    to kpugen's. This was possible because #34, #17, #38, #51, #18 and #52 realigned the
+    files first.
+
 - **The tile's hooks for a trace** (#18, part: the systolic RTL of
   branes-ai/embodied-ai-soc-generator#27, kpugen PRs #91 and #92). `SlotPool` gains a
   `reading` output beside `free` and `ready`. `SystolicTop` builds its submodules in

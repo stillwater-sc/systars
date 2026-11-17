@@ -121,6 +121,7 @@ print(v)
 | Streamer | ✅ Done | L2 → L1 → fabric: EXECUTE commands (CONFIG, PRELOAD, COMPUTE) |
 | BlockMoverIn | ✅ Done | The BlockMover's inbound leg, L3 → L2 (LOAD) |
 | BlockMoverOut | ✅ Done | The BlockMover's outbound leg, Combiner → L3 (STORE) |
+| ResultPath | ✅ Done | L1's result buffers → the Combiner (the L1 → L2 hop) |
 | StreamReader | ✅ Done | AXI-like burst read engine of the BlockMover |
 | StreamWriter | ✅ Done | AXI-like burst write engine of the BlockMover |
 | DescriptorEngine | ✅ Done | BlockMover descriptor chain execution |

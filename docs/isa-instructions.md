@@ -141,7 +141,7 @@ Two events carry each command's `cmd_sync`:
   BlockMover can refill the slot early. It is not in command order: a PRELOAD runs on its
   own path, so its completion can come before that of a COMPUTE issued ahead of it. The
   credit is returned by the slot `cmd_sync` names, so the order doesn't matter.
-- **result** (`streamer_result`), when its results are in the Combiner: the result token.
+- **result** (`result`, from the result path), when its results are in the Combiner: the result token.
   It is always in command order.
 
 An untracked command (`cmd_sync` 0) runs alone and completes with its results, so a host can

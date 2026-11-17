@@ -29,18 +29,34 @@ SYSTARS uses KPU names for its memories, never cache names:
 |---|---|---|---|
 | L3 | Outside the tile, over AXI | BlockMover STORE | BlockMover LOAD |
 | L2 | `memory/scratchpad.py`: two bank groups of 1R1W banks ([L2](l2.md)) | BlockMover LOAD | Streamer |
-| Combiner | `memory/combiner.py` | Streamer results; a LOAD with `LocalAddr` bit 31 | BlockMover STORE |
-| L1 | `memory/stream_buffer.py` | Streamer | The fabric (stream buffers); the Streamer (result buffers) |
+| Combiner | `memory/combiner.py` | The result path; a LOAD with `LocalAddr` bit 31 | BlockMover STORE |
+| L1 | `memory/stream_buffer.py` | The Streamer (stream buffers); the fabric (result buffers) | The fabric (stream buffers); the result path (result buffers) |
 
 ## The processes
 
-The **BlockMover** has two legs: LOAD (L3 to L2 or the Combiner; `controller/blockmover_in.py`,
-`blockmover/reader.py`) and STORE (Combiner to L3; `controller/blockmover_out.py`, `blockmover/writer.py`). It moves
+The tile is a pipeline of CSP processes, one per hop of a tile's flow (#44, after kpugen
+esg#98). Credits flow upstream, data and tile-ready tokens flow downstream, and a process
+fires when its firing rule holds:
+
+| Hop | Process | Fires when |
+|---|---|---|
+| L3 → L2 | the BlockMover's inbound leg (`BlockMoverIn`) | its L2 (or Combiner) slot's credit is free; emits the slot's token when done |
+| L2 → L1 | the Streamer (`controller/streamer.py`) | its L2 tile's token is there, its Combiner slot's credit is free, and the fabric can take the stream on schedule; returns the L2 credit once the tile's last block is in L1 |
+| L1 → fabric → L1 | the fabric | push-only, no flow control |
+| L1 → L2 | the result path (`controller/result_path.py`) | each result row as it leaves the L1 result buffers; emits the Combiner slot's token once the tile's rows are in |
+| L2 → L3 | the BlockMover's outbound leg (`BlockMoverOut`) | the result tile's token is there; returns the Combiner slot's credit when done |
+
+The **BlockMover** is one component (`controller/blockmover.py`) with both legs and their
+engines (`blockmover/reader.py`, `writer.py`) on the tile's one L3 port. A LOAD or STORE moves
 a whole tile per command: `len` rows, `stride` bytes apart, `row_bytes` each, from any byte
 address, with no AXI burst crossing a 4 KB boundary.
 
-The **Streamer** (`controller/streamer.py`) turns L2 tiles into element streams through L1 and
-writes the results into the Combiner.
+The **Streamer** turns L2 tiles into element streams through L1. As each producing COMPUTE
+starts, it describes the result tile to the **result path**. The result path holds L1's result
+buffers, turns the fabric's result columns back into rows, and writes them into the Combiner.
+
+Each process runs its own program, an in-order queue of its commands. The tile takes them as
+one stream, and `cmd_type` names the process (0: a LOAD, 1: a STORE, 2: an EXECUTE).
 
 Every command carries `cmd_sync`: the slots it reads and fills, and the ACQUIRE, SIGNAL, WAIT
 and RELEASE flags that take and return credits and tile-ready tokens (`controller/sync.py`). The

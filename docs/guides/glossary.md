@@ -19,9 +19,10 @@
 | OS | Output-stationary: C held in the PEs, A streamed east, B south |
 | PE, PEArray | One MAC with registered links; a structural block of PEs |
 | R, C | The array's rows and columns in PEs: `grid_rows * tile_rows`, `grid_cols * tile_cols` |
+| Result path | The process (`controller/result_path.py`) that takes the fabric's results from L1's result buffers into the Combiner |
 | Skew | The one-clock stagger between neighbouring streams that makes operands meet; made by L1, not registers |
 | Slot | A whole-tile region of L2 or the Combiner: FREE, OWNED, READY or READING |
-| Streamer | The process (`controller/streamer.py`) that streams L2 tiles through L1 into the fabric and writes the results |
+| Streamer | The process (`controller/streamer.py`) that streams L2 tiles through L1 into the fabric |
 | Tile-ready token | The signal that a slot's tile is complete and may be consumed |
 | Wavefront | The anti-diagonal of PEs working on the same k (or m), moving one PE per clock |
 | WS | Weight-stationary: B held in the PEs, A streamed, partial sums south |

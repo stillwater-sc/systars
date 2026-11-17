@@ -57,17 +57,23 @@ def test_the_tiles_submodules_exist_before_elaboration():
         dataflow=Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY,
     )
     top = SystolicTop(cfg)
-    for name in ("systolic_array", "scratchpad", "combiner", "stream_reader", "stream_writer",
-                 "bm_in", "bm_out", "streamer", "l2_slots", "combiner_slots"):  # fmt: skip
+    for name in ("systolic_array", "scratchpad", "combiner", "blockmover", "bm_in", "bm_out",
+                 "streamer", "result_path", "l2_slots", "combiner_slots"):  # fmt: skip
         assert getattr(top, name) is not None, name
+    # The BlockMover holds both legs and their engines (#44)
+    assert top.bm_in is top.blockmover.bm_in and top.bm_out is top.blockmover.bm_out
+    assert top.blockmover.stream_reader is not None and top.blockmover.stream_writer is not None
     assert top.l2_slots.reading.shape().width == cfg.l2_slots
-    streamer = top.streamer
-    # L1: every buffer the dataflows built need, None for the ones they don't
-    for name in ("a_buf", "b_buf", "north", "south", "w_buf"):
-        assert getattr(streamer, name) is not None, name
+    # L1: the Streamer's stream buffers and the result path's result buffers (#44), each
+    # built when a configured dataflow needs it, None otherwise
+    for name in ("a_buf", "b_buf", "w_buf"):
+        assert getattr(top.streamer, name) is not None, name
+    for name in ("north", "south"):
+        assert getattr(top.result_path, name) is not None, name
     os_only = SystolicTop(SystolicConfig(grid_rows=2, grid_cols=2,
-                                         dataflow=Dataflow.OUTPUT_STATIONARY)).streamer  # fmt: skip
-    assert os_only.south is None and os_only.w_buf is None and os_only.north is not None
+                                         dataflow=Dataflow.OUTPUT_STATIONARY))  # fmt: skip
+    assert os_only.streamer.w_buf is None
+    assert os_only.result_path.south is None and os_only.result_path.north is not None
 
 
 def test_queued_holds_while_a_command_waits_at_its_queue_head():

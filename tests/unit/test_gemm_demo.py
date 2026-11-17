@@ -327,12 +327,10 @@ class TestGemmDemoVerilog:
         dut = SystolicTop(config)
         output = verilog.convert(dut, name="SystolicTop")
 
-        # Check for submodule instantiations
-        assert "stream_reader" in output
-        assert "stream_writer" in output
-        assert "bm_in" in output
-        assert "bm_out" in output
-        assert "streamer" in output
+        # The processes: the BlockMover (its legs and engines inside it) and the Streamer
+        for path in ("blockmover", "blockmover.bm_in", "blockmover.bm_out",
+                     "blockmover.stream_reader", "blockmover.stream_writer", "streamer"):  # fmt: skip
+            assert f"SystolicTop.{path} " in output, path
 
 
 class TestDRAMHelper:
