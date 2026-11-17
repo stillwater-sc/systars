@@ -111,7 +111,7 @@ This document provides a comprehensive plan for rewriting the SYSTARS systolic a
 | `sp_banks` | 4 | Scratchpad banks |
 | `combiner_capacity_kb` | 64 | Combiner storage size |
 | `combiner_banks` | 2 | Combiner banks |
-| `blockmover_buswidth` | 0 (automatic) | BlockMover bus width (bits; 0 = the widest row, at least 128) |
+| `blockmover_buswidth` | 0 (automatic) | BlockMover bus width in bits; 0 = the widest scratchpad or Combiner row, at least 128, rounded up to a power of two |
 
 ---
 
@@ -283,6 +283,17 @@ class SYSTARSConfig:
         """Rows per Combiner bank"""
         combiner_row_bits = self.grid_cols * self.tile_cols * self.acc_bits
         return (self.combiner_capacity_kb * 1024 * 8) // (self.combiner_banks * combiner_row_bits)
+
+    @property
+    def combiner_width(self) -> int:
+        """Combiner row width in bits"""
+        return self.grid_cols * self.tile_cols * self.acc_bits
+
+    def __post_init__(self):
+        # 0 = automatic: the widest row, at least 128 bits, rounded up to a power of two
+        if self.blockmover_buswidth == 0:
+            widest = max(128, self.sp_width, self.combiner_width)
+            self.blockmover_buswidth = 1 << (widest - 1).bit_length()
 ```
 
 ### 1.3 Processing Element (PE)
@@ -549,7 +560,7 @@ class LocalAddr(StructLayout):
             "norm_cmd": unsigned(4),
             "read_full_row": unsigned(1),
             "accumulate": unsigned(1),
-            "is_acc": unsigned(1),
+            "is_combiner": unsigned(1),
         })
 
     def sp_bank(self, addr):
@@ -563,7 +574,7 @@ class LocalAddr(StructLayout):
 
     def is_garbage(self, addr):
         """Check if address is garbage (invalid)"""
-        return addr.garbage & addr.is_acc & addr.accumulate & addr.read_full_row
+        return addr.garbage & addr.is_combiner & addr.accumulate & addr.read_full_row
 ```
 
 ### 2.2 Scratchpad Memory
@@ -666,13 +677,13 @@ class AccumulatorBank(Elaboratable):
         self.bank_id = bank_id
 
         # Read port with scaling
-        self.read_addr = Signal(range(config.acc_bank_entries))
+        self.read_addr = Signal(range(config.combiner_bank_entries))
         self.read_data = Signal(config.acc_bits * config.dim)
         self.read_scale = Signal(32)  # Float32 scale factor
         self.read_activation = Signal(2)  # NONE, RELU, etc.
 
         # Write port with accumulate mode
-        self.write_addr = Signal(range(config.acc_bank_entries))
+        self.write_addr = Signal(range(config.combiner_bank_entries))
         self.write_data = Signal(config.acc_bits * config.dim)
         self.write_en = Signal()
         self.accumulate = Signal()  # Add to existing vs overwrite
@@ -1043,7 +1054,7 @@ def generate_header(config: SystarsConfig, output_path: str):
 #define BANK_NUM {config.sp_banks}
 #define BANK_ROWS {config.sp_bank_entries}
 #define ACC_ROWS {config.combiner_banks * config.combiner_bank_entries}
-#define MAX_BYTES {config.dma_maxbytes}
+#define MAX_BYTES {config.blockmover_maxbytes}
 #define MAX_BLOCK_LEN (MAX_BYTES / (DIM * sizeof(elem_t)))
 #define MAX_BLOCK_LEN_ACC (MAX_BYTES / (DIM * sizeof(acc_t)))
 
