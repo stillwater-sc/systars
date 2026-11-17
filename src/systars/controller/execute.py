@@ -67,6 +67,10 @@ without its credit or overflowing, a collision on a north link, a result
 without a command, or a command with SIGNAL that writes no result (``k_dim = 0``,
 an OS COMPUTE with ``CHAIN_MORE``, PRELOAD, CONFIG or an unknown opcode), whose
 accumulator slot would never get its token. A valid schedule never raises it.
+
+The command set (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE) follows Gemmini's
+execute commands (ucb-bar/gemmini; see NOTICE). The scheduling around it, L1 stream
+buffers on per-buffer credits, follows the KPU's Streamer.
 """
 
 from amaranth import Cat, Module, Mux, Signal, signed

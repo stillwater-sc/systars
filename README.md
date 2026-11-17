@@ -2,7 +2,7 @@
 
 A Python-based systolic array RTL generator using [Amaranth HDL](https://amaranth-lang.org/).
 
-Systars generates synthesizable Verilog for configurable systolic array accelerators, targeting linear algebra workloads in signal processing, sensor fusion, and real-time control. It is a modern Python reimplementation inspired by the original SYSTARS work at Delft University Of Technology.
+Systars generates synthesizable Verilog for configurable systolic array accelerators, targeting linear algebra workloads in signal processing, sensor fusion, and real-time control. It is a modern Python reimplementation of the original SYSTARS work at Delft University of Technology, which synthesised systolic and wavefront arrays from recurrence equations (see [Lineage and credits](#lineage-and-credits)).
 
 [SYSTARS: A CAD tool for the synthesis and analysis of VLSI systolic/wavefront arrays](https://ieeexplore.ieee.org/document/18078)
 
@@ -299,7 +299,31 @@ See [implementation plan](./docs/plan/implementation.md) for the detailed implem
 
 BSD-3-Clause
 
-## Acknowledgments
+## Lineage and credits
 
-- [SYSTARS](https://ieeexplore.ieee.org/document/18078) - The original C implementation of the systolic array layout generator
-- [Amaranth HDL](https://amaranth-lang.org/) - Python HDL framework
+SYSTARS synthesises arrays by the space-time mapping of recurrence equations: a schedule
+vector τ decides when each operation runs and a projection P decides where. The three
+dataflows systars builds today (OS, WS, IS) are three projections of matrix multiply under
+one linear schedule. [Lineage](docs/architecture/lineage.md) sets out the method, the
+schedules beyond it that the KPU executes, and full references.
+
+### Foundations
+
+- R. M. Karp, R. E. Miller, S. Winograd: systems of uniform recurrence equations (*J. ACM*, 1967)
+- H. T. Kung, C. E. Leiserson: systolic arrays (*Sparse Matrix Proceedings*, 1978)
+- D. I. Moldovan; P. Quinton; S. Y. Kung: space-time mapping and array synthesis (1983–1988)
+- E. T. L. Omtzigt: [SYSTARS](https://ieeexplore.ieee.org/document/18078) (1988), the original
+  C tool at Delft University of Technology, and domain flow architectures
+- [branes-ai/domain_flow](https://branes-ai.github.io/domain_flow/): SURE specifications,
+  schedule legality, free and piecewise-linear schedules
+
+### Engineering
+
+- [Gemmini](https://github.com/ucb-bar/gemmini) (UC Berkeley; H. Genc et al., DAC 2021):
+  systars began as a Python plan modelled on it, and keeps its execute command set, local
+  address encoding and accumulator. See [NOTICE](NOTICE).
+- [kpu-sim](https://github.com/stillwater-sc/kpu-sim): the CSP data movement model the tile
+  follows
+- [Amaranth HDL](https://amaranth-lang.org/): the Python HDL framework
+
+To cite systars, use [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository").

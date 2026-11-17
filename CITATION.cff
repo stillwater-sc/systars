@@ -1,0 +1,122 @@
+cff-version: 1.2.0
+message: "If you use systars, please cite it as below, and cite the work it builds on (references)."
+title: "systars: a Python generator for systolic/wavefront array RTL"
+type: software
+authors:
+  - name: "Stillwater Supercomputing, Inc."
+repository-code: "https://github.com/stillwater-sc/systars"
+url: "https://stillwater-sc.github.io/systars/"
+license: BSD-3-Clause
+version: 0.1.0
+preferred-citation:
+  type: conference-paper
+  title: "SYSTARS: A CAD Tool for the Synthesis and Analysis of VLSI Systolic/Wavefront Arrays"
+  authors:
+    - family-names: Omtzigt
+      given-names: "E. T. L."
+  collection-title: "Proceedings of the International Conference on Systolic Arrays"
+  year: 1988
+  doi: "10.1109/ARRAYS.1988.18078"
+references:
+  - type: article
+    title: "The Organization of Computations for Uniform Recurrence Equations"
+    authors:
+      - family-names: Karp
+        given-names: Richard M.
+      - family-names: Miller
+        given-names: Raymond E.
+      - family-names: Winograd
+        given-names: Shmuel
+    journal: "Journal of the ACM"
+    volume: 14
+    issue: "3"
+    start: 563
+    end: 590
+    year: 1967
+  - type: article
+    title: "The Parallel Execution of DO Loops"
+    authors:
+      - family-names: Lamport
+        given-names: Leslie
+    journal: "Communications of the ACM"
+    volume: 17
+    issue: "2"
+    start: 83
+    end: 93
+    year: 1974
+  - type: conference-paper
+    title: "Systolic Arrays (for VLSI)"
+    authors:
+      - family-names: Kung
+        given-names: H. T.
+      - family-names: Leiserson
+        given-names: Charles E.
+    collection-title: "Sparse Matrix Proceedings 1978"
+    publisher:
+      name: SIAM
+    start: 256
+    end: 282
+    year: 1979
+  - type: article
+    title: "On the Design of Algorithms for VLSI Systolic Arrays"
+    authors:
+      - family-names: Moldovan
+        given-names: Dan I.
+    journal: "Proceedings of the IEEE"
+    volume: 71
+    issue: "1"
+    start: 113
+    end: 120
+    year: 1983
+  - type: conference-paper
+    title: "Automatic Synthesis of Systolic Arrays from Uniform Recurrent Equations"
+    authors:
+      - family-names: Quinton
+        given-names: Patrice
+    collection-title: "Proceedings of the 11th Annual International Symposium on Computer Architecture"
+    start: 208
+    end: 214
+    year: 1984
+  - type: article
+    title: "Partitioning and Mapping Algorithms into Fixed Size Systolic Arrays"
+    authors:
+      - family-names: Moldovan
+        given-names: Dan I.
+      - family-names: Fortes
+        given-names: José A. B.
+    journal: "IEEE Transactions on Computers"
+    volume: "C-35"
+    issue: "1"
+    start: 1
+    end: 12
+    year: 1986
+  - type: book
+    title: "VLSI Array Processors"
+    authors:
+      - family-names: Kung
+        given-names: S. Y.
+    publisher:
+      name: Prentice Hall
+    year: 1988
+  - type: thesis
+    title: "Domain Flow and Streaming Architectures: A Paradigm for Efficient Parallel Computation"
+    authors:
+      - family-names: Omtzigt
+        given-names: "E. T. L."
+    institution:
+      name: Yale University
+    thesis-type: PhD
+  - type: conference-paper
+    title: "Gemmini: Enabling Systematic Deep-Learning Architecture Evaluation via Full-Stack Integration"
+    authors:
+      - family-names: Genc
+        given-names: Hasan
+      - name: "et al."
+    collection-title: "Proceedings of the 58th ACM/IEEE Design Automation Conference (DAC)"
+    year: 2021
+  - type: software
+    title: "domain_flow"
+    authors:
+      - name: "branes.ai"
+    repository-code: "https://github.com/branes-ai/domain_flow"
+    url: "https://branes-ai.github.io/domain_flow/"

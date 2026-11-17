@@ -17,6 +17,9 @@ Architecture:
     │  │ + Activ │ │ + Activ │     │ + Activ │   │
     │  └─────────┘ └─────────┘     └─────────┘   │
     └─────────────────────────────────────────────┘
+
+The accumulator follows Gemmini's (ucb-bar/gemmini; see NOTICE). The KPU tile has
+none: the Combiner replaces it (docs/architecture/combiner.md).
 """
 
 from amaranth import Cat, Module, Mux, Signal, signed, unsigned

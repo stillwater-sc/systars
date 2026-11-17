@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Systars is a Python-based systolic array RTL generator using Amaranth HDL. It generates synthesizable Verilog for configurable systolic array accelerators targeting linear algebra workloads. This is a modern Python reimplementation inspired by the original SYSTARS work at Delft University.
+Systars is a Python-based systolic array RTL generator using Amaranth HDL. It generates synthesizable Verilog for configurable systolic array accelerators targeting linear algebra workloads. This is a modern Python reimplementation of the original SYSTARS work at Delft University: array synthesis by space-time mapping of recurrence equations (schedule τ, projection P). Gemmini is an engineering reference, not the origin; credit it precisely (`docs/architecture/lineage.md`, `NOTICE`).
 
 ## Commands
 
