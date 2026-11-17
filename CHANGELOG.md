@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Combiner replaces the accumulator** (#38, 2026-11-17; port of
+  branes-ai/embodied-ai-soc-generator#74, #75, #76 and #77, kpugen PRs #78, #79, #81 and
+  #82). A unit on the result path between L1 and L2, in four parts:
+  - **The merge** (`memory/combiner.py`). Result rows go into L2's result group of 1R1W
+    pipelined banks, as an overwrite or an accumulate. Commits are in order, one per clock;
+    the last `combiner_latency` commits are forwarded, so back-to-back K blocks onto the
+    same rows see each other's sums. STORE reads in the clocks the merge leaves free
+    (`combiner_read_ready`).
+  - **The epilogue** (`memory/epilogue.py`), on a reduction's final commit: requantization
+    (scale, round-to-nearest-even shift, saturation to `input_bits`) and the SFU bank (NONE,
+    RELU, RELU6, CLIP), in either order.
+  - **MXINT8** (`memory/mx.py`). A finished row is encoded as OCP Microscaling blocks of
+    `min(32, C)` with one E8M0 scale each, packed in place.
+  - **Four profiles**, named by each final COMPUTE's epilogue code (`EPILOGUE_FINAL`, profile
+    index). `SystolicTop` takes them on `cmb_scale_<n>`, `cmb_control_<n>` and `cmb_clip_<n>`
+    (kpugen's tile: CSRs). `Matmul` reads its profile's format at START, so C's element size
+    and STORE's row bytes follow; `Conv2d` refuses a narrow or MX profile. `SystolicTop.busy`
+    covers the Combiner's pipeline.
+
+  The docs (`docs/architecture/combiner.md`, the lineage page, `NOTICE`, README,
+  `CLAUDE.md`) no longer describe a Gemmini-style accumulator.
+
 - **A banked L2 of two bank groups of 1R1W macros** (#17, 2026-11-17; port of
   branes-ai/embodied-ai-soc-generator#24, kpugen PR #73). The scratchpad is now built the
   way real SRAM macros allow, in place of the idealized model whose every bank had two

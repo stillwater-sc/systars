@@ -46,6 +46,7 @@ from .controller.streamer import Streamer
 from .controller.sync import SlotPool, Sync
 from .core.systolic_array import SystolicArray
 from .memory.combiner import Combiner
+from .memory.epilogue import PROFILES
 from .memory.local_addr import LocalAddr
 from .memory.scratchpad import make_l2
 
@@ -194,10 +195,10 @@ class SystolicTop(Component):
             # Sticky L1/fabric schedule error (controller/streamer.py)
             "l1_error": Out(1),
             # The Combiner epilogue's configuration (memory/epilogue.py; the tile's
-            # CMB_SCALE, CMB_CONTROL and CMB_CLIP CSRs)
-            "cmb_scale": In(32, init=1),
-            "cmb_control": In(32),
-            "cmb_clip": In(32),
+            # profile CSRs: CMB_SCALE, CMB_CONTROL and CMB_CLIP of each, #77)
+            **{f"cmb_scale_{n}": In(32, init=1) for n in range(PROFILES)},
+            **{f"cmb_control_{n}": In(32) for n in range(PROFILES)},
+            **{f"cmb_clip_{n}": In(32) for n in range(PROFILES)},
             # Sticky L2 bank conflict (memory/scratchpad.py)
             "l2_error": Out(1),
         }
@@ -434,9 +435,11 @@ class SystolicTop(Component):
             bm_out.combiner_read_valid.eq(combiner.read_valid),
             # The merge has the read port first: STORE waits for read_ready
             bm_out.combiner_read_ready.eq(combiner.read_ready),
-            combiner.scale_mul.eq(self.cmb_scale),
-            combiner.control.eq(self.cmb_control),
-            combiner.clip.eq(self.cmb_clip),
+            *[
+                getattr(combiner, f"{k}_{n}").eq(getattr(self, f"cmb_{k}_{n}"))
+                for n in range(PROFILES)
+                for k in ("scale", "control", "clip")
+            ],  # fmt: skip
             # The activation is the BlockMoverOut's, per element
         ]
 

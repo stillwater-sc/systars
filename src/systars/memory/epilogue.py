@@ -2,10 +2,12 @@
 The Combiner's epilogue (#75): what it fuses onto a reduction's finished rows.
 
 A COMPUTE's epilogue code (its 4-bit ``activation`` field, ``EPILOGUE_*``) marks the
-command that finishes a reduction (``EPILOGUE_FINAL``) and picks the SFU function.
-On that command's commits the Combiner applies, after the merge:
+command that finishes a reduction (``EPILOGUE_FINAL``) and names one of the Combiner's
+``PROFILES`` **profiles** (#77), each a set of the tile's ``CMB_*`` CSRs: the format,
+the order, the scale and shift, the clip bounds and the SFU function. On that command's
+commits the Combiner applies its profile, after the merge:
 
-- **Requantization** (when ``Requant.enable``): each ``acc_bits`` result times a
+- **Requantization** (when ``Profile.enable``): each ``acc_bits`` result times a
   signed 16-bit multiplier, shifted right with round-to-nearest-even, saturated to
   ``input_bits`` (int32 -> int8), the usual fixed-point rescale of an integer layer. A
   16-bit multiplier and one rounding shifter keep a lane small enough to build one per
@@ -15,7 +17,7 @@ On that command's commits the Combiner applies, after the merge:
   Combiner, stillwater-sc/kpu-sim#429) runs its fused activations; a piecewise-linear
   table is the next function the bank takes.
 
-The order is configured (``Requant.act_first``): requantize then the SFU (the SFU
+The order is the profile's (``Profile.act_first``): requantize then the SFU (the SFU
 works on the narrow values), or the SFU then requantize. A bias is merged before
 both, as a LOAD into the result group the reduction then accumulates onto.
 
@@ -41,10 +43,23 @@ from .mx import MXInt8Encoder, mxint8_row_model
 MUL_BITS = 16
 """Width of the requantization multiplier (``CMB_SCALE[15:0]``, signed)."""
 
+PROFILES = 4
+"""Combiner profiles: the epilogue configurations a COMPUTE can name."""
 EPILOGUE_FINAL = 1 << 3
-"""Epilogue code bit: this command finishes the reduction; apply the epilogue."""
-EPILOGUE_SFU_MASK = 0b111
-"""Epilogue code bits: the SFU function (``Activation``)."""
+"""Epilogue code bit: this command finishes the reduction; apply its profile."""
+EPILOGUE_PROFILE_MASK = PROFILES - 1
+"""Epilogue code bits: the profile (bit 2 is reserved)."""
+SFU_SHIFT = 12
+"""Where a profile's control word holds its SFU function (``Activation``, 3 bits)."""
+
+
+def epilogue_code(profile: int, *, final: bool = True) -> int:
+    """A COMPUTE's ``activation`` field: ``EPILOGUE_FINAL`` and the profile index."""
+    if not 0 <= profile < PROFILES:
+        raise ValueError(f"profile {profile}: the Combiner has {PROFILES}")
+    return (EPILOGUE_FINAL if final else 0) | profile
+
+
 STORE_NARROW = 1 << 3
 """A STORE's activation-field bit: its rows are finished and requantized, ``input_bits``
 elements in the low bytes (for the activation and the TRANSPOSE corner turn)."""
@@ -53,8 +68,9 @@ SFU_FUNCTIONS = (Activation.NONE, Activation.RELU, Activation.RELU6, Activation.
 
 
 @dataclass(frozen=True)
-class Requant:
-    """The epilogue's configuration (the tile's ``CMB_*`` CSRs)."""
+class Profile:
+    """A Combiner profile: the epilogue a finished row gets (the tile's ``CMB_*`` CSRs
+    for that profile; ``control_word``, ``scale_word`` and ``clip_word`` encode them)."""
 
     mul: int = 1
     """Signed 16-bit multiplier."""
@@ -72,6 +88,30 @@ class Requant:
     results when requantizing first, else the wide ones. Keep the bounds within it."""
     clip_hi: int = 0
     """CLIP's upper bound (signed 16-bit)."""
+    sfu: int = 0
+    """The SFU function, an ``Activation`` code (NONE, RELU, RELU6, CLIP)."""
+
+    def scale_word(self) -> int:
+        """``CMB_SCALE``: the multiplier in [15:0]."""
+        return self.mul & 0xFFFF
+
+    def control_word(self) -> int:
+        """``CMB_CONTROL``: shift[5:0], requant[8], act_first[9], mxint8[10], sfu[14:12]."""
+        return (
+            (self.shift & 0x3F)
+            | (int(self.enable) << 8)
+            | (int(self.act_first) << 9)
+            | (int(self.mx) << 10)
+            | ((self.sfu & 0b111) << SFU_SHIFT)
+        )
+
+    def clip_word(self) -> int:
+        """``CMB_CLIP``: lo[15:0], hi[31:16]."""
+        return (self.clip_lo & 0xFFFF) | (self.clip_hi & 0xFFFF) << 16
+
+
+Requant = Profile
+"""The name a profile had before there were several (#75)."""
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +125,7 @@ def wrap(x: int, bits: int) -> int:
     return x - (1 << bits) if x >> (bits - 1) else x
 
 
-def sfu_model(x: int, code: int, cfg: Requant) -> int:
+def sfu_model(x: int, code: int, cfg: Profile) -> int:
     if code == Activation.RELU.value:
         return max(0, x)
     if code == Activation.RELU6.value:
@@ -95,7 +135,7 @@ def sfu_model(x: int, code: int, cfg: Requant) -> int:
     return x
 
 
-def requant_model(x: int, cfg: Requant, out_bits: int) -> int:
+def requant_model(x: int, cfg: Profile, out_bits: int) -> int:
     """``x * mul``, shifted right ``shift`` with round-to-nearest-even, saturated."""
     p = x * wrap(cfg.mul, MUL_BITS)
     s = cfg.shift
@@ -106,10 +146,10 @@ def requant_model(x: int, cfg: Requant, out_bits: int) -> int:
     return min(hi, max(lo, p))
 
 
-def epilogue_model(values: list[int], code: int, cfg: Requant, out_bits: int) -> list[int]:
-    """A finished row's results after the epilogue (``code`` without the FINAL bit). For
-    MXINT8 (``cfg.mx``): the elements, then the block scales (``mxint8_row_model``)."""
-    sfu = code & EPILOGUE_SFU_MASK
+def epilogue_model(values: list[int], cfg: Profile, out_bits: int) -> list[int]:
+    """A finished row's results after profile ``cfg``. For MXINT8 (``cfg.mx``): the
+    elements, then the block scales (``mxint8_row_model``)."""
+    sfu = cfg.sfu
     if cfg.mx:
         elems, scales = mxint8_row_model([sfu_model(x, sfu, cfg) for x in values])
         return elems + scales
@@ -199,20 +239,21 @@ class EpilogueLane(Component):
 
 
 def apply_epilogue(
-    m, row: Value, code: Value, cfg: dict, *, lanes: int, wide: int, narrow: int, width: int
+    m, row: Value, cfg: dict, *, lanes: int, wide: int, narrow: int, width: int
 ) -> Value:
     """The epilogue on a merged row of ``lanes`` ``wide``-bit results, one
     ``EpilogueLane`` each: the SFU and, when ``cfg["enable"]``, requantization to
     ``narrow`` bits packed in the low bytes; or, when ``cfg["mx"]``, the SFU then MXINT8
     (``memory/mx.py``). ``cfg`` holds the configuration signals (``mul``, ``shift``,
-    ``enable``, ``act_first``, ``mx``, ``clip_lo``, ``clip_hi``)."""
+    ``enable``, ``act_first``, ``mx``, ``sfu``, ``clip_lo``, ``clip_hi``): the profile the row's
+    request names."""
     wide_out, narrow_out = [], []
     for i in range(lanes):
         lane = EpilogueLane(wide, narrow)
         m.submodules[f"epilogue_{i}"] = lane
         m.d.comb += [
             lane.x.eq(row[i * wide : (i + 1) * wide]),
-            lane.code.eq(code[:3]),
+            lane.code.eq(cfg["sfu"]),
             lane.mul.eq(cfg["mul"][:MUL_BITS]),
             lane.shift.eq(cfg["shift"]),
             lane.act_first.eq(cfg["act_first"]),

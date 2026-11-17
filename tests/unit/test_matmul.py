@@ -9,13 +9,14 @@ Unit tests for the Matmul ISA instruction.
 - Configuration errors.
 """
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from amaranth import Elaboratable, Module
 
 from systars.config import Activation, Dataflow, SystolicConfig
 from systars.controller.sync import Sync
-from systars.csr import CSR
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.matmul import IS, OS, WS, Matmul, MatmulCmd, MatmulError
 from systars.memory.epilogue import (
@@ -393,11 +394,13 @@ class TestErrors:
     def test_mxint8_c_layouts_refused(self, case, dataflow, options, N, c_stride):
         """With CMB_CONTROL.mxint8 (#76), Matmul refuses what MX blocks can't hold."""
         cmds = setup(4, N, 4, 4, N, c_stride, options=options, dataflow=dataflow)
-        result = run_isa(Matmul(config()), cmds, MatmulCmd.START, inputs={"combiner_mx": 1})
+        result = run_isa(Matmul(config()), cmds, MatmulCmd.START, inputs={"combiner_formats": 0b10})
         assert result.error_code == MatmulError.UNSUPPORTED_LAYOUT, case
         assert not result.commands
         ok = setup(4, 8, 4, 4, 8, 2 * mx_row_bytes(4), dataflow=OS)
-        assert not run_isa(Matmul(config()), ok, MatmulCmd.START, inputs={"combiner_mx": 1}).error
+        assert not run_isa(
+            Matmul(config()), ok, MatmulCmd.START, inputs={"combiner_formats": 0b10}
+        ).error
 
     @pytest.mark.parametrize("case", ["zero_a_stride", "zero_b_stride", "short_c_stride"])
     def test_rejected_layouts(self, case):
@@ -443,6 +446,9 @@ class MatmulOnTop(Elaboratable):
         return m
 
 
+PROFILE_IN_USE = 2
+
+
 def run_on_top(
     cfg, M, N, K, dataflow, *, seed, bias=None, accumulate=False, stats=None,
     activation=0, requant=None,
@@ -460,13 +466,15 @@ def run_on_top(
     beat = cfg.blockmover_buswidth // 8
     rng = np.random.default_rng(seed)
     A, B, D, C0, expected = operands(rng, M, N, K, bias=bias, accumulate=accumulate)
-    rq = requant or Requant()
+    # The C tiles' Combiner profile: profile PROFILE_IN_USE (not 0, so the index is
+    # exercised), the SFU function ``activation``
+    rq = replace(requant or Requant(), sfu=activation)
     narrow = rq.enable
     dim = cfg.grid_rows * cfg.tile_rows
     mx_bytes, tiles_n = mx_row_bytes(dim), -(-N // dim)
     if rq.mx:
         # MXINT8 C, tile by tile: each row of a C tile its elements, then its scales
-        sfu = [[sfu_model(int(x), activation, rq) for x in row] for row in expected]
+        sfu = [[sfu_model(int(x), rq.sfu, rq) for x in row] for row in expected]
         expected = np.array(
             [
                 [list(mxint8_row_bytes_model(row[j * dim : (j + 1) * dim])) for j in range(tiles_n)]
@@ -475,10 +483,7 @@ def run_on_top(
         )
     else:
         expected = np.array(
-            [
-                epilogue_model(list(map(int, row)), activation, rq, cfg.input_bits)
-                for row in expected
-            ]
+            [epilogue_model(list(map(int, row)), rq, cfg.input_bits) for row in expected]
         )
     c_elem = 1 if narrow else 4
     c_stride = tiles_n * mx_bytes if rq.mx else c_elem * N
@@ -499,12 +504,13 @@ def run_on_top(
     addrs = {MatmulCmd.CONFIG_B_ADDR: b_addr, MatmulCmd.CONFIG_C_ADDR: c_addr}
 
     async def testbench(ctx):
-        ctx.set(top.cmb_scale, rq.mul & 0xFFFF_FFFF)
-        control = rq.shift | (CSR.CMB_REQUANT if rq.enable else 0)
-        control |= CSR.CMB_MXINT8 if rq.mx else 0
-        ctx.set(top.cmb_control, control | (CSR.CMB_ACT_FIRST if rq.act_first else 0))
-        ctx.set(top.cmb_clip, (rq.clip_lo & 0xFFFF) | (rq.clip_hi & 0xFFFF) << 16)
-        options = int(accumulate) | activation << 1  # int8 C follows CMB_CONTROL.requant
+        n = PROFILE_IN_USE
+        ctx.set(getattr(top, f"cmb_scale_{n}"), rq.scale_word())
+        ctx.set(getattr(top, f"cmb_control_{n}"), rq.control_word())
+        ctx.set(getattr(top, f"cmb_clip_{n}"), rq.clip_word())
+        # Another profile, set otherwise, must not leak in
+        ctx.set(top.cmb_control_0, Requant(enable=True, shift=3, sfu=1).control_word())
+        options = int(accumulate) | n << 1  # the profile; C's format follows it
         cmds = setup(
             M, N, K, K, N, c_stride, a_addr=a_addr, dataflow=dataflow,
             d_addr=d_addr if bias else 0, d_stride=d_stride, options=options,
@@ -599,7 +605,7 @@ def test_banked_l2_sustains_the_stream_and_matches_the_ideal_model(dataflow):
       BlockMover writes L2. In OS the Streamer reads an A and a B row in the same
       clocks, and the BlockMover's writes land beside the reads. (The stationary
       mode's two-read clocks, PRELOAD beside a stream, are in
-      ``test_execute_controller.py``, ``TestOnTheBankedL2``: Matmul's WS and IS here
+      ``test_streamer.py``, ``TestOnTheBankedL2``: Matmul's WS and IS here
       are bound by their loads.)
     - C is bit-identical to the idealized two-read-port model, in the same number of
       cycles, with the same L2 traffic: the banked L2 never stalls anything."""

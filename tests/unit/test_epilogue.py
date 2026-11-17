@@ -10,13 +10,13 @@ These tests verify:
 """
 
 import random
+from dataclasses import replace
 
 import pytest
 from amaranth import Elaboratable, Module, Signal, signed
 from amaranth.sim import Simulator
 
 from systars.config import Activation
-from systars.csr import CSR
 from systars.memory.combiner import Combiner
 from systars.memory.epilogue import (
     EPILOGUE_FINAL,
@@ -118,6 +118,13 @@ def narrow(word, lanes=4):
     return [v - 256 if v & 0x80 else v for v in vals]
 
 
+def set_profile(ctx, dut, n, profile):
+    """Write profile ``n``'s configuration on the Combiner's ports (the tile's CSRs)."""
+    ctx.set(getattr(dut, f"scale_{n}"), profile.scale_word())
+    ctx.set(getattr(dut, f"control_{n}"), profile.control_word())
+    ctx.set(getattr(dut, f"clip_{n}"), profile.clip_word())
+
+
 @pytest.mark.parametrize(
     "code,rq",
     [
@@ -132,33 +139,72 @@ def narrow(word, lanes=4):
     ],
 )
 def test_the_combiner_applies_it_on_the_final_commit_only(code, rq):
-    """Two partials, then a FINAL accumulate: the earlier commits stay raw sums (a
-    non-final row is still a partial), the final one is merged, then finished."""
+    """Two partials, then a FINAL accumulate naming profile 3: the earlier commits stay
+    raw sums (a non-final row is still a partial), the final one is merged, then
+    finished with profile 3, whatever profile 0 holds."""
     cfg = config()
     dut = Combiner(cfg)
     a, b, c = [100, -200, 300, -400], [5, 6, -7, 8], [-1000, 900, 13, 27]
+    prof = replace(rq, sfu=code)
 
     async def tb(ctx):
-        ctx.set(dut.scale_mul, rq.mul & 0xFFFF_FFFF)
-        ctx.set(dut.control, rq.shift | (CSR.CMB_REQUANT if rq.enable else 0)
-                | (CSR.CMB_ACT_FIRST if rq.act_first else 0))  # fmt: skip
-        ctx.set(dut.clip, (rq.clip_lo & 0xFFFF) | (rq.clip_hi & 0xFFFF) << 16)
+        set_profile(ctx, dut, 3, prof)
+        set_profile(ctx, dut, 0, Requant(enable=True, mul=9, shift=1, sfu=1))  # a decoy
         d = Driver(ctx, dut, cfg)
-        ctx.set(dut.write_epilogue, code)  # no FINAL bit: no epilogue
+        ctx.set(dut.write_epilogue, 3)  # no FINAL bit: no epilogue
         await d.clock((3, a, 0))
         await d.clock((3, b, 1))
         await d.drain()
         assert await d.read(3) == [x + y for x, y in zip(a, b, strict=True)]
-        ctx.set(dut.write_epilogue, EPILOGUE_FINAL | code)
+        ctx.set(dut.write_epilogue, EPILOGUE_FINAL | 3)
         await d.clock((3, c, 1))
         ctx.set(dut.write_epilogue, 0)
         await d.drain()
         merged = [x + y + z for x, y, z in zip(a, b, c, strict=True)]
-        want = epilogue_model(merged, code, rq, cfg.input_bits)
+        want = epilogue_model(merged, prof, cfg.input_bits)
         got = await d.read(3)
-        if rq.enable:
+        if prof.enable:
             got = narrow(pack(got))
         assert got == want
+
+    run_sim(dut, tb)
+
+
+def test_each_request_gets_the_profile_it_names():
+    """#77: four back-to-back FINAL commits, each naming another profile, on four rows:
+    each row is finished with its own profile, though they share the pipeline."""
+    cfg = config(latency=3)
+    dut = Combiner(cfg)
+    profiles = [
+        Requant(),
+        Requant(sfu=Activation.RELU.value),
+        Requant(enable=True, mul=3, shift=4),
+        Requant(
+            enable=True,
+            mul=-1,
+            shift=2,
+            act_first=True,
+            sfu=Activation.CLIP.value,
+            clip_lo=-30,
+            clip_hi=10,
+        ),  # fmt: skip
+    ]
+    rows = [[100, -200, 3000, -4], [-5, 6, -70, 800], [1000, -900, 13, 27], [64, -64, 32, -32]]
+
+    async def tb(ctx):
+        for n, prof in enumerate(profiles):
+            set_profile(ctx, dut, n, prof)
+        d = Driver(ctx, dut, cfg)
+        for n, row in enumerate(rows):
+            ctx.set(dut.write_epilogue, EPILOGUE_FINAL | n)
+            await d.clock((n, row, 0))
+        ctx.set(dut.write_epilogue, 0)
+        await d.drain()
+        for n, (row, prof) in enumerate(zip(rows, profiles, strict=True)):
+            got = await d.read(n)
+            if prof.enable:
+                got = narrow(pack(got))
+            assert got == epilogue_model(row, prof, cfg.input_bits), n
 
     run_sim(dut, tb)
 

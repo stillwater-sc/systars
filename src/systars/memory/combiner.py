@@ -41,12 +41,12 @@ row with a request still in the pipeline, so it reads only committed rows whatev
 order of the tokens and completions around it.
 """
 
-from amaranth import Cat, Module, Mux, Signal, signed, unsigned
+from amaranth import Array, Cat, Module, Mux, Signal, signed, unsigned
 from amaranth.lib.memory import Memory
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
-from .epilogue import EPILOGUE_FINAL, apply_epilogue
+from .epilogue import EPILOGUE_FINAL, PROFILES, SFU_SHIFT, apply_epilogue
 from .local_addr import LocalAddr
 
 
@@ -119,10 +119,11 @@ class Combiner(Component):
         write_req, write_addr, write_data, accumulate: a result row to commit (a local
             address with the Combiner bit), added to the row's value with ``accumulate``.
             One per clock, never refused.
-        write_epilogue: the request's epilogue code (``memory/epilogue.py``)
-        scale_mul, control, clip: the epilogue's configuration (the tile's ``CMB_SCALE``,
-            ``CMB_CONTROL``: shift[5:0], requant[8], act_first[9], mxint8[10];
-            ``CMB_CLIP``: lo[15:0], hi[31:16])
+        write_epilogue: the request's epilogue code (``memory/epilogue.py``): FINAL and
+            the profile its finished rows get
+        scale_<n>, control_<n>, clip_<n>: profile ``n``'s configuration (the tile's
+            ``CMB_SCALE``; ``CMB_CONTROL``: shift[5:0], requant[8], act_first[9],
+            mxint8[10], sfu[14:12]; ``CMB_CLIP``: lo[15:0], hi[31:16])
         read_req, read_addr: STORE's read; it is taken in a clock with ``read_ready``
             (hold ``read_req`` until then)
         read_data, read_valid: its row, ``combiner_latency`` clocks after it was taken
@@ -146,9 +147,9 @@ class Combiner(Component):
                 # A request is in the pipeline: reconfigure the epilogue only when
                 # this (and the tile's busy) is clear
                 "busy": Out(1),
-                "scale_mul": In(32, init=1),
-                "control": In(32),
-                "clip": In(32),
+                **{f"scale_{n}": In(32, init=1) for n in range(PROFILES)},
+                **{f"control_{n}": In(32) for n in range(PROFILES)},
+                **{f"clip_{n}": In(32) for n in range(PROFILES)},
             }
         )
 
@@ -242,17 +243,26 @@ class Combiner(Component):
         )
         merged = Signal(signed(width))
         m.d.comb += merged.eq(Mux(c_acc, summed, c_data))
+        # The profile the committing request names
+        sel = st_ep[-1][:2]
+        scale, control, clip = (Signal(32, name=f"profile_{k}") for k in ("scale", "control", "clip"))  # fmt: skip
+        m.d.comb += [
+            scale.eq(Array(getattr(self, f"scale_{n}") for n in range(PROFILES))[sel]),
+            control.eq(Array(getattr(self, f"control_{n}") for n in range(PROFILES))[sel]),
+            clip.eq(Array(getattr(self, f"clip_{n}") for n in range(PROFILES))[sel]),
+        ]
         ep_cfg = {
-            "mul": self.scale_mul.as_signed(),
-            "shift": self.control[0:6],
-            "enable": self.control[8],
-            "act_first": self.control[9],
-            "mx": self.control[10],
-            "clip_lo": self.clip[0:16].as_signed(),
-            "clip_hi": self.clip[16:32].as_signed(),
+            "mul": scale.as_signed(),
+            "shift": control[0:6],
+            "enable": control[8],
+            "act_first": control[9],
+            "mx": control[10],
+            "sfu": control[SFU_SHIFT : SFU_SHIFT + 3],
+            "clip_lo": clip[0:16].as_signed(),
+            "clip_hi": clip[16:32].as_signed(),
         }
         finished = apply_epilogue(
-            m, merged, st_ep[-1], ep_cfg, lanes=lanes, wide=eb, narrow=cfg.input_bits, width=width
+            m, merged, ep_cfg, lanes=lanes, wide=eb, narrow=cfg.input_bits, width=width
         )
         commit = Signal(signed(width))
         m.d.comb += commit.eq(Mux(st_ep[-1] & EPILOGUE_FINAL, finished, merged))

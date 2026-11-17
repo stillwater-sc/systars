@@ -16,7 +16,6 @@ import pytest
 from amaranth.sim import Simulator
 
 from systars.config import Activation
-from systars.csr import CSR
 from systars.memory.combiner import Combiner
 from systars.memory.epilogue import EPILOGUE_FINAL, Requant, epilogue_model
 from systars.memory.mx import (
@@ -109,19 +108,19 @@ def test_the_combiner_encodes_the_final_commit_only(code):
     a, b, c = [100, -2000, 300, -4], [5, 6, -7, 8], [-1000, 900, 13, 27]
 
     async def tb(ctx):
-        ctx.set(dut.control, CSR.CMB_MXINT8)
+        ctx.set(dut.control_1, Requant(mx=True, sfu=code).control_word())  # profile 1
         d = Driver(ctx, dut, cfg)
-        ctx.set(dut.write_epilogue, code)
+        ctx.set(dut.write_epilogue, 1)
         await d.clock((3, a, 0))
         await d.clock((3, b, 1))
         await d.drain()
         assert await d.read(3) == [x + y for x, y in zip(a, b, strict=True)]
-        ctx.set(dut.write_epilogue, EPILOGUE_FINAL | code)
+        ctx.set(dut.write_epilogue, EPILOGUE_FINAL | 1)
         await d.clock((3, c, 1))
         ctx.set(dut.write_epilogue, 0)
         await d.drain()
         merged = [x + y + z for x, y, z in zip(a, b, c, strict=True)]
-        want = epilogue_model(merged, code, Requant(mx=True), cfg.input_bits)
+        want = epilogue_model(merged, Requant(mx=True, sfu=code), cfg.input_bits)
         got = pack(await d.read(3)).to_bytes(cfg.combiner_width // 8, "little")
         assert list(got[: mx_row_bytes(4)]) == [v & 0xFF for v in want]
 

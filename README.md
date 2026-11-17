@@ -117,7 +117,7 @@ print(v)
 | PEArray | ✅ Done | Combinational PE grid (tile_rows × tile_cols) |
 | SystolicArray | ✅ Done | Pipelined PEArray grid (grid_rows × grid_cols) |
 | Scratchpad (L2) | ✅ Done | Two bank groups of 1R1W banks, two reads per clock ([L2](docs/architecture/l2.md)) |
-| Combiner (storage) | ✅ Done | Result memory with ReLU/ReLU6 on readout (no scaling yet); the [Combiner](docs/architecture/combiner.md)'s function is #38 |
+| Combiner | ✅ Done | Merges results into L2's result group; requantization, SFU bank and MXINT8 on a reduction's final commit, four profiles ([Combiner](docs/architecture/combiner.md)) |
 | Streamer | ✅ Done | L2 → L1 → fabric: EXECUTE commands (CONFIG, PRELOAD, COMPUTE) |
 | BlockMoverIn | ✅ Done | The BlockMover's inbound leg, L3 → L2 (LOAD) |
 | BlockMoverOut | ✅ Done | The BlockMover's outbound leg, Combiner → L3 (STORE) |
@@ -320,8 +320,8 @@ schedules beyond it that the KPU executes, and full references.
 ### Engineering
 
 - [Gemmini](https://github.com/ucb-bar/gemmini) (UC Berkeley; H. Genc et al., DAC 2021):
-  systars began as a Python plan modelled on it, and keeps its execute command set, local
-  address encoding and accumulator. See [NOTICE](NOTICE).
+  systars began as a Python plan modelled on it, and keeps its execute command set and local
+  address encoding. Its accumulator was replaced by the Combiner. See [NOTICE](NOTICE).
 - [kpu-sim](https://github.com/stillwater-sc/kpu-sim): the CSP data movement model the tile
   follows
 - [Amaranth HDL](https://amaranth-lang.org/): the Python HDL framework

@@ -87,7 +87,7 @@ class MatmulCmd(IntEnum):
     CONFIG_B_STRIDE = 0x21
     CONFIG_C_STRIDE = 0x22
     CONFIG_D_STRIDE = 0x23  # 0 = D is one row, added to every row of C
-    CONFIG_OPTIONS = 0x30  # data[0]=accumulate, data[3:1]=activation
+    CONFIG_OPTIONS = 0x30  # data[0]=accumulate, data[2:1]=the Combiner profile (#77)
     CONFIG_DATAFLOW = 0x31  # data[1:0]: 0 = OS, 1 = WS, 2 = IS (default: OS if built, else WS)
     START = 0xF0
     ABORT = 0xFF
@@ -185,13 +185,13 @@ class Matmul(Component):
             Signal(32, name=f"reg_{n}_stride") for n in "ABCD"
         )
         reg_accumulate = Signal()
-        reg_activation = Signal(3)
-        # int8 C: the Combiner requantizes the finished rows (CMB_CONTROL.requant, latched
+        reg_profile = Signal(2)  # the Combiner profile of the finished C tiles
+        # int8 C: the profile requantizes the finished rows (its CMB_CONTROL.requant, latched
         # at START), so C's elements are input_bits wide; the two can't disagree
         reg_narrow = Signal()
         c_bytes = Signal(range(combiner_bytes + 1))
         m.d.comb += c_bytes.eq(Mux(reg_narrow, in_bytes, combiner_bytes))
-        # MXINT8 C (CMB_CONTROL.mxint8, latched at START; memory/mx.py): C is written tile
+        # MXINT8 C (its profile's CMB_CONTROL.mxint8, latched at START; memory/mx.py): C is written tile
         # by tile, each row of a C tile its dim int8 elements and then its block scales
         # (mx_row_bytes(dim) bytes), the tiles of a C row side by side
         reg_mx = Signal()
@@ -322,15 +322,15 @@ class Matmul(Component):
                     with m.Case(MatmulCmd.CONFIG_OPTIONS):
                         m.d.sync += [
                             reg_accumulate.eq(self.cfg_data[0]),
-                            reg_activation.eq(self.cfg_data[1:4]),
+                            reg_profile.eq(self.cfg_data[1:3]),
                         ]
                     with m.Case(MatmulCmd.CONFIG_DATAFLOW):
                         m.d.sync += df.eq(self.cfg_data[0:2])
                     with m.Case(MatmulCmd.START):
                         with m.If(dims_valid & addrs_valid):
                             m.d.sync += [
-                                reg_narrow.eq(self.combiner_requant),
-                                reg_mx.eq(self.combiner_mx),
+                                reg_narrow.eq(self.combiner_formats.bit_select(2 * reg_profile, 1)),
+                                reg_mx.eq(self.combiner_formats.bit_select(2 * reg_profile + 1, 1)),
                                 tiles_M.eq((reg_M + dim - 1) >> dim_shift),
                                 tiles_N.eq((reg_N + dim - 1) >> dim_shift),
                                 tiles_K.eq((reg_K + dim - 1) >> dim_shift),
@@ -425,7 +425,7 @@ class Matmul(Component):
                 Mux(combiner_in, ExecOpcode.COMPUTE_ACCUMULATE, ExecOpcode.COMPUTE),
                 rs1=bufs.a_addr, rs2=bufs.b_addr, rd=bufs.combiner_addr, k_dim=tile_K,
                 chain=bufs.chain(first_k, last_k),
-                activation=Mux(last_k, EPILOGUE_FINAL | reg_activation, 0),
+                activation=Mux(last_k, EPILOGUE_FINAL | reg_profile, 0),
                 sync=bufs.compute(first_k=first_k, last_k=last_k, acquire=first_k & ~combiner_in),
                 then=bufs.next_l2(),
             )  # fmt: skip
@@ -443,7 +443,7 @@ class Matmul(Component):
                 rs1=Mux(df == IS, bufs.b_addr, bufs.a_addr), rd=bufs.combiner_addr,
                 k_dim=Mux(df == IS, tile_N, tile_M),
                 # The last K tile finishes the reduction: the Combiner's epilogue
-                activation=Mux(last_k, EPILOGUE_FINAL | reg_activation, 0),
+                activation=Mux(last_k, EPILOGUE_FINAL | reg_profile, 0),
                 sync=Mux(
                     df == IS,
                     bufs.compute(
