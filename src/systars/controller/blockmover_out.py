@@ -184,7 +184,13 @@ class BlockMoverOut(Component):
         gather = Signal(16)  # Combiner rows to read
         issued = Signal(16)
         received = Signal(16)
-        turned_row = Cat(*[t[:eb] for t in turn])  # element 0 of every buffered row
+        # A finished, requantized row (activation bit 3, ``STORE_NARROW``) holds its
+        # elements at input_bits, in its low bytes (memory/epilogue.py)
+        nb = cfg.input_bits
+        narrow = activation_reg[3]
+        turned_wide = Cat(*[t[:eb] for t in turn])  # element 0 of every buffered row
+        turned_narrow = Cat(*[t[:nb] for t in turn])
+        turned_row = Mux(narrow, turned_narrow, turned_wide)
 
         offset = Signal(off_bits)
         two_beats = Signal()
@@ -235,15 +241,26 @@ class BlockMoverOut(Component):
             # Combiner's own read activation is disabled by SystolicTop, so this
             # is the only one). A TRANSPOSE's row comes from the corner-turn buffer.
             source = Mux(transpose, turned_row, self.combiner_read_data)
-            return activate_row(source, activation_reg, cfg.acc_bits, lanes)
+            code = activation_reg[:3]
+            n_narrow = cfg.combiner_width // nb
+            return Mux(
+                narrow,
+                activate_row(source, code, nb, n_narrow),
+                activate_row(source, code, cfg.acc_bits, lanes),
+            )
 
         accepted = (self.cmd_opcode == BlockMoverOpcode.MEMCPY) | (
             self.cmd_opcode == BlockMoverOpcode.TRANSPOSE
         )
         is_transpose = self.cmd_opcode == BlockMoverOpcode.TRANSPOSE
+        # A whole row (0) and the longest row: a wide row's bytes, or a narrow (packed)
+        # row's ``lanes * input_bits / 8``. So a TRANSPOSE never gathers more rows than
+        # the corner-turn buffer holds (``lanes``)
+        narrow_bytes = lanes * cfg.input_bits // 8
+        row_max = Mux(self.cmd_activation[3], narrow_bytes, combiner_bytes)
         cmd_row_bytes = Mux(
-            (self.cmd_row_bytes == 0) | (self.cmd_row_bytes > combiner_bytes),
-            combiner_bytes,
+            (self.cmd_row_bytes == 0) | (self.cmd_row_bytes > row_max),
+            row_max,
             self.cmd_row_bytes,
         )
 
@@ -262,7 +279,13 @@ class BlockMoverOut(Component):
                         activation_reg.eq(self.cmd_activation),
                         row.eq(0),
                         transpose.eq(is_transpose),
-                        gather.eq((cmd_row_bytes * 8 + eb - 1) // eb),
+                        gather.eq(
+                            Mux(
+                                self.cmd_activation[3],
+                                (cmd_row_bytes * 8 + nb - 1) // nb,
+                                (cmd_row_bytes * 8 + eb - 1) // eb,
+                            )
+                        ),
                         issued.eq(0),
                         received.eq(0),
                     ]
@@ -325,7 +348,7 @@ class BlockMoverOut(Component):
                     strb_buf.eq(keep << offset),
                 ]
                 with m.If(transpose):
-                    m.d.sync += [t.eq(t >> eb) for t in turn]
+                    m.d.sync += [t.eq(Mux(narrow, t >> nb, t >> eb)) for t in turn]
                 with m.If(streaming):
                     m.next = "SEND_STREAM"
                 with m.Else():

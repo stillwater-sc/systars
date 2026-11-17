@@ -30,6 +30,11 @@ the ``combiner_latency`` clocks before it lands, so the pipeline keeps those com
 and forwards the latest one for the same row. Back-to-back K blocks onto the same rows
 see each other's sums.
 
+**The epilogue** (#75, ``memory/epilogue.py``): a request whose ``epilogue`` code has
+``EPILOGUE_FINAL`` (the command that finishes a reduction) commits its merged row after
+the epilogue: requantization and the SFU function, in the configured order. Forwarding
+carries the finished row like any other.
+
 **STORE** reads the group on the same read port, in clocks the merge isn't reading
 (``read_ready``): the BlockMover waits, the Streamer never does. It is also held off a
 row with a request still in the pipeline, so it reads only committed rows whatever the
@@ -41,6 +46,7 @@ from amaranth.lib.memory import Memory
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
+from .epilogue import EPILOGUE_FINAL, apply_epilogue
 from .local_addr import LocalAddr
 
 
@@ -113,6 +119,10 @@ class Combiner(Component):
         write_req, write_addr, write_data, accumulate: a result row to commit (a local
             address with the Combiner bit), added to the row's value with ``accumulate``.
             One per clock, never refused.
+        write_epilogue: the request's epilogue code (``memory/epilogue.py``)
+        scale_mul, control, clip: the epilogue's configuration (the tile's ``CMB_SCALE``,
+            ``CMB_CONTROL``: shift[5:0], requant[8], act_first[9]; ``CMB_CLIP``: lo[15:0],
+            hi[31:16])
         read_req, read_addr: STORE's read; it is taken in a clock with ``read_ready``
             (hold ``read_req`` until then)
         read_data, read_valid: its row, ``combiner_latency`` clocks after it was taken
@@ -132,6 +142,13 @@ class Combiner(Component):
                 "write_addr": In(unsigned(32)),
                 "write_data": In(signed(width)),
                 "accumulate": In(1),
+                "write_epilogue": In(4),
+                # A request is in the pipeline: reconfigure the epilogue only when
+                # this (and the tile's busy) is clear
+                "busy": Out(1),
+                "scale_mul": In(32, init=1),
+                "control": In(32),
+                "clip": In(32),
             }
         )
 
@@ -169,6 +186,10 @@ class Combiner(Component):
         st_bank = [Signal(max(1, la.combiner_bank_bits), name=f"p{i}_bank") for i in range(latency)]
         st_row = [Signal(la.combiner_row_bits, name=f"p{i}_row") for i in range(latency)]
         st_data = [Signal(signed(width), name=f"p{i}_data") for i in range(latency)]
+        st_ep = [Signal(4, name=f"p{i}_epilogue") for i in range(latency)]
+        m.d.sync += st_ep[0].eq(Mux(self.write_req, self.write_epilogue, 0))
+        for i in range(1, latency):
+            m.d.sync += st_ep[i].eq(st_ep[i - 1])
         m.d.sync += [
             st_valid[0].eq(self.write_req),
             st_acc[0].eq(merge_reads),
@@ -187,6 +208,7 @@ class Combiner(Component):
                 st_data[i].eq(st_data[i - 1]),
             ]
         c_valid, c_acc, c_key = st_valid[-1], st_acc[-1], st_key[-1]
+        m.d.comb += self.busy.eq(self.write_req | Cat(*st_valid).any())
         c_bank, c_row, c_data = st_bank[-1], st_row[-1], st_data[-1]
 
         # The commits of the last `latency` clocks: a read issued `latency` clocks ago
@@ -218,8 +240,21 @@ class Combiner(Component):
                 ]
             )  # fmt: skip
         )
+        merged = Signal(signed(width))
+        m.d.comb += merged.eq(Mux(c_acc, summed, c_data))
+        ep_cfg = {
+            "mul": self.scale_mul.as_signed(),
+            "shift": self.control[0:6],
+            "enable": self.control[8],
+            "act_first": self.control[9],
+            "clip_lo": self.clip[0:16].as_signed(),
+            "clip_hi": self.clip[16:32].as_signed(),
+        }
+        finished = apply_epilogue(
+            m, merged, st_ep[-1], ep_cfg, lanes=lanes, wide=eb, narrow=cfg.input_bits, width=width
+        )
         commit = Signal(signed(width))
-        m.d.comb += commit.eq(Mux(c_acc, summed, c_data))
+        m.d.comb += commit.eq(Mux(st_ep[-1] & EPILOGUE_FINAL, finished, merged))
         m.d.sync += [h_valid[0].eq(c_valid), h_key[0].eq(c_key), h_data[0].eq(commit)]
         for i in range(1, latency):
             m.d.sync += [

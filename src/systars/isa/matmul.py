@@ -68,6 +68,7 @@ from amaranth.lib.wiring import Component, In, Out
 
 from ..config import Dataflow, SystolicConfig
 from ..controller.sync import Sync
+from ..memory.epilogue import EPILOGUE_FINAL, STORE_NARROW
 from ..memory.local_addr import LocalAddr
 from ..util.commands import BlockMoverOpcode, ExecOpcode
 from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, TileBuffers, command_ports
@@ -184,6 +185,11 @@ class Matmul(Component):
         )
         reg_accumulate = Signal()
         reg_activation = Signal(3)
+        # int8 C: the Combiner requantizes the finished rows (CMB_CONTROL.requant, latched
+        # at START), so C's elements are input_bits wide; the two can't disagree
+        reg_narrow = Signal()
+        c_bytes = Signal(range(combiner_bytes + 1))
+        m.d.comb += c_bytes.eq(Mux(reg_narrow, in_bytes, combiner_bytes))
         df = Signal(2, init=self.default_dataflow)  # dataflow of the next START
         df_ok = Signal()
         m.d.comb += df_ok.eq(
@@ -219,9 +225,7 @@ class Matmul(Component):
         m.d.comb += [
             a_tile.eq(reg_A + (tile_i << dim_shift) * a_stride + (tile_k << dim_shift) * in_bytes),
             b_tile.eq(reg_B + (tile_k << dim_shift) * b_stride + (tile_j << dim_shift) * in_bytes),
-            c_tile.eq(
-                reg_C + (tile_i << dim_shift) * c_stride + (tile_j << dim_shift) * combiner_bytes
-            ),
+            c_tile.eq(reg_C + (tile_i << dim_shift) * c_stride + (tile_j << dim_shift) * c_bytes),
             d_tile.eq(
                 reg_D + (tile_i << dim_shift) * d_stride + (tile_j << dim_shift) * combiner_bytes
             ),
@@ -247,7 +251,11 @@ class Matmul(Component):
         # BlockMover), and C rows that do not overlap
         layout_ok = Signal()
         m.d.comb += layout_ok.eq(
-            (a_stride != 0) & (b_stride != 0) & (c_stride >= reg_N * combiner_bytes)
+            (a_stride != 0)
+            & (b_stride != 0)
+            & (c_stride >= reg_N * c_bytes)
+            # an int8 C can't be loaded back to accumulate onto
+            & ~(reg_narrow & reg_accumulate)
         )
 
         m.d.comb += [
@@ -304,6 +312,7 @@ class Matmul(Component):
                     with m.Case(MatmulCmd.START):
                         with m.If(dims_valid & addrs_valid):
                             m.d.sync += [
+                                reg_narrow.eq(self.combiner_requant),
                                 tiles_M.eq((reg_M + dim - 1) >> dim_shift),
                                 tiles_N.eq((reg_N + dim - 1) >> dim_shift),
                                 tiles_K.eq((reg_K + dim - 1) >> dim_shift),
@@ -398,6 +407,7 @@ class Matmul(Component):
                 Mux(combiner_in, ExecOpcode.COMPUTE_ACCUMULATE, ExecOpcode.COMPUTE),
                 rs1=bufs.a_addr, rs2=bufs.b_addr, rd=bufs.combiner_addr, k_dim=tile_K,
                 chain=bufs.chain(first_k, last_k),
+                activation=Mux(last_k, EPILOGUE_FINAL | reg_activation, 0),
                 sync=bufs.compute(first_k=first_k, last_k=last_k, acquire=first_k & ~combiner_in),
                 then=bufs.next_l2(),
             )  # fmt: skip
@@ -414,6 +424,8 @@ class Matmul(Component):
                 Mux(first_k & ~combiner_in, ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE),
                 rs1=Mux(df == IS, bufs.b_addr, bufs.a_addr), rd=bufs.combiner_addr,
                 k_dim=Mux(df == IS, tile_N, tile_M),
+                # The last K tile finishes the reduction: the Combiner's epilogue
+                activation=Mux(last_k, EPILOGUE_FINAL | reg_activation, 0),
                 sync=Mux(
                     df == IS,
                     bufs.compute(
@@ -442,7 +454,8 @@ class Matmul(Component):
                 "STORE", "NEXT_IJ", CTRL_STORE,
                 Mux(df == IS, BlockMoverOpcode.TRANSPOSE, BlockMoverOpcode.MEMCPY),
                 dram_addr=c_tile, local_addr=bufs.combiner_addr, len=tile_M,
-                stride=c_stride, row_bytes=tile_N * combiner_bytes, activation=reg_activation,
+                stride=c_stride, row_bytes=tile_N * c_bytes,
+                activation=Mux(reg_narrow, STORE_NARROW, 0),
                 sync=bufs.store(), then=bufs.next_combiner(),
             )  # fmt: skip
 

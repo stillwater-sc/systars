@@ -117,7 +117,7 @@ class Streamer(Component):
         cmd_*: Command (``valid``/``ready``; fields read in the clock it is accepted)
         cfg_dataflow: Current mode (0 = OS, 1 = stationary)
         sp_a_read_*, sp_b_read_*: The scratchpad's two read ports
-        combiner_write_*, combiner_accumulate: Combiner write port
+        combiner_write_*, combiner_accumulate, combiner_write_epilogue: Combiner write port
         array_*: SystolicArray edges (see ``SystolicArray``)
         completed, completed_id, completed_sync: A command is done with L2
         result, result_id, result_sync: A command's results are in the Combiner
@@ -165,6 +165,8 @@ class Streamer(Component):
             "cmd_rd": In(32),
             "cmd_k_dim": In(16),
             "cmd_chain": In(2),
+            # The Combiner epilogue code of the command's results (memory/epilogue.py)
+            "cmd_activation": In(4),
             "cmd_sync": In(Sync.BITS),
             "cmd_id": In(8),
             "cfg_dataflow": Out(1),
@@ -179,6 +181,7 @@ class Streamer(Component):
             "combiner_write_req": Out(1),
             "combiner_write_addr": Out(32),
             "combiner_write_data": Out(signed(config.combiner_width)),
+            "combiner_write_epilogue": Out(4),
             "combiner_accumulate": Out(1),
             "completed": Out(1),
             "completed_id": Out(8),
@@ -323,7 +326,7 @@ class Streamer(Component):
 
         # Result tiles in flight: where their rows go
         res_layout = [("rd", 32), ("accumulate", 1), ("rows", range(KB + R + 1)),
-                      ("hold", 1), ("id", 8), ("sync", Sync.BITS)]  # fmt: skip
+                      ("hold", 1), ("id", 8), ("sync", Sync.BITS), ("epilogue", 4)]  # fmt: skip
         res_width = sum(Signal(shape).shape().width for _, shape in res_layout)
         # Deep enough for every tile in flight: a command's last row is written about
         # D + R + C + KB clocks after it starts, and streams start R or more apart
@@ -501,6 +504,7 @@ class Streamer(Component):
                                 untracked,
                                 self.cmd_id,
                                 self.cmd_sync,
+                                self.cmd_activation,
                             )
                         ),
                     ]
@@ -695,6 +699,7 @@ class Streamer(Component):
                     self.combiner_write_addr.eq(tile["rd"] + row_count),
                     self.combiner_write_data.eq(row_data),
                     self.combiner_accumulate.eq(tile["accumulate"]),
+                    self.combiner_write_epilogue.eq(tile["epilogue"]),
                 ]
                 with m.If(row_count == tile["rows"] - 1):
                     m.d.sync += row_count.eq(0)

@@ -632,6 +632,32 @@ class TestLoadTranspose:
 class TestStoreTranspose:
     ROWS = TestStore.ROWS  # 3 Combiner rows of 4 int32
 
+    @pytest.mark.parametrize("row_bytes", [0, 4, 3])
+    def test_narrow_rows_turn_at_input_bits(self, row_bytes):
+        """#75: 4 finished int8 rows (STORE_NARROW), 4 results packed in each row's low
+        bytes. With row_bytes 0 (the whole packed row: 4 bytes, so 4 gathered rows, the
+        corner-turn buffer's size) or fewer, L3 row i is result i of each row."""
+        from systars.memory.epilogue import STORE_NARROW
+
+        cfg = config()
+        narrow = [[(13 * r + 7 * e) % 256 - 128 for e in range(4)] for r in range(4)]
+        word = [pack(v, 8) for v in narrow]
+        # As the Combiner holds them: acc_bits lanes over the packed low bytes
+        rows = [unpack(w, cfg.acc_bits, 4) for w in word]
+        n = row_bytes or 4
+        memory = pattern(1 << 12, seed=75)
+        base, stride = 0x200, 8
+        before = bytes(memory)
+        run_store(
+            cfg, memory, rows, activation=STORE_NARROW, dram_addr=base, local_addr=0, rows=4,
+            stride=stride, row_bytes=row_bytes, opcode=TRANSPOSE,
+        )  # fmt: skip
+        for i in range(4):
+            got = list(memory[base + stride * i : base + stride * i + n])
+            assert [b - 256 if b > 127 else b for b in got] == [narrow[r][i] for r in range(n)]
+            tail = base + stride * i + n
+            assert memory[tail : base + stride * (i + 1)] == before[tail : base + stride * (i + 1)]
+
     def stored(self, memory, base, stride, rows, n):
         return [
             unpack(int.from_bytes(memory[base + stride * r : base + stride * r + 4 * n], "little"),

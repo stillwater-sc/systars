@@ -71,6 +71,7 @@ from amaranth.lib.wiring import Component, In, Out
 
 from ..config import Dataflow, SystolicConfig
 from ..controller.sync import Sync
+from ..memory.epilogue import EPILOGUE_FINAL
 from ..memory.local_addr import LocalAddr
 from ..util.commands import BlockMoverOpcode, ExecOpcode
 from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, TileBuffers, command_ports
@@ -469,6 +470,8 @@ class Conv2d(Component):
                 Mux(combiner_in, ExecOpcode.COMPUTE_ACCUMULATE, ExecOpcode.COMPUTE),
                 rs1=bufs.a_addr, rs2=bufs.b_addr, rd=bufs.combiner_addr, k_dim=tile_K,
                 chain=bufs.chain(first_k, last_k),
+                # The last K step finishes the reduction: the Combiner's epilogue
+                activation=Mux(last_k, EPILOGUE_FINAL | activation, 0),
                 sync=bufs.compute(first_k=first_k, last_k=last_k, acquire=first_k & ~combiner_in),
                 then=bufs.next_l2(),
             )  # fmt: skip
@@ -492,7 +495,7 @@ class Conv2d(Component):
             issuer.state(
                 "STORE", "NEXT_MN", CTRL_STORE, BlockMoverOpcode.MEMCPY,
                 dram_addr=y_tile, local_addr=bufs.combiner_addr, len=tile_M,
-                stride=y_stride, row_bytes=tile_N * combiner_bytes, activation=activation,
+                stride=y_stride, row_bytes=tile_N * combiner_bytes,
                 sync=bufs.store(), then=bufs.next_combiner(),
             )  # fmt: skip
 

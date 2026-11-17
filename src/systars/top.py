@@ -120,7 +120,9 @@ class SystolicTop(Component):
             "cmd_rs2": In(32),  # B address
             "cmd_rd": In(32),  # C destination
             "cmd_k_dim": In(16),  # Inner dimension
-            "cmd_activation": In(4),  # Activation function (for store)
+            # STORE: its activation (bit 3: narrow rows); COMPUTE: its Combiner
+            # epilogue code (memory/epilogue.py)
+            "cmd_activation": In(4),
             "cmd_sync": In(Sync.BITS),  # Credits and tokens (controller/sync.py); 0 = untracked
             "cmd_chain": In(2),  # Execute: OS reduction chaining (controller/streamer.py)
             # AXI Read Address Channel
@@ -191,6 +193,11 @@ class SystolicTop(Component):
             "sync_error": Out(1),
             # Sticky L1/fabric schedule error (controller/streamer.py)
             "l1_error": Out(1),
+            # The Combiner epilogue's configuration (memory/epilogue.py; the tile's
+            # CMB_SCALE, CMB_CONTROL and CMB_CLIP CSRs)
+            "cmb_scale": In(32, init=1),
+            "cmb_control": In(32),
+            "cmb_clip": In(32),
             # Sticky L2 bank conflict (memory/scratchpad.py)
             "l2_error": Out(1),
         }
@@ -254,7 +261,8 @@ class SystolicTop(Component):
             self.CTRL_EXEC: (
                 "streamer", streamer, cfg.ex_queue_length,
                 {"opcode": "opcode", "rs1": "rs1", "rs2": "rs2", "rd": "rd",
-                 "k_dim": "k_dim", "chain": "chain", "sync": "sync", "id": "id"},
+                 "k_dim": "k_dim", "chain": "chain", "sync": "sync", "id": "id",
+                 "activation": "activation"},
             ),
         }  # fmt: skip
 
@@ -426,6 +434,9 @@ class SystolicTop(Component):
             bm_out.combiner_read_valid.eq(combiner.read_valid),
             # The merge has the read port first: STORE waits for read_ready
             bm_out.combiner_read_ready.eq(combiner.read_ready),
+            combiner.scale_mul.eq(self.cmb_scale),
+            combiner.control.eq(self.cmb_control),
+            combiner.clip.eq(self.cmb_clip),
             # The activation is the BlockMoverOut's, per element
         ]
 
@@ -456,6 +467,7 @@ class SystolicTop(Component):
                 combiner.write_addr.eq(streamer.combiner_write_addr),
                 combiner.write_data.eq(streamer.combiner_write_data),
                 combiner.accumulate.eq(streamer.combiner_accumulate),
+                combiner.write_epilogue.eq(streamer.combiner_write_epilogue),
             ]
         with m.Else():
             m.d.comb += [
@@ -535,7 +547,9 @@ class SystolicTop(Component):
             self.bm_in_busy.eq(bm_in.busy | (queues[self.CTRL_LOAD].w_level != 0)),
             self.bm_out_busy.eq(bm_out.busy | (queues[self.CTRL_STORE].w_level != 0)),
             self.streamer_busy.eq(streamer.busy | (queues[self.CTRL_EXEC].w_level != 0)),
-            self.busy.eq(self.bm_in_busy | self.bm_out_busy | self.streamer_busy),
+            # The Combiner's pipeline too: a finished row commits after the Streamer is
+            # done with it, and the epilogue's settings must not change under it
+            self.busy.eq(self.bm_in_busy | self.bm_out_busy | self.streamer_busy | combiner.busy),
         ]
 
         # Per-controller completions (lossless)

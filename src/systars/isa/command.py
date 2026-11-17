@@ -61,6 +61,8 @@ def command_ports() -> dict:
         "cmd_opcode": Out(8),
         "cmd_id": Out(8),
         "cmd_store_completed": In(1),
+        # The Combiner requantizes finished rows (CMB_CONTROL.requant): C is narrow
+        "combiner_requant": In(1),
     }
     ports.update({f"cmd_{name}": Out(width) for name, width in _FIELDS.items()})
     return ports
@@ -205,7 +207,11 @@ class TileBuffers:
 
 
 def connect_to_top(m: Module, isa, top) -> None:
-    """Drive ``top``'s command port from an ISA instruction."""
+    """Drive ``top``'s command port from an ISA instruction.
+
+    The instruction reads the Combiner's requantization setting at ``START``: change the
+    top's ``cmb_*`` epilogue settings only between instructions (the instruction's
+    ``busy`` clear, and ``top.busy`` too), never while one runs."""
     m.d.comb += [
         top.cmd_valid.eq(isa.cmd_valid),
         isa.cmd_ready.eq(top.cmd_ready),
@@ -213,5 +219,6 @@ def connect_to_top(m: Module, isa, top) -> None:
         top.cmd_opcode.eq(isa.cmd_opcode),
         top.cmd_id.eq(isa.cmd_id),
         isa.cmd_store_completed.eq(top.bm_out_completed),
+        isa.combiner_requant.eq(top.cmb_control[8]),
     ]
     m.d.comb += [getattr(top, f"cmd_{name}").eq(getattr(isa, f"cmd_{name}")) for name in _FIELDS]
