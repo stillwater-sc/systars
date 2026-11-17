@@ -1,296 +1,173 @@
 """
-Cocotb tests for the Combiner memory.
+Cocotb tests for the Combiner (memory/combiner.py, #74): the merge of result rows
+into L2's result group, on the generated RTL.
 
-These tests verify the Combiner module behavior using cycle-accurate RTL simulation.
+The ``combiner`` target: 2 banks (the bank is address bit 0), 4 KiB, read latency 2.
+The activation is STORE's (controller/blockmover_out.py), not the Combiner's.
 """
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge
+from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge
 
-# Activation function constants (must match config.py)
-ACTIVATION_NONE = 0
-ACTIVATION_RELU = 1
-ACTIVATION_RELU6 = 2
+COMBINER_BIT = 1 << 31
+LATENCY = 2
+LANES, BITS = 16, 32  # the target's rows: 16 results of 32 bits (512 bits)
+
+
+def pack(values):
+    return sum((v & ((1 << BITS) - 1)) << (i * BITS) for i, v in enumerate(values))
+
+
+def unpack(word):
+    vals = [(word >> (i * BITS)) & ((1 << BITS) - 1) for i in range(LANES)]
+    return [v - (1 << BITS) if v >> (BITS - 1) else v for v in vals]
+
+
+def row_addr(bank, row):
+    return COMBINER_BIT | bank | (row << 1)
 
 
 async def reset_dut(dut):
-    """Reset the DUT."""
     dut.rst.value = 1
+    dut.write_req.value = 0
+    dut.read_req.value = 0
+    dut.accumulate.value = 0
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
 
 
+async def start(dut):
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await reset_dut(dut)
+
+
+async def request(dut, addr, value, accumulate):
+    """One clock's merge request."""
+    dut.write_req.value = 1
+    dut.write_addr.value = addr
+    dut.write_data.value = value
+    dut.accumulate.value = int(accumulate)
+    await RisingEdge(dut.clk)
+    dut.write_req.value = 0
+    dut.accumulate.value = 0
+
+
+async def idle(dut, clocks=LATENCY + 2):
+    for _ in range(clocks):
+        await RisingEdge(dut.clk)
+
+
+async def read(dut, addr):
+    """STORE's read: held until taken (read_ready), then its data."""
+    dut.read_req.value = 1
+    dut.read_addr.value = addr
+    for _ in range(50):
+        await ReadOnly()
+        taken = bool(dut.read_ready.value)
+        await RisingEdge(dut.clk)
+        if taken:
+            break
+    else:
+        raise AssertionError("the read was never taken")
+    dut.read_req.value = 0
+    for _ in range(LATENCY + 2):
+        await ReadOnly()
+        if dut.read_valid.value:
+            value = dut.read_data.value.to_unsigned()  # the whole row, every lane
+            await NextTimeStep()
+            return value
+        await RisingEdge(dut.clk)
+    raise AssertionError("no read data")
+
+
 @cocotb.test()
 async def test_combiner_reset(dut):
-    """Test Combiner initial state after reset."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    await reset_dut(dut)
-
-    # After reset, read_valid should be low
-    assert dut.read_valid.value == 0, "read_valid should be 0 after reset"
-    dut._log.info("Combiner reset complete")
+    await start(dut)
+    assert dut.read_valid.value == 0
 
 
 @cocotb.test()
-async def test_combiner_write_read(dut):
-    """Test basic write and read operations (overwrite mode)."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
+async def test_combiner_overwrite_and_read(dut):
+    await start(dut)
+    await request(dut, row_addr(0, 3), 0xDEAD_BEEF, accumulate=False)
+    await idle(dut)
+    assert await read(dut, row_addr(0, 3)) == 0xDEAD_BEEF
 
-    await reset_dut(dut)
 
-    # Write to bank 0, row 0 (overwrite mode)
-    test_data = 0x12345678
-    test_addr = 0  # Bank 0, row 0
+@cocotb.test()
+async def test_combiner_accumulate(dut):
+    await start(dut)
+    await request(dut, row_addr(1, 2), 1000, accumulate=False)
+    await idle(dut)
+    await request(dut, row_addr(1, 2), 234, accumulate=True)
+    await idle(dut)
+    assert await read(dut, row_addr(1, 2)) == 1234
 
-    dut.write_req.value = 1
-    dut.write_addr.value = test_addr
-    dut.write_data.value = test_data
-    dut.accumulate.value = 0  # Overwrite mode
-    dut.read_req.value = 0
-    dut.read_activation.value = ACTIVATION_NONE
 
-    await RisingEdge(dut.clk)
+@cocotb.test()
+async def test_combiner_back_to_back_accumulates(dut):
+    """Accumulates onto one row on consecutive clocks: each sees the last one's sum,
+    through the pipeline's forwarding."""
+    await start(dut)
+    addr = row_addr(0, 5)
+    await request(dut, addr, 10, accumulate=False)
+    for n in range(1, 6):
+        await request(dut, addr, n, accumulate=True)
+    await idle(dut)
+    assert await read(dut, addr) == 10 + 1 + 2 + 3 + 4 + 5
 
-    # Disable write
-    dut.write_req.value = 0
 
-    await RisingEdge(dut.clk)
-
-    # Read back from same address
+@cocotb.test()
+async def test_combiner_store_waits_while_the_merge_reads(dut):
+    """STORE's read isn't taken while accumulates use the read port."""
+    await start(dut)
+    await request(dut, row_addr(0, 0), 7, accumulate=False)
+    await idle(dut)
     dut.read_req.value = 1
-    dut.read_addr.value = test_addr
-
-    await RisingEdge(dut.clk)
-    dut.read_req.value = 0
-
-    # Wait for read latency (configured as 2 cycles)
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # Check read valid and data
-    assert dut.read_valid.value == 1, "read_valid should be high after read latency"
-
-    read_data = dut.read_data.value.to_signed()
-    assert read_data == test_data, f"Read data mismatch: got {read_data}, expected {test_data}"
-
-    dut._log.info(f"Write/Read test passed: wrote {hex(test_data)}, read {hex(read_data)}")
-
-
-@cocotb.test()
-async def test_combiner_accumulate_mode(dut):
-    """Test accumulate mode (add to existing value)."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    await reset_dut(dut)
-
-    # First, write initial value (overwrite mode)
-    initial_value = 100
-    test_addr = 0
-
-    dut.write_req.value = 1
-    dut.write_addr.value = test_addr
-    dut.write_data.value = initial_value
+    dut.read_addr.value = row_addr(0, 0)
+    for _ in range(4):
+        dut.write_req.value = 1
+        dut.write_addr.value = row_addr(1, 1)
+        dut.write_data.value = 1
+        dut.accumulate.value = 1
+        await ReadOnly()
+        assert dut.read_ready.value == 0, "STORE taken while the merge reads"
+        await RisingEdge(dut.clk)
+    dut.write_req.value = 0
     dut.accumulate.value = 0
     dut.read_req.value = 0
-    dut.read_activation.value = ACTIVATION_NONE
-
-    await RisingEdge(dut.clk)
-    dut.write_req.value = 0
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # Now accumulate (add to existing)
-    add_value = 50
-    dut.write_req.value = 1
-    dut.write_addr.value = test_addr
-    dut.write_data.value = add_value
-    dut.accumulate.value = 1  # Accumulate mode
-
-    await RisingEdge(dut.clk)
-    dut.write_req.value = 0
-
-    # Wait for accumulate pipeline
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # Read back
-    dut.read_req.value = 1
-    dut.read_addr.value = test_addr
-    await RisingEdge(dut.clk)
-    dut.read_req.value = 0
-
-    # Wait for read latency
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    expected = initial_value + add_value
-    read_data = dut.read_data.value.to_signed()
-    assert read_data == expected, f"Accumulate mismatch: got {read_data}, expected {expected}"
-
-    dut._log.info(f"Accumulate test passed: {initial_value} + {add_value} = {read_data}")
+    await idle(dut)
+    assert await read(dut, row_addr(0, 0)) == 7
 
 
 @cocotb.test()
-async def test_combiner_relu_activation(dut):
-    """Test ReLU activation function on read."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    await reset_dut(dut)
-
-    # Write a negative value (use signed assignment)
-    # For signed signals in cocotb, assign negative values directly
-    test_addr = 0
-    acc_bits = len(dut.write_data)
-
-    # Create negative value in two's complement
-    negative_value = (1 << acc_bits) - 50  # -50 in two's complement
-
-    dut.write_req.value = 1
-    dut.write_addr.value = test_addr
-    dut.write_data.value = negative_value
-    dut.accumulate.value = 0
-    dut.read_req.value = 0
-    dut.read_activation.value = ACTIVATION_NONE
-
-    await RisingEdge(dut.clk)
-    dut.write_req.value = 0
-    await RisingEdge(dut.clk)
-
-    # First verify we stored a negative value (read without activation)
-    dut.read_req.value = 1
-    dut.read_addr.value = test_addr
-    dut.read_activation.value = ACTIVATION_NONE
-
-    await RisingEdge(dut.clk)
-    dut.read_req.value = 0
-
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    raw_value = dut.read_data.value.to_signed()
-    dut._log.info(f"Stored value (no activation): {raw_value}")
-
-    # Now read with ReLU activation
-    dut.read_req.value = 1
-    dut.read_addr.value = test_addr
-    dut.read_activation.value = ACTIVATION_RELU
-
-    await RisingEdge(dut.clk)
-    dut.read_req.value = 0
-
-    # Wait for read latency
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # ReLU should clamp negative to 0
-    read_data = dut.read_data.value.to_signed()
-    assert read_data == 0, f"ReLU failed: got {read_data}, expected 0 for negative input"
-
-    dut._log.info("ReLU activation test passed: negative value clamped to 0")
-
-
-@cocotb.test()
-async def test_combiner_relu_positive(dut):
-    """Test that ReLU passes positive values unchanged."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    await reset_dut(dut)
-
-    # Write a positive value
-    positive_value = 42
-    test_addr = 2  # Different address
-
-    dut.write_req.value = 1
-    dut.write_addr.value = test_addr
-    dut.write_data.value = positive_value
-    dut.accumulate.value = 0
-    dut.read_req.value = 0
-    dut.read_activation.value = ACTIVATION_NONE
-
-    await RisingEdge(dut.clk)
-    dut.write_req.value = 0
-    await RisingEdge(dut.clk)
-
-    # Read with ReLU activation
-    dut.read_req.value = 1
-    dut.read_addr.value = test_addr
-    dut.read_activation.value = ACTIVATION_RELU
-
-    await RisingEdge(dut.clk)
-    dut.read_req.value = 0
-
-    # Wait for read latency
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    # ReLU should pass positive values through
-    read_data = dut.read_data.value.to_signed()
-    assert read_data == positive_value, f"ReLU failed: got {read_data}, expected {positive_value}"
-
-    dut._log.info(f"ReLU positive test passed: {positive_value} passed through unchanged")
+async def test_combiner_every_lane(dut):
+    """A row with every lane distinct and nonzero, accumulated twice back to back: each
+    lane adds on its own, and a lane that wraps leaves its neighbours alone."""
+    await start(dut)
+    addr = row_addr(1, 7)
+    big = (1 << 31) - 1
+    base = [big if i == 5 else (i + 1) * 1000 * (-1) ** i for i in range(LANES)]
+    step = [1 if i == 5 else i - 8 for i in range(LANES)]
+    await request(dut, addr, pack(base), accumulate=False)
+    await request(dut, addr, pack(step), accumulate=True)
+    await request(dut, addr, pack(step), accumulate=True)
+    await idle(dut)
+    expect = [
+        ((b + 2 * s + (1 << 31)) % (1 << 32)) - (1 << 31) for b, s in zip(base, step, strict=True)
+    ]
+    assert expect[5] == -(1 << 31) + 1  # lane 5 wrapped
+    assert unpack(await read(dut, addr)) == expect
 
 
 @cocotb.test()
 async def test_combiner_bank_selection(dut):
-    """Test that different banks can be accessed independently."""
-    clock = Clock(dut.clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    await reset_dut(dut)
-
-    # Write different data to bank 0 and bank 1
-    data_bank0 = 111
-    data_bank1 = 222
-
-    dut.read_activation.value = ACTIVATION_NONE
-
-    # Write to bank 0
-    dut.write_req.value = 1
-    dut.write_addr.value = 0  # Bank 0
-    dut.write_data.value = data_bank0
-    dut.accumulate.value = 0
-    dut.read_req.value = 0
-    await RisingEdge(dut.clk)
-
-    # Write to bank 1
-    dut.write_addr.value = 1  # Bank 1
-    dut.write_data.value = data_bank1
-    await RisingEdge(dut.clk)
-
-    dut.write_req.value = 0
-    await RisingEdge(dut.clk)
-
-    # Read from bank 0
-    dut.read_req.value = 1
-    dut.read_addr.value = 0
-    await RisingEdge(dut.clk)
-    dut.read_req.value = 0
-
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    read_bank0 = dut.read_data.value.to_signed()
-    assert read_bank0 == data_bank0, f"Bank 0 mismatch: got {read_bank0}"
-
-    # Read from bank 1
-    dut.read_req.value = 1
-    dut.read_addr.value = 1
-    await RisingEdge(dut.clk)
-    dut.read_req.value = 0
-
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-
-    read_bank1 = dut.read_data.value.to_signed()
-    assert read_bank1 == data_bank1, f"Bank 1 mismatch: got {read_bank1}"
-
-    dut._log.info(f"Bank selection test passed: bank0={read_bank0}, bank1={read_bank1}")
+    await start(dut)
+    await request(dut, row_addr(0, 4), 0x1111, accumulate=False)
+    await request(dut, row_addr(1, 4), 0x2222, accumulate=False)
+    await idle(dut)
+    assert await read(dut, row_addr(0, 4)) == 0x1111
+    assert await read(dut, row_addr(1, 4)) == 0x2222

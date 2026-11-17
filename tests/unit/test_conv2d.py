@@ -284,6 +284,21 @@ class TestErrors:
         assert result.error_code == Conv2dError.UNSUPPORTED_LAYOUT
         assert not result.commands
 
+    @pytest.mark.parametrize("formats", [0b01, 0b10])  # profile 1: requant, mxint8
+    def test_a_narrow_or_mx_profile_is_refused(self, formats):
+        """#77: Y is written as int32 rows, so a Combiner profile that requantizes or
+        encodes MXINT8 is refused; another profile with that format doesn't matter."""
+        cmds = setup((1, 4, 4, 4), (1, 1, 4, 4), options=1 << 1)  # profile 1
+        result = run_isa(
+            Conv2d(config()), cmds, Conv2dCmd.START, inputs={"combiner_formats": formats << 2}
+        )
+        assert result.error_code == Conv2dError.UNSUPPORTED_LAYOUT
+        assert not result.commands
+        other = run_isa(
+            Conv2d(config()), cmds, Conv2dCmd.START, inputs={"combiner_formats": formats}
+        )
+        assert other.done and not other.error
+
     def test_real_layouts_are_accepted(self):
         """Dense NHWC with odd channel counts: no alignment requirement any more."""
         cmds = setup((1, 5, 5, 3), (3, 3, 3, 5), pad=(1, 1))

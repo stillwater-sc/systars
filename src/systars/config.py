@@ -45,6 +45,8 @@ class Activation(Enum):
     LAYERNORM = 3
     IGELU = 4
     SOFTMAX = 5
+    CLIP = 6
+    """min(hi, max(lo, x)), with the bounds from the tile's CMB_CLIP (memory/epilogue.py)."""
 
 
 @dataclass

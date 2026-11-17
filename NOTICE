@@ -18,8 +18,8 @@ Gemmini: the PE / PEArray / SystolicArray hierarchy (Gemmini's PE, Tile and
 Mesh), the SystolicConfig parameter set, the load/execute/store controller
 split and the StreamReader/StreamWriter DMA engines, the execute command set
 (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE), the local address encoding
-(src/systars/memory/local_addr.py) and the accumulator
-(src/systars/memory/accumulator.py). Gemmini's license follows verbatim, from
+(src/systars/memory/local_addr.py) and the accumulator, which the Combiner
+(src/systars/memory/combiner.py) has since replaced. Gemmini's license follows verbatim, from
 ucb-bar/gemmini at commit b82d49cca798a59f010488a6f6de7243f0616536.
 
 Copyright (c) 2018-2019, The Regents of the University of California

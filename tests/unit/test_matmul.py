@@ -9,14 +9,23 @@ Unit tests for the Matmul ISA instruction.
 - Configuration errors.
 """
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from amaranth import Elaboratable, Module
 
-from systars.config import Dataflow, SystolicConfig
+from systars.config import Activation, Dataflow, SystolicConfig
 from systars.controller.sync import Sync
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.matmul import IS, OS, WS, Matmul, MatmulCmd, MatmulError
+from systars.memory.epilogue import (
+    EPILOGUE_FINAL,
+    Requant,
+    epilogue_model,
+    sfu_model,
+)
+from systars.memory.mx import mx_row_bytes, mxint8_row_bytes_model
 from systars.top import SystolicTop
 from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
@@ -252,13 +261,29 @@ class TestCommandStream:
         with pytest.raises(ValueError, match="rows in each L2 bank group"):
             Matmul(config(grid=16, sp_capacity_kb=1, l2_slots=16, combiner_slots=8), buffers=8)
 
-    def test_activation_reaches_store(self):
+    def test_wide_results_place_every_column_tile(self):
+        """acc_bits = 128 (16-byte results): each C column tile still gets its own
+        DRAM address (the element size signal holds 16)."""
+        cfg = config(acc_bits=128)
+        cmds = run_isa(Matmul(cfg), setup(4, 8, 4, 4, 8, 8 * 16), MatmulCmd.START).commands
+        stores = [c.dram_addr for c in cmds if c.type == CTRL_STORE]
+        assert stores == [C_ADDR, C_ADDR + 4 * 16]
+
+    @pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
+    def test_activation_rides_the_final_compute(self, dataflow):
+        """The activation is the Combiner's epilogue (#75): on the COMPUTE that
+        finishes each reduction (the last K tile), with EPILOGUE_FINAL, and on no other
+        command; STORE carries none."""
         cfg = config()
-        beat = cfg.blockmover_buswidth // 8
+        # K = 8 on a 4x4 array: two K tiles per C tile
         cmds = run_isa(
-            Matmul(cfg), setup(2, 2, 2, beat, beat, beat, options=1 << 1), MatmulCmd.START
+            Matmul(cfg),
+            setup(4, 4, 8, 8, 4, 16, options=1 << 1, dataflow=dataflow),
+            MatmulCmd.START,
         ).commands
-        assert {c.activation for c in cmds if c.type == CTRL_STORE} == {1}
+        computes = [c for c in cmds if c.type == CTRL_EXEC and c.opcode in (ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE)]  # fmt: skip
+        assert [c.activation for c in computes] == [0, EPILOGUE_FINAL | 1]
+        assert {c.activation for c in cmds if c.type == CTRL_STORE} == {0}
 
     @pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
     def test_combiner_loads(self, dataflow):
@@ -357,6 +382,26 @@ class TestErrors:
         result = self.run(config(), setup(0, 4, 4, beat, beat, beat))
         assert result.error_code == MatmulError.INVALID_DIMS
 
+    @pytest.mark.parametrize(
+        "case,dataflow,options,N,c_stride",
+        [
+            ("is", IS, 0, 8, 64),  # the corner turn would scramble the blocks
+            ("accumulate", OS, 1, 8, 64),  # an MX C can't be loaded back
+            ("edge_tile_in_n", OS, 0, 6, 64),  # its lanes past N would set the scales
+            ("short_c_stride", OS, 0, 8, 2 * mx_row_bytes(4) - 1),
+        ],
+    )
+    def test_mxint8_c_layouts_refused(self, case, dataflow, options, N, c_stride):
+        """With CMB_CONTROL.mxint8 (#76), Matmul refuses what MX blocks can't hold."""
+        cmds = setup(4, N, 4, 4, N, c_stride, options=options, dataflow=dataflow)
+        result = run_isa(Matmul(config()), cmds, MatmulCmd.START, inputs={"combiner_formats": 0b10})
+        assert result.error_code == MatmulError.UNSUPPORTED_LAYOUT, case
+        assert not result.commands
+        ok = setup(4, 8, 4, 4, 8, 2 * mx_row_bytes(4), dataflow=OS)
+        assert not run_isa(
+            Matmul(config()), ok, MatmulCmd.START, inputs={"combiner_formats": 0b10}
+        ).error
+
     @pytest.mark.parametrize("case", ["zero_a_stride", "zero_b_stride", "short_c_stride"])
     def test_rejected_layouts(self, case):
         args = {"M": 4, "N": 8, "K": 4, "a_stride": 4, "b_stride": 8, "c_stride": 32}
@@ -401,8 +446,18 @@ class MatmulOnTop(Elaboratable):
         return m
 
 
-def run_on_top(cfg, M, N, K, dataflow, *, seed, bias=None, accumulate=False, stats=None):
+PROFILE_IN_USE = 2
+
+
+def run_on_top(
+    cfg, M, N, K, dataflow, *, seed, bias=None, accumulate=False, stats=None,
+    activation=0, requant=None,
+):  # fmt: skip
     """Run Matmul on a real SystolicTop: A, B, C (and D) dense at odd addresses.
+
+    ``activation`` (an ``Activation`` code) and ``requant`` (a ``Requant``: the
+    Combiner epilogue's configuration, on the top's ``cmb_*`` ports) fuse the epilogue
+    onto every finished C tile (#75); with ``requant.enable`` C is int8.
 
     Returns C read back from L3, the expected C, and whether every byte outside C
     kept its value. With ``stats`` (a dict), also counts L2's traffic per clock until
@@ -411,6 +466,27 @@ def run_on_top(cfg, M, N, K, dataflow, *, seed, bias=None, accumulate=False, sta
     beat = cfg.blockmover_buswidth // 8
     rng = np.random.default_rng(seed)
     A, B, D, C0, expected = operands(rng, M, N, K, bias=bias, accumulate=accumulate)
+    # The C tiles' Combiner profile: profile PROFILE_IN_USE (not 0, so the index is
+    # exercised), the SFU function ``activation``
+    rq = replace(requant or Requant(), sfu=activation)
+    narrow = rq.enable
+    dim = cfg.grid_rows * cfg.tile_rows
+    mx_bytes, tiles_n = mx_row_bytes(dim), -(-N // dim)
+    if rq.mx:
+        # MXINT8 C, tile by tile: each row of a C tile its elements, then its scales
+        sfu = [[sfu_model(int(x), rq.sfu, rq) for x in row] for row in expected]
+        expected = np.array(
+            [
+                [list(mxint8_row_bytes_model(row[j * dim : (j + 1) * dim])) for j in range(tiles_n)]
+                for row in sfu
+            ]  # fmt: skip
+        )
+    else:
+        expected = np.array(
+            [epilogue_model(list(map(int, row)), rq, cfg.input_bits) for row in expected]
+        )
+    c_elem = 1 if narrow else 4
+    c_stride = tiles_n * mx_bytes if rq.mx else c_elem * N
     a_addr, b_addr, c_addr, d_addr = A_ADDR + 1, B_ADDR + 7, C_ADDR + 3, D_ADDR + 5
     d_stride = 0 if bias == "row" else N * 4
     memory = bytearray(rng.integers(0, 256, 1 << 17, dtype=np.uint8).tobytes())
@@ -428,9 +504,16 @@ def run_on_top(cfg, M, N, K, dataflow, *, seed, bias=None, accumulate=False, sta
     addrs = {MatmulCmd.CONFIG_B_ADDR: b_addr, MatmulCmd.CONFIG_C_ADDR: c_addr}
 
     async def testbench(ctx):
+        n = PROFILE_IN_USE
+        ctx.set(getattr(top, f"cmb_scale_{n}"), rq.scale_word())
+        ctx.set(getattr(top, f"cmb_control_{n}"), rq.control_word())
+        ctx.set(getattr(top, f"cmb_clip_{n}"), rq.clip_word())
+        # Another profile, set otherwise, must not leak in
+        ctx.set(top.cmb_control_0, Requant(enable=True, shift=3, sfu=1).control_word())
+        options = int(accumulate) | n << 1  # the profile; C's format follows it
         cmds = setup(
-            M, N, K, K, N, 4 * N, a_addr=a_addr, dataflow=dataflow,
-            d_addr=d_addr if bias else 0, d_stride=d_stride, options=int(accumulate),
+            M, N, K, K, N, c_stride, a_addr=a_addr, dataflow=dataflow,
+            d_addr=d_addr if bias else 0, d_stride=d_stride, options=options,
         )  # fmt: skip
         cmds = [(c, addrs.get(c, d)) for c, d in cmds]
         for cmd, data in [*cmds, (MatmulCmd.START, 0)]:
@@ -465,8 +548,12 @@ def run_on_top(cfg, M, N, K, dataflow, *, seed, bias=None, accumulate=False, sta
 
     run_sim(dut, testbench, processes=[axi_memory(top, memory, beat), probe], max_cycles=200_000)
     assert status == {"done": 1, "error": 0, "l1": 0, "sync": 0, "l2": 0}
-    c_bytes = M * N * 4
-    C = np.array(from_bytes(memory[c_addr : c_addr + c_bytes], 32, M * N)).reshape(M, N)
+    if rq.mx:
+        c_bytes = M * c_stride
+        C = np.array(list(memory[c_addr : c_addr + c_bytes])).reshape(M, tiles_n, mx_bytes)
+    else:
+        c_bytes = M * N * c_elem
+        C = np.array(from_bytes(memory[c_addr : c_addr + c_bytes], 8 * c_elem, M * N)).reshape(M, N)
     untouched = (
         memory[:c_addr] == before[:c_addr]
         and memory[c_addr + c_bytes :] == before[c_addr + c_bytes :]
@@ -518,7 +605,7 @@ def test_banked_l2_sustains_the_stream_and_matches_the_ideal_model(dataflow):
       BlockMover writes L2. In OS the Streamer reads an A and a B row in the same
       clocks, and the BlockMover's writes land beside the reads. (The stationary
       mode's two-read clocks, PRELOAD beside a stream, are in
-      ``test_execute_controller.py``, ``TestOnTheBankedL2``: Matmul's WS and IS here
+      ``test_streamer.py``, ``TestOnTheBankedL2``: Matmul's WS and IS here
       are bound by their loads.)
     - C is bit-identical to the idealized two-read-port model, in the same number of
       cycles, with the same L2 traffic: the banked L2 never stalls anything."""
@@ -561,3 +648,59 @@ def test_a_and_b_in_one_group_raise_the_l2_error():
 
     run_sim(top, testbench, max_cycles=2_000)
     assert seen == {"l2": 1}
+
+
+EPILOGUES = [
+    # (activation, Requant): each fused operation on and off, alone and together
+    (0, None),
+    (Activation.RELU.value, None),
+    (Activation.RELU6.value, None),
+    (Activation.CLIP.value, Requant(clip_lo=-3000, clip_hi=4000)),
+    (0, Requant(mul=1, shift=6, enable=True)),
+    (0, Requant(mul=-7, shift=9, enable=True)),
+    (Activation.RELU.value, Requant(mul=3, shift=8, enable=True)),
+    (Activation.CLIP.value, Requant(mul=5, shift=10, enable=True, clip_lo=-20, clip_hi=30)),
+    (Activation.RELU6.value, Requant(mul=1, shift=4, enable=True, act_first=True)),
+    (
+        Activation.CLIP.value,
+        Requant(mul=2, shift=7, enable=True, act_first=True, clip_lo=-900, clip_hi=700),
+    ),  # fmt: skip
+]
+
+
+@pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
+@pytest.mark.parametrize("activation,requant", EPILOGUES)
+@pytest.mark.parametrize("bias", [None, "row"])
+def test_the_combiner_epilogue_is_bit_exact(dataflow, activation, requant, bias):
+    """#75: the epilogue on the finished C tiles, tiled in M, N and K (K = 10: two K
+    tiles, so the merge runs first), against the reference model: each SFU function,
+    requantization to int8 with rounding and saturation, in both orders, with a bias."""
+    C, expected, untouched = run_on_top(
+        config(), 9, 7, 10, dataflow, seed=75, bias=bias, activation=activation,
+        requant=requant,
+    )  # fmt: skip
+    np.testing.assert_array_equal(C, expected)
+    assert untouched
+
+
+@pytest.mark.parametrize("dataflow", [OS, WS], ids=["os", "ws"])
+@pytest.mark.parametrize(
+    "activation,requant",
+    [
+        (0, Requant(mx=True)),
+        (Activation.RELU.value, Requant(mx=True)),
+        (Activation.CLIP.value, Requant(mx=True, clip_lo=-20000, clip_hi=900)),
+    ],
+)
+@pytest.mark.parametrize("bias", [None, "matrix"])
+def test_mxint8_c_is_bit_exact(dataflow, activation, requant, bias):
+    """#76: an MXINT8 C, tiled in M, N and K (two K tiles, so the merge runs first),
+    against the reference model: each row of a C tile its int8 elements then its scale,
+    the SFU before the encoding. (IS is refused: its corner turn comes after the
+    encoding; the encoder itself is the same on every dataflow, test_mx.py.)"""
+    C, expected, untouched = run_on_top(
+        config(), 9, 8, 10, dataflow, seed=76, bias=bias, activation=activation,
+        requant=requant,
+    )  # fmt: skip
+    np.testing.assert_array_equal(C, expected)
+    assert untouched

@@ -114,10 +114,12 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
   Streamer's two reads of a clock never share a macro; the sticky `l2_error` flags any
   access that would (`docs/architecture/l2.md`). Hand-written commands must place tiles the
   same way. `l2_ideal` builds the idealized two-read-port model, kept as the reference.
-- The Combiner's storage (`memory/combiner.py`), today a
-  Gemmini-style result memory (the accumulator until #37). The KPU's **Combiner**, between L1
-  and L2, merges WS/IS partials and fuses bias, activation, scaling and block-format
-  conversion as results are written to L2 (`docs/architecture/combiner.md`; port #38).
+- The **Combiner** (`memory/combiner.py`, `epilogue.py`, `mx.py`; #38), on the result path
+  between L1 and L2: it merges results into L2's result group of 1R1W banks (overwrite or
+  accumulate, forwarded so back-to-back K blocks see each other's sums), and on a
+  reduction's final commit applies one of four profiles: requantization, the SFU bank, or
+  MXINT8 (`docs/architecture/combiner.md`). `SystolicTop` takes the profiles on its
+  `cmb_scale_<n>`, `cmb_control_<n>` and `cmb_clip_<n>` ports (kpugen: CSRs).
 - The CSP processes (`BlockMoverIn`, `BlockMoverOut`, `Streamer`), the BlockMover's engines (`blockmover/`: StreamReader,
   StreamWriter), and `SystolicTop`,
   which computes a verified GEMM end to end (`tests/unit/test_gemm_systolic.py`)

@@ -115,8 +115,8 @@ follows Gemmini's, and systars owes it the following:
   (`controller/streamer.py`)
 - the local address encoding, where bit 31 selects the accumulator, bit 30 accumulates and
   bit 29 reads a full row (`memory/local_addr.py`)
-- the accumulator, a separate result memory with activation on read-out
-  (`memory/combiner.py`, the Combiner's storage since #37)
+- the accumulator, a separate result memory with activation on read-out, which the
+  [Combiner](combiner.md) replaced (#38)
 - the split into load, execute and store controllers, the DMA engines `StreamReader` and
   `StreamWriter`, and the plan for `LoopMatmul` and `LoopConv` unrollers
   ([implementation plan](../plan/implementation.md))
@@ -126,7 +126,7 @@ PE link is registered and the array has no skew or deskew registers. Whole tiles
 memory levels on credits and tile-ready tokens (the CSP model of
 [kpu-sim](https://github.com/stillwater-sc/kpu-sim)) instead of through a reservation station,
 and the Streamer stages operands in L1 stream buffers. The BlockMover's opcodes (strided and
-transposing moves, `CLEAR`, `BROADCAST`) are not Gemmini's. The [Combiner](combiner.md) will replace the accumulator. Gemmini's copyright
+transposing moves, `CLEAR`, `BROADCAST`) are not Gemmini's, and the [Combiner](combiner.md) replaced the accumulator. Gemmini's copyright
 notice and license are in the repository's `NOTICE` file.
 
 ## References

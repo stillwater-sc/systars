@@ -61,8 +61,12 @@ class IsaResult:
     error_code: int
 
 
-def run_isa(isa, config_cmds, start_cmd, *, latency=2, max_cycles=200_000, ready_every=1):
+def run_isa(
+    isa, config_cmds, start_cmd, *, latency=2, max_cycles=200_000, ready_every=1, inputs=None
+):
     """Configure ``isa`` with ``(cmd, data)`` pairs, START it, and record its commands.
+
+    ``inputs`` sets the instruction's other inputs (e.g. ``{"combiner_mx": 1}``) first.
 
     ``ready_every`` > 1 holds ``cmd_ready`` low on the other cycles (backpressure).
     Each accepted STORE pulses ``cmd_store_completed`` ``latency`` cycles later.
@@ -92,6 +96,8 @@ def run_isa(isa, config_cmds, start_cmd, *, latency=2, max_cycles=200_000, ready
             cycle += 1
 
     async def testbench(ctx):
+        for name, value in (inputs or {}).items():
+            ctx.set(getattr(isa, name), value)
         for cmd, data in [*config_cmds, (start_cmd, 0)]:
             ctx.set(isa.cfg_valid, 1)
             ctx.set(isa.cfg_cmd, cmd)

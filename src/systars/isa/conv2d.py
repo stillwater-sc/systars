@@ -71,6 +71,7 @@ from amaranth.lib.wiring import Component, In, Out
 
 from ..config import Dataflow, SystolicConfig
 from ..controller.sync import Sync
+from ..memory.epilogue import EPILOGUE_FINAL
 from ..memory.local_addr import LocalAddr
 from ..util.commands import BlockMoverOpcode, ExecOpcode
 from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, TileBuffers, command_ports
@@ -94,7 +95,7 @@ class Conv2dCmd(IntEnum):
     CONFIG_F_STRIDE = 0x21  # Reserved (F is dense)
     CONFIG_Y_STRIDE = 0x22  # Bytes between output positions (0 = dense)
     CONFIG_B_STRIDE = 0x23  # Reserved
-    CONFIG_OPTIONS = 0x30  # data[0]=accumulate, data[3:1]=activation
+    CONFIG_OPTIONS = 0x30  # data[0]=accumulate, data[2:1]=the Combiner profile (#77)
     START = 0xF0
     ABORT = 0xFF
 
@@ -203,7 +204,7 @@ class Conv2d(Component):
         x_addr, f_addr, y_addr, b_addr = (Signal(64, name=f"reg_{n}_addr") for n in "XFYB")
         y_stride_cfg = Signal(32)
         accumulate = Signal()
-        activation = Signal(3)
+        profile = Signal(2)  # the Combiner profile of the finished Y tiles (wide only)
         in_valid, out_valid, kernel_valid, addrs_valid = (Signal() for _ in range(4))
 
         # Derived sizes
@@ -351,7 +352,7 @@ class Conv2d(Component):
                     with m.Case(Conv2dCmd.CONFIG_Y_STRIDE):
                         m.d.sync += y_stride_cfg.eq(d[0:32])
                     with m.Case(Conv2dCmd.CONFIG_OPTIONS):
-                        m.d.sync += [accumulate.eq(d[0]), activation.eq(d[1:4])]
+                        m.d.sync += [accumulate.eq(d[0]), profile.eq(d[1:3])]
                     with m.Case(Conv2dCmd.START):
                         with m.If(in_valid & out_valid & kernel_valid & addrs_valid):
                             m.d.sync += [
@@ -388,7 +389,8 @@ class Conv2d(Component):
                 with m.If(zero_dim):
                     m.d.sync += self.error_code.eq(Conv2dError.INVALID_DIMS)
                     m.next = "ERROR"
-                with m.Elif(~y_stride_ok):
+                with m.Elif(~y_stride_ok | self.combiner_formats.bit_select(2 * profile, 2).any()):
+                    # Y is int32 rows: a narrow or MX profile is refused
                     m.d.sync += self.error_code.eq(Conv2dError.UNSUPPORTED_LAYOUT)
                     m.next = "ERROR"
                 with m.Else():
@@ -469,6 +471,8 @@ class Conv2d(Component):
                 Mux(combiner_in, ExecOpcode.COMPUTE_ACCUMULATE, ExecOpcode.COMPUTE),
                 rs1=bufs.a_addr, rs2=bufs.b_addr, rd=bufs.combiner_addr, k_dim=tile_K,
                 chain=bufs.chain(first_k, last_k),
+                # The last K step finishes the reduction: the Combiner's epilogue
+                activation=Mux(last_k, EPILOGUE_FINAL | profile, 0),
                 sync=bufs.compute(first_k=first_k, last_k=last_k, acquire=first_k & ~combiner_in),
                 then=bufs.next_l2(),
             )  # fmt: skip
@@ -492,7 +496,7 @@ class Conv2d(Component):
             issuer.state(
                 "STORE", "NEXT_MN", CTRL_STORE, BlockMoverOpcode.MEMCPY,
                 dram_addr=y_tile, local_addr=bufs.combiner_addr, len=tile_M,
-                stride=y_stride, row_bytes=tile_N * combiner_bytes, activation=activation,
+                stride=y_stride, row_bytes=tile_N * combiner_bytes,
                 sync=bufs.store(), then=bufs.next_combiner(),
             )  # fmt: skip
 
