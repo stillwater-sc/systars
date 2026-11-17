@@ -23,7 +23,7 @@ import numpy as np
 
 from systars.controller.sync import SlotState, Sync
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE
-from systars.util.commands import DmaOpcode, ExecOpcode
+from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
 from ._sim import run_sim
 
@@ -129,7 +129,7 @@ class TopModel:
     def __init__(self, cfg, dram_bytes=1 << 20):
         self.cfg = cfg
         self.dim = cfg.grid_rows * cfg.tile_rows
-        self.beat = cfg.dma_buswidth // 8
+        self.beat = cfg.blockmover_buswidth // 8
         self.dram = bytearray(dram_bytes)
         self.sp: dict[int, list[int]] = {}
         self.acc: dict[int, list[int]] = {}
@@ -137,7 +137,7 @@ class TopModel:
         self.held = np.zeros((self.dim, self.dim), dtype=np.int64)  # OS: C in the PEs
         self.dataflow = 0  # 0 = OS, 1 = stationary (WS and IS)
         self.l2_slots = [SlotState.FREE] * cfg.l2_slots
-        self.acc_slots = [SlotState.FREE] * cfg.acc_slots
+        self.combiner_slots = [SlotState.FREE] * cfg.combiner_slots
 
     def write(self, addr, data):
         self.dram[addr : addr + len(data)] = data
@@ -148,10 +148,10 @@ class TopModel:
     def _sync(self, c, phase):
         """Apply ``c``'s credits and tokens: ``phase`` "start" (WAIT, ACQUIRE) or "end"."""
         src, dst = c.sync & 0xF, (c.sync >> Sync.DST) & 0xF
-        produces = {CTRL_LOAD: self.l2_slots, CTRL_EXEC: self.acc_slots}.get(c.type)
-        if c.type == CTRL_LOAD and c.local_addr >> 31 & 1:  # a LOAD into the accumulator
-            produces = self.acc_slots
-        consumes = {CTRL_EXEC: self.l2_slots, CTRL_STORE: self.acc_slots}.get(c.type)
+        produces = {CTRL_LOAD: self.l2_slots, CTRL_EXEC: self.combiner_slots}.get(c.type)
+        if c.type == CTRL_LOAD and c.local_addr >> 31 & 1:  # a LOAD into the Combiner
+            produces = self.combiner_slots
+        consumes = {CTRL_EXEC: self.l2_slots, CTRL_STORE: self.combiner_slots}.get(c.type)
 
         def move(pool, slot, frm, to, what):
             assert pool is not None and slot < len(pool), f"{what}: slot {slot} of {c}"
@@ -172,8 +172,8 @@ class TopModel:
                 move(produces, dst, SlotState.OWNED, SlotState.READY, "SIGNAL")
 
     def assert_all_free(self):
-        assert all(s == SlotState.FREE for s in self.l2_slots + self.acc_slots), (
-            f"slots left in use: L2 {self.l2_slots}, accumulator {self.acc_slots}"
+        assert all(s == SlotState.FREE for s in self.l2_slots + self.combiner_slots), (
+            f"slots left in use: L2 {self.l2_slots}, Combiner {self.combiner_slots}"
         )
 
     def run(self, commands):
@@ -186,16 +186,16 @@ class TopModel:
         cfg, dim = self.cfg, self.dim
         stride = c.stride or self.beat
         if c.type == CTRL_LOAD:
-            to_acc, add = c.local_addr >> 31 & 1, c.local_addr >> 30 & 1
-            bits = cfg.acc_bits if to_acc else cfg.input_bits
+            to_combiner, add = c.local_addr >> 31 & 1, c.local_addr >> 30 & 1
+            bits = cfg.acc_bits if to_combiner else cfg.input_bits
             row_bytes = c.row_bytes or dim * bits // 8
             n_elems = min(dim, row_bytes * 8 // bits)
             base = c.local_addr & DATA_MASK
-            turn = c.opcode in (DmaOpcode.TRANSPOSE, DmaOpcode.BROADCAST_TRANSPOSE)
+            turn = c.opcode in (BlockMoverOpcode.TRANSPOSE, BlockMoverOpcode.BROADCAST_TRANSPOSE)
             n_rows = min(c.len, dim) if turn else c.len
-            if c.opcode == DmaOpcode.CLEAR:
+            if c.opcode == BlockMoverOpcode.CLEAR:
                 rows = [[0] * dim for _ in range(n_rows)]
-            elif c.opcode in (DmaOpcode.BROADCAST, DmaOpcode.BROADCAST_TRANSPOSE):
+            elif c.opcode in (BlockMoverOpcode.BROADCAST, BlockMoverOpcode.BROADCAST_TRANSPOSE):
                 rows = [self.read_elems(c.dram_addr, bits, n_elems)] * n_rows
             else:
                 rows = [
@@ -205,7 +205,7 @@ class TopModel:
                 rows = [[row[j] for row in rows] for j in range(n_elems)]
             for n, row in enumerate(rows):
                 row = row + [0] * (dim - len(row))
-                if not to_acc:
+                if not to_combiner:
                     self.sp[base + n] = row
                 elif add:
                     old = self.acc.get(base + n, [0] * dim)
@@ -215,7 +215,7 @@ class TopModel:
         elif c.type == CTRL_STORE:
             row_bytes = c.row_bytes or dim * cfg.acc_bits // 8
             base = c.local_addr & DATA_MASK
-            if c.opcode == DmaOpcode.TRANSPOSE:  # element n of each gathered row -> row n
+            if c.opcode == BlockMoverOpcode.TRANSPOSE:  # element n of each gathered row -> row n
                 gather = min(dim, row_bytes * 8 // cfg.acc_bits)
                 tile = [self.acc.get(base + g, [0] * dim) for g in range(gather)]
                 rows = [[tile[g][n] for g in range(gather)] for n in range(min(c.len, dim))]

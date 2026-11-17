@@ -8,7 +8,7 @@ systolic array accelerator interacts with. It supports:
 - Bus-width aligned transfers matching hardware behavior
 
 In a real system, this would be replaced by actual memory-mapped I/O
-or a DMA driver interface.
+or a BlockMover driver interface.
 """
 
 from dataclasses import dataclass, field
@@ -32,7 +32,7 @@ class SimulatedDRAM:
     """
     Simulated DRAM for systolic array demonstrations.
 
-    This class models external memory that the accelerator accesses via DMA.
+    This class models external memory that the accelerator accesses via BlockMover.
     It provides methods to:
     - Allocate regions for matrices
     - Load numpy arrays into memory

@@ -1,6 +1,6 @@
 """
 The tile's BlockMover legs (kpu-sim's CSP model; issue #10): LOAD moves a tile
-from L3 into the scratchpad, STORE moves a result tile from the accumulator to
+from L3 into the scratchpad, STORE moves a result tile from the Combiner to
 L3, each from or to any byte address, ``stride`` bytes between rows, with
 ``row_bytes`` valid bytes per row.
 
@@ -15,22 +15,22 @@ L3, each from or to any byte address, ``stride`` bytes between rows, with
   1-beat bursts, a streamed tile ends a burst at it, alone and in a GEMM through
   SystolicTop. The AXI model asserts it for every test.
 - TRANSPOSE (#21): both legs with a corner turn, alone and through SystolicTop.
-- LOAD into the accumulator (#17): rows written over the shared write port in the
+- LOAD into the Combiner (#17): rows written over the shared write port in the
   clocks it is free, overwriting or adding; CLEAR (zero rows, no L3 read);
-  BROADCAST (one L3 read, every row); the accumulator corner turn.
+  BROADCAST (one L3 read, every row); the Combiner corner turn.
 """
 
 import numpy as np
 import pytest
 from amaranth import Elaboratable, Module, Signal
 
+from systars.blockmover.reader import StreamReader
+from systars.blockmover.writer import StreamWriter
 from systars.config import Dataflow, SystolicConfig
 from systars.controller.load import LoadController
 from systars.controller.store import StoreController
-from systars.dma.reader import StreamReader
-from systars.dma.writer import StreamWriter
 from systars.top import SystolicTop
-from systars.util.commands import DmaOpcode, ExecOpcode
+from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
 from ._axi import axi_memory
 from ._sim import run_sim
@@ -40,13 +40,13 @@ WS = 1
 
 
 def config(dim=4, **overrides):
-    fields = {"grid_rows": dim, "grid_cols": dim, "sp_capacity_kb": 4, "acc_capacity_kb": 4}
+    fields = {"grid_rows": dim, "grid_cols": dim, "sp_capacity_kb": 4, "combiner_capacity_kb": 4}
     fields.update(overrides)
     return SystolicConfig(**fields)
 
 
 class _AxiPorts:
-    """Alias a DMA engine's ``mem_*`` ports as ``axi_*``, with idle stand-ins for the
+    """Alias a BlockMover engine's ``mem_*`` ports as ``axi_*``, with idle stand-ins for the
     other direction, so ``axi_memory`` can serve one engine."""
 
     READ = ("arvalid", "arready", "araddr", "arlen", "rvalid", "rready", "rdata", "rlast")
@@ -74,20 +74,20 @@ class LoadPath(Elaboratable, _AxiPorts):
         m.submodules.ctrl, m.submodules.reader = self.ctrl, self.reader
         c, r = self.ctrl, self.reader
         m.d.comb += [
-            r.req_valid.eq(c.dma_req_valid),
-            c.dma_req_ready.eq(r.req_ready),
-            r.req_addr.eq(c.dma_req_addr),
-            r.req_len.eq(c.dma_req_len),
-            c.dma_resp_valid.eq(r.resp_valid),
-            r.resp_ready.eq(c.dma_resp_ready),
-            c.dma_resp_data.eq(r.resp_data),
-            c.dma_resp_last.eq(r.resp_last),
+            r.req_valid.eq(c.engine_req_valid),
+            c.engine_req_ready.eq(r.req_ready),
+            r.req_addr.eq(c.engine_req_addr),
+            r.req_len.eq(c.engine_req_len),
+            c.engine_resp_valid.eq(r.resp_valid),
+            r.resp_ready.eq(c.engine_resp_ready),
+            c.engine_resp_data.eq(r.resp_data),
+            c.engine_resp_last.eq(r.resp_last),
         ]
         return m
 
 
 class StorePath(Elaboratable, _AxiPorts):
-    """StoreController + StreamWriter, reading a model accumulator."""
+    """StoreController + StreamWriter, reading a model Combiner."""
 
     def __init__(self, cfg):
         self.ctrl = StoreController(cfg)
@@ -100,16 +100,16 @@ class StorePath(Elaboratable, _AxiPorts):
         m.submodules.ctrl, m.submodules.writer = self.ctrl, self.writer
         c, w = self.ctrl, self.writer
         m.d.comb += [
-            w.req_valid.eq(c.dma_req_valid),
-            c.dma_req_ready.eq(w.req_ready),
-            w.req_addr.eq(c.dma_req_addr),
-            w.req_len.eq(c.dma_req_len),
-            w.data_valid.eq(c.dma_data_valid),
-            c.dma_data_ready.eq(w.data_ready),
-            w.data.eq(c.dma_data),
-            w.data_strb.eq(c.dma_data_strb),
-            w.data_last.eq(c.dma_data_last),
-            c.dma_done.eq(w.done),
+            w.req_valid.eq(c.engine_req_valid),
+            c.engine_req_ready.eq(w.req_ready),
+            w.req_addr.eq(c.engine_req_addr),
+            w.req_len.eq(c.engine_req_len),
+            w.data_valid.eq(c.engine_data_valid),
+            c.engine_data_ready.eq(w.data_ready),
+            w.data.eq(c.engine_data),
+            w.data_strb.eq(c.engine_data_strb),
+            w.data_last.eq(c.engine_data_last),
+            c.engine_done.eq(w.done),
         ]
         return m
 
@@ -124,7 +124,7 @@ async def issue(
     rows,
     stride=0,
     row_bytes=0,
-    opcode=DmaOpcode.MEMCPY,
+    opcode=BlockMoverOpcode.MEMCPY,
 ):
     ctx.set(ctrl.cmd_opcode, opcode)
     ctx.set(ctrl.cmd_dram_addr, dram_addr)
@@ -143,68 +143,70 @@ def always_free(_cycle):
     return True
 
 
-def run_load(cfg, memory, *, then=(), log=None, acc=None, acc_free=always_free, **cmd):
+def run_load(cfg, memory, *, then=(), log=None, acc=None, combiner_free=always_free, **cmd):
     """Run one LOAD, then the commands in ``then`` (dicts of the same fields); return
-    {scratchpad row: bytes written}. With ``acc`` (a dict), accumulator writes are
-    recorded into it as {row: (bytes, accumulate)}; ``acc_free(cycle)`` says when the
-    shared accumulator write port is free."""
+    {scratchpad row: bytes written}. With ``acc`` (a dict), Combiner writes are
+    recorded into it as {row: (bytes, accumulate)}; ``combiner_free(cycle)`` says when the
+    shared Combiner write port is free."""
     dut = LoadPath(cfg)
     sp_bytes = cfg.sp_width // 8
-    acc_bytes = cfg.acc_width // 8
+    combiner_bytes = cfg.combiner_width // 8
     written = {}
 
     async def recorder(ctx):
         c = dut.ctrl
         cycle = 0
-        ctx.set(c.acc_write_ready, acc_free(0))
+        ctx.set(c.combiner_write_ready, combiner_free(0))
         async for _, _, en, addr, data, a_en, a_addr, a_data, a_add in ctx.tick().sample(
             c.sp_write_en, c.sp_write_addr, c.sp_write_data,
-            c.acc_write_en, c.acc_write_addr, c.acc_write_data, c.acc_write_accumulate,
+            c.combiner_write_en, c.combiner_write_addr, c.combiner_write_data, c.combiner_write_accumulate,
         ):  # fmt: skip
             if en:
                 assert addr not in written, f"scratchpad row {addr} written twice"
                 written[addr] = data.to_bytes(sp_bytes, "little")
             if a_en:
-                assert acc is not None, "an accumulator write from a scratchpad LOAD"
-                assert a_addr >> 31 & 1, f"accumulator write to {a_addr:#x} without the flag"
+                assert acc is not None, "a Combiner write from a scratchpad LOAD"
+                assert a_addr >> 31 & 1, f"Combiner write to {a_addr:#x} without the flag"
                 row = a_addr & ((1 << 29) - 1)
-                assert row not in acc, f"accumulator row {row} written twice"
-                acc[row] = (a_data.to_bytes(acc_bytes, "little"), a_add)
+                assert row not in acc, f"Combiner row {row} written twice"
+                acc[row] = (a_data.to_bytes(combiner_bytes, "little"), a_add)
             cycle += 1
-            ctx.set(c.acc_write_ready, acc_free(cycle))
+            ctx.set(c.combiner_write_ready, combiner_free(cycle))
 
     async def testbench(ctx):
         for fields in (cmd, *then):
             await issue(ctx, dut.ctrl, "cmd_sp_addr", **fields)
 
-    beat = cfg.dma_buswidth // 8
+    beat = cfg.blockmover_buswidth // 8
     run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat, log=log), recorder])
     return written
 
 
-def run_store(cfg, memory, acc_rows, *, activation=0, then=(), log=None, **cmd):
-    """Run one STORE of ``acc_rows`` (lists of acc_bits values) into ``memory``, then the
+def run_store(cfg, memory, combiner_rows, *, activation=0, then=(), log=None, **cmd):
+    """Run one STORE of ``combiner_rows`` (lists of acc_bits values) into ``memory``, then the
     commands in ``then`` (dicts of the same fields)."""
     dut = StorePath(cfg)
 
-    async def accumulator(ctx):
+    async def combiner(ctx):
         pending = None
         while True:
-            ctx.set(dut.ctrl.acc_read_valid, pending is not None)
+            ctx.set(dut.ctrl.combiner_read_valid, pending is not None)
             ctx.set(
-                dut.ctrl.acc_read_data,
-                pack(acc_rows[pending], cfg.acc_bits) if pending is not None else 0,
+                dut.ctrl.combiner_read_data,
+                pack(combiner_rows[pending], cfg.acc_bits) if pending is not None else 0,
             )
-            _, _, req, addr = await ctx.tick().sample(dut.ctrl.acc_read_req, dut.ctrl.acc_read_addr)
+            _, _, req, addr = await ctx.tick().sample(
+                dut.ctrl.combiner_read_req, dut.ctrl.combiner_read_addr
+            )
             pending = addr if req else None
 
     async def testbench(ctx):
         ctx.set(dut.ctrl.cmd_activation, activation)
         for fields in (cmd, *then):
-            await issue(ctx, dut.ctrl, "cmd_acc_addr", **fields)
+            await issue(ctx, dut.ctrl, "cmd_combiner_addr", **fields)
 
-    beat = cfg.dma_buswidth // 8
-    run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat, log=log), accumulator])
+    beat = cfg.blockmover_buswidth // 8
+    run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat, log=log), combiner])
 
 
 def pattern(n, seed=0):
@@ -243,7 +245,7 @@ class TestLoad:
     def test_consecutive_beats_stream_past_256(self):
         """Aligned, beat-spaced rows stream; more than 256 rows take several bursts."""
         cfg = config(sp_capacity_kb=4)  # 1024 scratchpad rows
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         memory = pattern(300 * beat + 0x1000, seed=3)
         written = run_load(cfg, memory, dram_addr=0x1000, local_addr=0, rows=300)
         assert len(written) == 300
@@ -259,7 +261,7 @@ class TestLoad:
     def test_beat_spaced_rows_off_a_boundary_do_not_stream(self, offset):
         """Rows one beat apart but mid-beat are not consecutive beats: each is its own burst."""
         cfg = config()
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         memory = pattern(1 << 12, seed=9)
         base = 0x500 + offset
         written = run_load(cfg, memory, dram_addr=base, local_addr=0, rows=3, stride=beat)
@@ -273,7 +275,7 @@ class TestStore:
 
     @pytest.mark.parametrize("offset", [0, 4, 9, 15])
     def test_any_byte_offset_leaves_neighbours(self, offset):
-        cfg = config()  # 16-byte accumulator rows, 16-byte beats
+        cfg = config()  # 16-byte Combiner rows, 16-byte beats
         memory = pattern(1 << 12, seed=4)
         before = bytes(memory)
         base = 0x300 + offset
@@ -286,7 +288,7 @@ class TestStore:
     @pytest.mark.parametrize("offset", [4, 9])
     def test_beat_spaced_rows_off_a_boundary_do_not_stream(self, offset):
         cfg = config()
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         memory = pattern(1 << 12, seed=10)
         before = bytes(memory)
         base = 0x600 + offset
@@ -318,8 +320,8 @@ class TestStore:
         assert unpack(int.from_bytes(memory[0x23 : 0x23 + 16], "little"), 32, 4) == [1, 0, 3, 0]
 
     def test_consecutive_beats_stream_past_256(self):
-        cfg = config(acc_capacity_kb=8)  # 512 accumulator rows
-        beat = cfg.dma_buswidth // 8
+        cfg = config(combiner_capacity_kb=8)  # 512 Combiner rows
+        beat = cfg.blockmover_buswidth // 8
         rows = [[r, -r, 2 * r, 3] for r in range(300)]
         memory = bytearray(300 * beat + 0x1000)
         run_store(cfg, memory, rows, dram_addr=0x1000, local_addr=0, rows=300)
@@ -351,7 +353,7 @@ def gemm_any_layout(
     Streamer streams it. C is written with row_bytes = N results, so the bytes past
     each row keep their canary."""
     dim = cfg.grid_rows * cfg.tile_rows
-    beat = cfg.dma_buswidth // 8
+    beat = cfg.blockmover_buswidth // 8
     M, K = A.shape
     N = B.shape[1]
     memory = pattern(1 << 16, seed=7)
@@ -427,8 +429,8 @@ class TestGemmAnyLayout:
         np.testing.assert_array_equal(C, A @ B)
 
     def test_one_bank(self):
-        """One scratchpad and one accumulator bank: consecutive rows stay in bank 0."""
-        cfg = config(4, sp_banks=1, acc_banks=1)
+        """One scratchpad and one Combiner bank: consecutive rows stay in bank 0."""
+        cfg = config(4, sp_banks=1, combiner_banks=1)
         rng = np.random.default_rng(12)
         A = rng.integers(-128, 128, (4, 4))
         B = rng.integers(-128, 128, (4, 4))
@@ -446,7 +448,7 @@ class TestFourKBoundaries:
         """8-byte rows 40 bytes apart: the row at PAGE - 4 is in two pages, and is read
         as two 1-beat bursts; the rows around it are ordinary bursts."""
         cfg = config(dim=8)  # 8-byte scratchpad rows, 32-byte beats
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         assert beat == 32
         memory = pattern(1 << 14, seed=20)
         base, log = self.PAGE - 4 - 40, []
@@ -459,7 +461,7 @@ class TestFourKBoundaries:
     def test_load_stream_crossing_a_boundary(self):
         """40 consecutive beats from 8 beats before PAGE: one burst to PAGE, one after."""
         cfg = config()
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         memory = pattern(1 << 14, seed=21)
         base, log = self.PAGE - 8 * beat, []
         written = run_load(cfg, memory, dram_addr=base, local_addr=0, rows=40, log=log)
@@ -471,7 +473,7 @@ class TestFourKBoundaries:
     def test_load_stream_of_300_rows_from_mid_page(self):
         """300 beats from mid-page: bursts end at each boundary and at 256 beats."""
         cfg = config()
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         memory = pattern(1 << 15, seed=22)
         base, log = self.PAGE + 0x800, []
         written = run_load(cfg, memory, dram_addr=base, local_addr=0, rows=300, log=log)
@@ -483,7 +485,7 @@ class TestFourKBoundaries:
 
     def test_store_row_spilling_across_a_boundary(self):
         """A 16-byte row at PAGE - 4: two 1-beat bursts, its bytes only."""
-        cfg = config()  # 16-byte accumulator rows, 16-byte beats
+        cfg = config()  # 16-byte Combiner rows, 16-byte beats
         memory = pattern(1 << 14, seed=23)
         before = bytes(memory)
         rows = TestStore.ROWS
@@ -499,7 +501,7 @@ class TestFourKBoundaries:
 
     def test_store_stream_crossing_a_boundary(self):
         cfg = config()
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         rows = [[r, -r, 2 * r, 3] for r in range(40)]
         memory = bytearray(1 << 14)
         base, log = self.PAGE - 8 * beat, []
@@ -516,7 +518,7 @@ class TestFourKBoundaries:
         0x1000 - 2, B's at 0x2000 - 1, C's at 0x3000 - 6), at odd strides: each such row
         is two 1-beat bursts, and C is right."""
         cfg = config(4)
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         rng = np.random.default_rng(24)
         A = rng.integers(-128, 128, (4, 4))
         B = rng.integers(-128, 128, (4, 3))
@@ -531,7 +533,7 @@ class TestFourKBoundaries:
             assert log[n + 1] == (kind, page, 1)
 
 
-@pytest.mark.parametrize("field", ["sp_banks", "acc_banks"])
+@pytest.mark.parametrize("field", ["sp_banks", "combiner_banks"])
 @pytest.mark.parametrize("banks", [3, 6])
 def test_bank_count_must_be_a_power_of_two(field, banks):
     with pytest.raises(AssertionError, match="power of two"):
@@ -541,7 +543,7 @@ def test_bank_count_must_be_a_power_of_two(field, banks):
 def test_cmd_fields_default_to_whole_rows_one_beat_apart():
     """stride 0 / row_bytes 0 keep the old meaning: whole rows, consecutive beats."""
     cfg = config()
-    beat = cfg.dma_buswidth // 8
+    beat = cfg.blockmover_buswidth // 8
     memory = pattern(1 << 12, seed=8)
     written = run_load(cfg, memory, dram_addr=0x200, local_addr=0, rows=3)
     assert written == {r: bytes(memory[0x200 + r * beat : 0x200 + r * beat + 4]) for r in range(3)}
@@ -551,7 +553,7 @@ def test_cmd_fields_default_to_whole_rows_one_beat_apart():
 # TRANSPOSE: the corner turns (#21)
 # ---------------------------------------------------------------------------
 
-TRANSPOSE = DmaOpcode.TRANSPOSE
+TRANSPOSE = BlockMoverOpcode.TRANSPOSE
 
 
 def turned(rows, n_out, width):
@@ -587,7 +589,7 @@ class TestLoadTranspose:
     def test_consecutive_beats_stream(self):
         """Aligned, beat-spaced rows take the streaming path into the buffer."""
         cfg = config(dim=8)
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         memory = pattern(1 << 12, seed=22)
         written = run_load(cfg, memory, dram_addr=0x400, local_addr=0, rows=8, opcode=TRANSPOSE)
         tile = [list(memory[0x400 + beat * r : 0x400 + beat * r + 8]) for r in range(8)]
@@ -626,7 +628,7 @@ class TestLoadTranspose:
 
 
 class TestStoreTranspose:
-    ROWS = TestStore.ROWS  # 3 accumulator rows of 4 int32
+    ROWS = TestStore.ROWS  # 3 Combiner rows of 4 int32
 
     def stored(self, memory, base, stride, rows, n):
         return [
@@ -637,7 +639,7 @@ class TestStoreTranspose:
 
     @pytest.mark.parametrize("offset", [0, 4, 9])
     def test_columns_become_rows(self, offset):
-        """3 accumulator rows (row_bytes = 3 results): L3 row i is element i of each."""
+        """3 Combiner rows (row_bytes = 3 results): L3 row i is element i of each."""
         cfg = config()
         memory = pattern(1 << 12, seed=24)
         before = bytes(memory)
@@ -656,7 +658,7 @@ class TestStoreTranspose:
 
     def test_consecutive_beats_stream(self):
         cfg = config()
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         rows = [[r * 10 + c for c in range(4)] for r in range(4)]
         memory = bytearray(1 << 12)
         run_store(cfg, memory, rows, dram_addr=0x800, local_addr=0, rows=4, opcode=TRANSPOSE)
@@ -673,7 +675,7 @@ class TestStoreTranspose:
         assert self.stored(memory, 0x40, 16, 2, 3) == relu
 
     def test_narrow_tile_after_a_wide_one_writes_only_its_bytes(self):
-        """A 2-column tile after a 4-column one: the first leaves accumulator rows in
+        """A 2-column tile after a 4-column one: the first leaves Combiner rows in
         the buffer, which only reach elements past row_bytes, so nothing is written there."""
         cfg = config()
         rows = [[r * 10 + c + 1 for c in range(4)] for r in range(4)]
@@ -703,7 +705,7 @@ def test_round_trip_through_both_corner_turns(dim):
     layout WS streams), a WS GEMM computes A @ B, and STORE TRANSPOSE writes Cᵀ, all
     at unaligned addresses."""
     cfg = config(dim)
-    beat = cfg.dma_buswidth // 8
+    beat = cfg.blockmover_buswidth // 8
     rng = np.random.default_rng(30 + dim)
     M, K, N = dim, dim - 1, dim - 1
     A = rng.integers(-128, 128, (M, K))
@@ -729,7 +731,7 @@ def test_round_trip_through_both_corner_turns(dim):
         await host.execute(ExecOpcode.CONFIG, rs1=WS)
         await host.execute(ExecOpcode.PRELOAD, rs1=sp_b, k_dim=K)
         await host.execute(ExecOpcode.COMPUTE, rs1=0, rd=0, k_dim=M)
-        # M accumulator rows of N results -> N L3 rows of M: Cᵀ
+        # M Combiner rows of N results -> N L3 rows of M: Cᵀ
         ctx.set(dut.cmd_stride, 4 * M)
         ctx.set(dut.cmd_row_bytes, 4 * M)
         await host.run(SystolicTop.CTRL_STORE, TRANSPOSE, dram_addr=ct_addr, local_addr=0, len=N)
@@ -746,29 +748,29 @@ def test_round_trip_through_both_corner_turns(dim):
 
 
 # ---------------------------------------------------------------------------
-# LOAD into the accumulator, CLEAR and BROADCAST (#17)
+# LOAD into the Combiner, CLEAR and BROADCAST (#17)
 # ---------------------------------------------------------------------------
 
-ACC, ADD = 1 << 31, 1 << 30
+CMB, ADD = 1 << 31, 1 << 30
 
 
 def busy_two_of_three(cycle):
-    """The Streamer holds the accumulator write port two clocks in three."""
+    """The Streamer holds the Combiner write port two clocks in three."""
     return cycle % 3 == 0
 
 
-class TestLoadAccumulator:
+class TestLoadCombiner:
     @pytest.mark.parametrize("offset", [0, 5, 13])
     @pytest.mark.parametrize("free", [always_free, busy_two_of_three], ids=["free", "busy"])
-    def test_rows_land_in_the_accumulator(self, offset, free):
-        """Accumulator rows (4 int32: 16 bytes) at any byte address, written only in the
+    def test_rows_land_in_the_combiner(self, offset, free):
+        """Combiner rows (4 int32: 16 bytes) at any byte address, written only in the
         clocks the Streamer leaves the port free; the scratchpad is not touched."""
         cfg = config()
         memory = pattern(1 << 12, seed=30)
         base, acc = 0x300 + offset, {}
         written = run_load(
-            cfg, memory, dram_addr=base, local_addr=ACC | 6, rows=3, stride=40, row_bytes=12,
-            acc=acc, acc_free=free,
+            cfg, memory, dram_addr=base, local_addr=CMB | 6, rows=3, stride=40, row_bytes=12,
+            acc=acc, combiner_free=free,
         )  # fmt: skip
         assert written == {}
         assert acc == {
@@ -779,13 +781,13 @@ class TestLoadAccumulator:
     def test_streamed_rows_wait_for_the_port(self):
         """Consecutive beats stream; a busy port holds the stream (no beat is lost)."""
         cfg = config()
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         memory = pattern(1 << 13, seed=31)
         acc: dict = {}
         log: list = []
         run_load(
-            cfg, memory, dram_addr=0x400, local_addr=ACC, rows=20, acc=acc,
-            acc_free=busy_two_of_three, log=log,
+            cfg, memory, dram_addr=0x400, local_addr=CMB, rows=20, acc=acc,
+            combiner_free=busy_two_of_three, log=log,
         )  # fmt: skip
         assert log == [("r", 0x400, 20)]
         assert acc == {r: (bytes(memory[0x400 + r * beat : 0x400 + (r + 1) * beat]), 0)
@@ -795,18 +797,18 @@ class TestLoadAccumulator:
         cfg = config()
         memory = pattern(1 << 12, seed=32)
         acc: dict = {}
-        run_load(cfg, memory, dram_addr=0x101, local_addr=ACC | ADD | 2, rows=2, stride=16,
+        run_load(cfg, memory, dram_addr=0x101, local_addr=CMB | ADD | 2, rows=2, stride=16,
                  acc=acc)  # fmt: skip
         assert {row: add for row, (_, add) in acc.items()} == {2: 1, 3: 1}
 
-    @pytest.mark.parametrize("dest", [0, ACC])
+    @pytest.mark.parametrize("dest", [0, CMB])
     def test_clear_writes_zero_rows_without_a_read(self, dest):
         cfg = config()
         acc: dict = {}
         log: list = []
         written = run_load(
             cfg, pattern(1 << 12), dram_addr=0x200, local_addr=dest | 4, rows=3,
-            opcode=DmaOpcode.CLEAR, acc=acc, acc_free=busy_two_of_three, log=log,
+            opcode=BlockMoverOpcode.CLEAR, acc=acc, combiner_free=busy_two_of_three, log=log,
         )  # fmt: skip
         assert log == []
         if dest:
@@ -814,9 +816,9 @@ class TestLoadAccumulator:
         else:
             assert written == {4 + r: bytes(4) for r in range(3)} and acc == {}
 
-    @pytest.mark.parametrize("dest", [0, ACC])
+    @pytest.mark.parametrize("dest", [0, CMB])
     def test_broadcast_reads_once_and_writes_every_row(self, dest):
-        """One read, written to 5 rows. The 8-byte accumulator row spills into the next
+        """One read, written to 5 rows. The 8-byte Combiner row spills into the next
         beat (a 2-beat read); the scratchpad row is clamped to its 4 bytes (1 beat)."""
         cfg = config()
         memory = pattern(1 << 12, seed=33)
@@ -824,7 +826,7 @@ class TestLoadAccumulator:
         log: list = []
         written = run_load(
             cfg, memory, dram_addr=0x10B, local_addr=dest | 1, rows=5, stride=64,
-            row_bytes=8, opcode=DmaOpcode.BROADCAST, acc=acc, log=log,
+            row_bytes=8, opcode=BlockMoverOpcode.BROADCAST, acc=acc, log=log,
         )  # fmt: skip
         assert log == [("r", 0x100, 2 if dest else 1)]
         row = bytes(memory[0x10B : 0x10B + 8])
@@ -833,14 +835,14 @@ class TestLoadAccumulator:
         else:
             assert written == {1 + r: row[:4] for r in range(5)} and acc == {}
 
-    def test_corner_turn_into_the_accumulator(self):
-        """IS holds Cᵀ: L3 row n (int32 elements) becomes element n of each accumulator row."""
+    def test_corner_turn_into_the_combiner(self):
+        """IS holds Cᵀ: L3 row n (int32 elements) becomes element n of each Combiner row."""
         cfg = config(dataflow=Dataflow.A_STATIONARY | Dataflow.B_STATIONARY)
         memory = pattern(1 << 12, seed=34)
         acc: dict = {}
         run_load(
-            cfg, memory, dram_addr=0x203, local_addr=ACC | 8, rows=3, stride=24, row_bytes=8,
-            opcode=TRANSPOSE, acc=acc, acc_free=busy_two_of_three,
+            cfg, memory, dram_addr=0x203, local_addr=CMB | 8, rows=3, stride=24, row_bytes=8,
+            opcode=TRANSPOSE, acc=acc, combiner_free=busy_two_of_three,
         )  # fmt: skip
         tile = [unpack(int.from_bytes(memory[0x203 + 24 * r : 0x203 + 24 * r + 8], "little"),
                        32, 2) for r in range(3)]  # fmt: skip
@@ -848,13 +850,13 @@ class TestLoadAccumulator:
                 acc.items()} == {8 + j: row for j, row in enumerate(turned(tile, 2, 4))}  # fmt: skip
 
     def test_broadcast_corner_turn(self):
-        """Every accumulator row holds ``len`` copies of one element of the row."""
+        """Every Combiner row holds ``len`` copies of one element of the row."""
         cfg = config(dataflow=Dataflow.A_STATIONARY | Dataflow.B_STATIONARY)
         memory = pattern(1 << 12, seed=35)
         acc: dict = {}
         run_load(
-            cfg, memory, dram_addr=0x200, local_addr=ACC, rows=3, row_bytes=12,
-            opcode=DmaOpcode.BROADCAST_TRANSPOSE, acc=acc,
+            cfg, memory, dram_addr=0x200, local_addr=CMB, rows=3, row_bytes=12,
+            opcode=BlockMoverOpcode.BROADCAST_TRANSPOSE, acc=acc,
         )  # fmt: skip
         row = unpack(int.from_bytes(memory[0x200:0x20C], "little"), 32, 3)
         assert {r: unpack(int.from_bytes(d, "little"), 32, 4) for r, (d, _) in acc.items()} == {
@@ -862,12 +864,12 @@ class TestLoadAccumulator:
         }
 
     def test_corner_turn_needs_input_stationary(self):
-        """Without IS the accumulator corner turn is not built: the LOAD moves nothing."""
+        """Without IS the Combiner corner turn is not built: the LOAD moves nothing."""
         cfg = config(dataflow=Dataflow.OUTPUT_STATIONARY)
         acc: dict = {}
         log: list = []
         written = run_load(
-            cfg, pattern(1 << 12), dram_addr=0x200, local_addr=ACC, rows=3, opcode=TRANSPOSE,
+            cfg, pattern(1 << 12), dram_addr=0x200, local_addr=CMB, rows=3, opcode=TRANSPOSE,
             acc=acc, log=log,
         )  # fmt: skip
         assert (written, acc, log) == ({}, {}, [])

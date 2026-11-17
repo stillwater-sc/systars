@@ -1,5 +1,5 @@
 """
-Unit tests for the StreamWriter DMA engine.
+Unit tests for the StreamWriter BlockMover engine.
 
 These tests verify:
 1. StreamWriter instantiation
@@ -14,8 +14,8 @@ These tests verify:
 import pytest
 from amaranth.sim import Simulator, Tick
 
+from systars.blockmover.writer import StreamWriter
 from systars.config import SystolicConfig
-from systars.dma.writer import StreamWriter
 
 
 class TestStreamWriter:
@@ -25,8 +25,8 @@ class TestStreamWriter:
     def config(self):
         """Configuration for tests."""
         return SystolicConfig(
-            dma_buswidth=128,
-            dma_maxbytes=64,
+            blockmover_buswidth=128,
+            blockmover_maxbytes=64,
             grid_rows=4,
             grid_cols=4,
             tile_rows=1,
@@ -291,7 +291,7 @@ class TestStreamWriter:
     def test_write_strobe(self, config):
         """Test that write strobes are set correctly."""
         writer = StreamWriter(config)
-        strb_width = config.dma_buswidth // 8
+        strb_width = config.blockmover_buswidth // 8
         expected_strb = (1 << strb_width) - 1
         results = {"strb": None}
 
@@ -353,7 +353,7 @@ class TestStreamWriterVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        config = SystolicConfig(dma_buswidth=128, dma_maxbytes=64)
+        config = SystolicConfig(blockmover_buswidth=128, blockmover_maxbytes=64)
         writer = StreamWriter(config)
 
         output = verilog.convert(writer, name="StreamWriter")

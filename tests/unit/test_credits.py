@@ -88,7 +88,7 @@ def test_slot_pool_cycle_and_errors():
 
 
 def test_slot_pool_second_producer():
-    """The accumulator pool's second producer (a LOAD into the accumulator) takes and
+    """The Combiner pool's second producer (a LOAD into the Combiner) takes and
     signals slots like the first; it gets no credit for a slot the first producer
     takes in the same clock, so a credit is never taken twice."""
     pool = SlotPool(2, producers=2)
@@ -163,7 +163,7 @@ class Monitor:
     """Replays pushed / started / completed events through a slot model."""
 
     def __init__(self, cfg: SystolicConfig):
-        self.pools = {"l2": [FREE] * cfg.l2_slots, "acc": [FREE] * cfg.acc_slots}
+        self.pools = {"l2": [FREE] * cfg.l2_slots, "acc": [FREE] * cfg.combiner_slots}
         # Which pool each process fills (dst) and reads (src)
         self.produces = {CTRL_LOAD: "l2", CTRL_EXEC: "acc"}
         self.consumes = {CTRL_EXEC: "l2", CTRL_STORE: "acc"}
@@ -179,7 +179,7 @@ class Monitor:
             sigs += [getattr(top, f"{name}_started"), getattr(top, f"{name}_started_id"),
                      getattr(top, f"{name}_completed"), getattr(top, f"{name}_completed_id")]  # fmt: skip
         sigs += [top.exec_result, top.exec_result_id]
-        return [*sigs, top.l2_free, top.l2_ready, top.acc_free, top.acc_ready, top.sync_error,
+        return [*sigs, top.l2_free, top.l2_ready, top.combiner_free, top.combiner_ready, top.sync_error,
                 top.l1_error]  # fmt: skip
 
     def check_state(self, name, free, ready):
@@ -192,15 +192,15 @@ class Monitor:
     def step(self, values):
         valid, ready, ctype, sync, local_addr, *rest = values
         events, (result, result_id), state = rest[:12], rest[12:14], rest[14:]
-        l2_free, l2_ready, acc_free, acc_ready, error, l1_error = state
+        l2_free, l2_ready, combiner_free, combiner_ready, error, l1_error = state
         assert not error, f"cycle {self.cycles}: protocol error"
         assert not l1_error, f"cycle {self.cycles}: L1 schedule or protocol error"
         # The state this cycle reflects every earlier cycle's events
         self.check_state("l2", l2_free, l2_ready)
-        self.check_state("acc", acc_free, acc_ready)
-        if valid and ready:  # a LOAD into the accumulator fills an accumulator slot
-            to_acc = ctype == CTRL_LOAD and local_addr >> LocalAddr.IS_ACC_BIT & 1
-            self.queued[ctype].append((sync, "acc" if to_acc else self.produces.get(ctype)))
+        self.check_state("acc", combiner_free, combiner_ready)
+        if valid and ready:  # a LOAD into the Combiner fills a Combiner slot
+            to_combiner = ctype == CTRL_LOAD and local_addr >> LocalAddr.IS_COMBINER_BIT & 1
+            self.queued[ctype].append((sync, "acc" if to_combiner else self.produces.get(ctype)))
 
         moves = []
         for i, t in enumerate(PROCESSES):
@@ -281,7 +281,7 @@ def run_on_top(cfg, isa, config_cmds, start, memory, *, stall=0.0, max_cycles=40
         done, error = await ctx.tick().sample(isa.done, isa.error).until(isa.done | isa.error)
         status.update(done=done, error=error)
 
-    beat = cfg.dma_buswidth // 8
+    beat = cfg.blockmover_buswidth // 8
     memory_process = axi_memory(dut.top, memory, beat, stall=stall, seed=len(memory))
     run_sim(dut, testbench, processes=[memory_process, watch], max_cycles=max_cycles)
     assert status == {"done": 1, "error": 0}
@@ -291,8 +291,8 @@ def run_on_top(cfg, isa, config_cmds, start, memory, *, stall=0.0, max_cycles=40
 
 def config(grid=4, **overrides):
     return SystolicConfig(
-        grid_rows=grid, grid_cols=grid, sp_capacity_kb=4, acc_capacity_kb=4, **overrides
-    )  # 2 A/B slot pairs and 2 accumulator slots by default
+        grid_rows=grid, grid_cols=grid, sp_capacity_kb=4, combiner_capacity_kb=4, **overrides
+    )  # 2 A/B slot pairs and 2 Combiner slots by default
 
 
 ALL = Dataflow.OUTPUT_STATIONARY | Dataflow.B_STATIONARY | Dataflow.A_STATIONARY

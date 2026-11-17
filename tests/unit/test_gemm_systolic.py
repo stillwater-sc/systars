@@ -4,7 +4,7 @@ matmul through L1 and the fabric, STORE C to L3, and check C against ``A @ B``.
 
 Runs output-stationary, weight-stationary and input-stationary, on 2x2 and 4x4
 arrays, with PEArrays of 1x1 and 2x2 PEs, and the default (multi-cycle)
-scratchpad and accumulator latencies. The commands are untracked (``cmd_sync`` 0):
+scratchpad and Combiner latencies. The commands are untracked (``cmd_sync`` 0):
 the host issues one at a time and waits for each completion.
 
 The host lays each L2 tile out in L3 as the Streamer reads it (one L2 row per
@@ -14,7 +14,7 @@ block, ``controller/execute.py``) and moves it with MEMCPY:
   (row ``j`` = ``B[k0:k0+KB, j]``); the K tiles are one reduction (``cmd_chain``).
 - WS: B row-major (PRELOAD); per M tile, A column-major (row ``k`` = ``A[m0:, k]``).
 - IS: A column-major (PRELOAD: the stationary tile is Aᵀ); B row-major streamed
-  (row ``k`` = ``B[k, n0:]``); the accumulator holds Cᵀ and STORE TRANSPOSE writes C.
+  (row ``k`` = ``B[k, n0:]``); the Combiner holds Cᵀ and STORE TRANSPOSE writes C.
 """
 
 import numpy as np
@@ -23,7 +23,7 @@ import pytest
 from systars.config import SystolicConfig
 from systars.controller.execute import CHAIN_CONTINUES, CHAIN_MORE
 from systars.top import SystolicTop
-from systars.util.commands import DmaOpcode, ExecOpcode
+from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
 from ._axi import axi_memory
 from ._sim import run_sim
@@ -42,7 +42,7 @@ def make_config(grid_rows, grid_cols, tile_rows, tile_cols):
         tile_rows=tile_rows,
         tile_cols=tile_cols,
         sp_capacity_kb=4,
-        acc_capacity_kb=4,
+        combiner_capacity_kb=4,
     )
 
 
@@ -100,13 +100,15 @@ class Host:
     async def load(self, l3_addr, sp_addr, rows, row_bytes=None):
         """MEMCPY ``rows`` L3 rows (``row_bytes`` apart, when given) into L2."""
         layout = {} if row_bytes is None else {"stride": row_bytes, "row_bytes": row_bytes}
-        await self.run(SystolicTop.CTRL_LOAD, DmaOpcode.MEMCPY, dram_addr=l3_addr,
+        await self.run(SystolicTop.CTRL_LOAD, BlockMoverOpcode.MEMCPY, dram_addr=l3_addr,
                        local_addr=sp_addr, len=rows, **layout)  # fmt: skip
 
-    async def store(self, acc_addr, l3_addr, rows, row_bytes=None, *, opcode=DmaOpcode.MEMCPY):
+    async def store(
+        self, combiner_addr, l3_addr, rows, row_bytes=None, *, opcode=BlockMoverOpcode.MEMCPY
+    ):
         layout = {} if row_bytes is None else {"stride": row_bytes, "row_bytes": row_bytes}
         await self.run(SystolicTop.CTRL_STORE, opcode, dram_addr=l3_addr,
-                       local_addr=acc_addr, len=rows, **layout)  # fmt: skip
+                       local_addr=combiner_addr, len=rows, **layout)  # fmt: skip
 
     async def execute(self, opcode, **fields):
         await self.run(SystolicTop.CTRL_EXEC, opcode, **fields)
@@ -145,13 +147,13 @@ def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1, poison=None):
     OS: A is R x K and B is K x C. WS: A is M x K and B is K x C with K <= R.
     IS: A is M x K and B is K x N with K <= R and M, N <= C. With ``repeat`` > 1
     the computation is issued again with COMPUTE_ACCUMULATE. With ``poison`` (a
-    numpy Generator) every scratchpad and accumulator word starts random, not
+    numpy Generator) every scratchpad and Combiner word starts random, not
     zero, as on hardware with no power-up contents.
     """
     lay = Layout(cfg)
     R, C, KB = lay.rows, lay.cols, lay.kb
-    beat = cfg.dma_buswidth // 8
-    acc_bytes = cfg.acc_width // 8
+    beat = cfg.blockmover_buswidth // 8
+    combiner_bytes = cfg.combiner_width // 8
     memory = bytearray(1 << 16)
     exec_cmds = []  # (opcode, fields) per repeat-independent command
     if mode == OS:
@@ -193,7 +195,7 @@ def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1, poison=None):
 
     async def testbench(ctx):
         if poison is not None:
-            for bank in [*dut.scratchpad.banks, *dut.accumulator.banks]:
+            for bank in [*dut.scratchpad.banks, *dut.combiner.banks]:
                 width = bank.mem.shape.width
                 for addr in range(bank.mem.depth):
                     word = int.from_bytes(poison.bytes((width + 7) // 8), "little")
@@ -209,15 +211,15 @@ def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1, poison=None):
             for fields in exec_cmds:
                 await host.execute(opcode, **fields)
         if mode == IS:
-            # N accumulator rows of M results (Cᵀ) -> M L3 rows of N results (C)
+            # N Combiner rows of M results (Cᵀ) -> M L3 rows of N results (C)
             n_cols = B.shape[1]
-            await host.store(0, C_L3, out_rows, 4 * n_cols, opcode=DmaOpcode.TRANSPOSE)
+            await host.store(0, C_L3, out_rows, 4 * n_cols, opcode=BlockMoverOpcode.TRANSPOSE)
         else:
-            await host.store(0, C_L3, out_rows, acc_bytes)
+            await host.store(0, C_L3, out_rows, combiner_bytes)
 
     run_sim(dut, testbench, processes=[axi_memory(dut, memory, beat)], max_cycles=20_000)
     width = B.shape[1] if mode == IS else C
-    row = 4 * width if mode == IS else acc_bytes
+    row = 4 * width if mode == IS else combiner_bytes
     return np.array(
         [
             unpack(int.from_bytes(memory[C_L3 + n * row : C_L3 + (n + 1) * row], "little"),
@@ -291,7 +293,7 @@ class TestGemmOptions:
 
 @pytest.mark.parametrize("mode", [OS, WS, IS], ids=["os", "ws", "is"])
 def test_no_read_before_write(mode):
-    """The design never reads a scratchpad or accumulator word it hasn't written.
+    """The design never reads a scratchpad or Combiner word it hasn't written.
 
     Every word starts random (as on hardware: `just synth polarfire` drops the
     memories' zero initial values, which only simulation has), and C is still exact,
@@ -314,7 +316,7 @@ def test_no_read_before_write(mode):
 @pytest.mark.parametrize("mode", [OS, WS, IS], ids=["os", "ws", "is"])
 def test_larger_arrays(dim, mode):
     """8x8 and 16x16 arrays: OS with two K tiles chained, WS and IS one full tile."""
-    cfg = SystolicConfig(grid_rows=dim, grid_cols=dim, sp_capacity_kb=16, acc_capacity_kb=16)
+    cfg = SystolicConfig(grid_rows=dim, grid_cols=dim, sp_capacity_kb=16, combiner_capacity_kb=16)
     rng = np.random.default_rng(dim + mode)
     if mode == OS:
         A, B = operands(rng, dim, 2 * dim, dim)

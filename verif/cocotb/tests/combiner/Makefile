@@ -1,4 +1,4 @@
-# Makefile for Accumulator cocotb tests
+# Makefile for Combiner cocotb tests
 
 # Default simulator
 SIM ?= verilator
@@ -11,13 +11,13 @@ PROJECT_ROOT := $(shell cd ../../../.. && pwd)
 GEN_DIR := $(PROJECT_ROOT)/gen
 
 # Verilog sources
-VERILOG_SOURCES = $(GEN_DIR)/accumulator.v
+VERILOG_SOURCES = $(GEN_DIR)/combiner.v
 
 # Top-level module
-TOPLEVEL = Accumulator
+TOPLEVEL = Combiner
 
 # Python test module
-COCOTB_TEST_MODULES = test_accumulator
+COCOTB_TEST_MODULES = test_combiner
 
 # Disable cocotb's pytest assertion rewriting (avoids conftest.py conflicts)
 export COCOTB_REWRITE_ASSERTION_FILES :=
@@ -38,7 +38,7 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 # Generate RTL before running tests (the systars.targets registry: `just gen` writes the same file)
 .PHONY: gen-rtl
 gen-rtl:
-	@cd $(PROJECT_ROOT) && python3 -m systars.targets gen accumulator
+	@cd $(PROJECT_ROOT) && python3 -m systars.targets gen combiner
 
 # Run tests (generate RTL first)
 .PHONY: test-all

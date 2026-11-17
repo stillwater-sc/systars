@@ -12,7 +12,7 @@ by credits and tile-ready tokens (``controller/sync.py``):
 Matmul runs output-, weight- or input-stationary (``CONFIG_DATAFLOW``; OS by
 default when the array has it); Conv2d runs output-stationary. The BlockMover's
 corner turns lay each tile out in L2 as the Streamer streams it. Both check at
-START that the DMA can move every row they load or store; see their modules for
+START that the BlockMover can move every row they load or store; see their modules for
 the layouts this allows.
 """
 

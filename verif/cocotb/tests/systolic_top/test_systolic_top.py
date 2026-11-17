@@ -33,10 +33,10 @@ from systars.isa.conv2d import Conv2d, Conv2dCmd
 from systars.isa.matmul import Matmul, MatmulCmd
 from systars.targets import systolic_top_config
 from systars.top import SystolicTop
-from systars.util.commands import DmaOpcode, ExecOpcode
+from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
 ROWS = COLS = 4
-BEAT = systolic_top_config().dma_buswidth // 8  # 16 bytes: one accumulator row
+BEAT = systolic_top_config().blockmover_buswidth // 8  # 16 bytes: one Combiner row
 L3 = 1 << 16  # bytes of L3 the model serves
 DATAFLOWS = {"os": 0, "ws": 1, "is": 2}  # CONFIG rs1, CONFIG_DATAFLOW
 LOAD, STORE, EXEC = SystolicTop.CTRL_LOAD, SystolicTop.CTRL_STORE, SystolicTop.CTRL_EXEC
@@ -91,7 +91,9 @@ async def test_top_bursts_split_at_4kb(dut):
 
     # Streamed: 12 consecutive beats from 4 beats before 0x1000
     page = 0x1000
-    await run_command(dut, LOAD, DmaOpcode.MEMCPY, 1, dram_addr=page - 64, local_addr=0, len=12)
+    await run_command(
+        dut, LOAD, BlockMoverOpcode.MEMCPY, 1, dram_addr=page - 64, local_addr=0, len=12
+    )
     assert 1 << int(dut.axi_arsize.value) == BEAT
     assert bursts == [("r", page - 64, 64 // BEAT), ("r", page, 12 - 64 // BEAT)]
 
@@ -99,7 +101,7 @@ async def test_top_bursts_split_at_4kb(dut):
     bursts.clear()
     page = 0x2000
     before = bytes(memory)
-    await run_command(dut, STORE, DmaOpcode.MEMCPY, 2, dram_addr=page - 2 * BEAT, len=4)
+    await run_command(dut, STORE, BlockMoverOpcode.MEMCPY, 2, dram_addr=page - 2 * BEAT, len=4)
     assert bursts == [("w", page - 2 * BEAT, 2), ("w", page, 2)]
     assert memory[: page - 2 * BEAT] == before[: page - 2 * BEAT]
     assert memory[page + 2 * BEAT :] == before[page + 2 * BEAT :]
@@ -107,11 +109,13 @@ async def test_top_bursts_split_at_4kb(dut):
     # One row spilling over 0x3000: two 1-beat bursts, read and written
     bursts.clear()
     page = 0x3000
-    await run_command(dut, LOAD, DmaOpcode.MEMCPY, 3, dram_addr=page - 2, local_addr=0, len=1)
+    await run_command(
+        dut, LOAD, BlockMoverOpcode.MEMCPY, 3, dram_addr=page - 2, local_addr=0, len=1
+    )
     assert bursts == [("r", page - BEAT, 1), ("r", page, 1)]
     bursts.clear()
     before = bytes(memory)
-    await run_command(dut, STORE, DmaOpcode.MEMCPY, 4, dram_addr=page - 4, len=1)
+    await run_command(dut, STORE, BlockMoverOpcode.MEMCPY, 4, dram_addr=page - 4, len=1)
     assert bursts == [("w", page - BEAT, 1), ("w", page, 1)]
     assert memory[: page - 4] == before[: page - 4]
     assert memory[page - 4 + BEAT :] == before[page - 4 + BEAT :]
@@ -133,7 +137,9 @@ async def test_top_gemm_across_4kb(dut):
     a_addr = 0x1000 - 2 * BEAT
     for k in range(ROWS):
         put(memory, a_addr + k * BEAT, pack([A[i][k] for i in range(ROWS)], 8), BEAT)
-    await run_command(dut, LOAD, DmaOpcode.MEMCPY, 1, dram_addr=a_addr, local_addr=sp_a, len=ROWS)
+    await run_command(
+        dut, LOAD, BlockMoverOpcode.MEMCPY, 1, dram_addr=a_addr, local_addr=sp_a, len=ROWS
+    )
     assert bursts == [("r", a_addr, 2), ("r", 0x1000, 2)]
 
     # B row-major, rows 4 bytes at byte 14 of a beat: row 1 spills over 0x2000
@@ -141,7 +147,7 @@ async def test_top_gemm_across_4kb(dut):
     b_addr = 0x2000 - 2 - BEAT
     for k in range(ROWS):
         put(memory, b_addr + k * BEAT, pack(B[k], 8), COLS)
-    await run_command(dut, LOAD, DmaOpcode.MEMCPY, 2, dram_addr=b_addr, local_addr=sp_b,
+    await run_command(dut, LOAD, BlockMoverOpcode.MEMCPY, 2, dram_addr=b_addr, local_addr=sp_b,
                       len=ROWS, stride=BEAT, row_bytes=COLS)  # fmt: skip
     p = 0x2000
     assert bursts == [("r", p - 2 * BEAT, 2), ("r", p - BEAT, 1), ("r", p, 1), ("r", p, 2),
@@ -155,7 +161,7 @@ async def test_top_gemm_across_4kb(dut):
     # C streamed across 0x3000: one 16-byte row per beat
     bursts.clear()
     c_addr = 0x3000 - 2 * BEAT
-    await run_command(dut, STORE, DmaOpcode.MEMCPY, 6, dram_addr=c_addr, len=ROWS)
+    await run_command(dut, STORE, BlockMoverOpcode.MEMCPY, 6, dram_addr=c_addr, len=ROWS)
     assert bursts == [("w", c_addr, 2), ("w", 0x3000, 2)]
     got = [unpack(get(memory, c_addr + r * BEAT, BEAT), 32, COLS) for r in range(ROWS)]
     assert got == expected
@@ -163,7 +169,9 @@ async def test_top_gemm_across_4kb(dut):
     # C again, rows at byte 12 of a beat: row 1 spills over 0x4000
     bursts.clear()
     c_addr = 0x4000 - 4 - BEAT
-    await run_command(dut, STORE, DmaOpcode.MEMCPY, 7, dram_addr=c_addr, len=ROWS, stride=BEAT)
+    await run_command(
+        dut, STORE, BlockMoverOpcode.MEMCPY, 7, dram_addr=c_addr, len=ROWS, stride=BEAT
+    )
     p = 0x4000
     assert bursts == [("w", p - 2 * BEAT, 2), ("w", p - BEAT, 1), ("w", p, 1), ("w", p, 2),
                       ("w", p + BEAT, 2)]  # fmt: skip
@@ -201,9 +209,9 @@ async def test_top_gemm(dut, dataflow):
         put(memory, b_addr + n * BEAT, pack(row, 8), BEAT)
     sp_a, sp_b = 0, 64
 
-    await run_command(dut, LOAD, DmaOpcode.MEMCPY, 1, dram_addr=a_addr, local_addr=sp_a,
+    await run_command(dut, LOAD, BlockMoverOpcode.MEMCPY, 1, dram_addr=a_addr, local_addr=sp_a,
                       len=len(a_rows))  # fmt: skip
-    await run_command(dut, LOAD, DmaOpcode.MEMCPY, 2, dram_addr=b_addr, local_addr=sp_b,
+    await run_command(dut, LOAD, BlockMoverOpcode.MEMCPY, 2, dram_addr=b_addr, local_addr=sp_b,
                       len=len(b_rows))  # fmt: skip
     await run_command(dut, EXEC, ExecOpcode.CONFIG, 3, rs1=DATAFLOWS[dataflow])
     if ws:
@@ -215,7 +223,7 @@ async def test_top_gemm(dut, dataflow):
             await run_command(dut, EXEC, ExecOpcode.COMPUTE, 5 + t, rs1=sp_a + t * ROWS,
                               rs2=sp_b + t * COLS, rd=0, k_dim=kn, chain=chain)  # fmt: skip
     before = bytes(memory)
-    await run_command(dut, STORE, DmaOpcode.MEMCPY, 9, dram_addr=c_addr, len=outer)
+    await run_command(dut, STORE, BlockMoverOpcode.MEMCPY, 9, dram_addr=c_addr, len=outer)
 
     C = [unpack(get(memory, c_addr + n * BEAT, BEAT), 32, COLS) for n in range(outer)]
     assert matmul(A, B) == C

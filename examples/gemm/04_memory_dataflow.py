@@ -5,10 +5,10 @@ Memory Subsystem and Systolic Array Dataflow Visualization.
 This example visualizes the complete data flow architecture:
 1. Scratchpad memory with multiple banks
 2. Row/column streaming interface to the systolic array
-3. Result accumulator with output streaming
+3. Result Combiner with output streaming
 
 The visualization shows how data moves through the entire system:
-    DRAM → Scratchpad → SystolicArray → Accumulator → DRAM
+    DRAM → Scratchpad → SystolicArray → Combiner → DRAM
 
 Architecture:
     ┌────────────────────────────────────────────────────────────────────┐
@@ -17,7 +17,7 @@ Architecture:
                         │ Load                       │ Store
                         ↓                            ↑
     ┌───────────────────────────────┐    ┌───────────────────────────────┐
-    │         SCRATCHPAD            │    │        ACCUMULATOR            │
+    │         SCRATCHPAD            │    │          COMBINER             │
     │  ┌──────┐┌──────┐┌──────┐     │    │  ┌──────┐┌──────┐┌──────┐     │
     │  │Bank 0││Bank 1││Bank 2│...  │    │  │Bank 0││Bank 1││Bank 2│ ... │
     │  └──────┘└──────┘└──────┘     │    │  └──────┘└──────┘└──────┘     │
@@ -174,8 +174,8 @@ class Scratchpad:
 
 
 @dataclass
-class AccumulatorBank:
-    """Accumulator bank for results."""
+class CombinerBank:
+    """Combiner bank for results."""
 
     id: int
     capacity: int
@@ -202,8 +202,8 @@ class AccumulatorBank:
 
 
 @dataclass
-class Accumulator:
-    """Multi-bank accumulator memory."""
+class Combiner:
+    """Multi-bank Combiner memory."""
 
     num_banks: int
     bank_capacity: int
@@ -212,7 +212,7 @@ class Accumulator:
 
     def __post_init__(self):
         self.banks = [
-            AccumulatorBank(id=i, capacity=self.bank_capacity, width=self.width)
+            CombinerBank(id=i, capacity=self.bank_capacity, width=self.width)
             for i in range(self.num_banks)
         ]
 
@@ -444,7 +444,7 @@ def draw_systolic_array(array: SystolicArraySim, compact: bool = False) -> list[
 
         lines.append(row)
 
-    # Accumulator values
+    # Combiner values
     lines.append("")
     lines.append(f"  {c.GREEN}Accumulated C:{c.RESET}")
     for i in range(n):
@@ -478,11 +478,11 @@ def draw_architecture_diagram() -> str:
 └───────────────────────────┬──────────────────────────┬───────────────────────┘{c.RESET}
                             │                          │
                    {c.CYAN}Load Controller{c.RESET}           {c.MAGENTA}Store Controller{c.RESET}
-                         (DMA)                       (DMA)
+                         (BlockMover)                       (BlockMover)
                             │                          ↑
                             ↓                          │
 {c.YELLOW}┌─────────────────────────────────────────┐{c.RESET}  {c.GREEN}┌─────────────────────────────────────────┐{c.RESET}
-{c.YELLOW}│            SCRATCHPAD MEMORY            │{c.RESET}  {c.GREEN}│            ACCUMULATOR MEMORY           │{c.RESET}
+{c.YELLOW}│            SCRATCHPAD MEMORY            │{c.RESET}  {c.GREEN}│             COMBINER MEMORY             │{c.RESET}
 {c.YELLOW}│                                         │{c.RESET}  {c.GREEN}│                                         │{c.RESET}
 {c.YELLOW}│  ┌────────┐ ┌────────┐ ┌────────┐       │{c.RESET}  {c.GREEN}│  ┌────────┐ ┌────────┐ ┌────────┐       │{c.RESET}
 {c.YELLOW}│  │ Bank 0 │ │ Bank 1 │ │ Bank 2 │  ...  │{c.RESET}  {c.GREEN}│  │ Bank 0 │ │ Bank 1 │ │ Bank 2 │  ...  │{c.RESET}
@@ -513,12 +513,12 @@ def draw_architecture_diagram() -> str:
       └──────────────────────────────────────────┘
 
 {c.BOLD}Data Flow Sequence:{c.RESET}
-  1. {c.CYAN}LOAD{c.RESET}:    DRAM → Scratchpad (via StreamReader DMA)
-  2. {c.YELLOW}COMPUTE{c.RESET}: Scratchpad → Systolic Array → Accumulator
+  1. {c.CYAN}LOAD{c.RESET}:    DRAM → Scratchpad (via the BlockMover's StreamReader)
+  2. {c.YELLOW}COMPUTE{c.RESET}: Scratchpad → Systolic Array → Combiner
      • A rows stream from left edge (one element per row per cycle)
      • B cols stream from top edge (one element per column per cycle)
-     • Results accumulate in PEs, then drain to accumulator
-  3. {c.MAGENTA}STORE{c.RESET}:   Accumulator → DRAM (via StreamWriter DMA)
+     • Results accumulate in PEs, then drain to Combiner
+  3. {c.MAGENTA}STORE{c.RESET}:   Combiner → DRAM (via the BlockMover's StreamWriter)
 
 {c.BOLD}PE Operation:{c.RESET}  c += a x b  (Multiply-Accumulate)
   - In Output-Stationary mode: a,b flow through; c accumulates in place
@@ -530,7 +530,7 @@ def draw_architecture_diagram() -> str:
   - Width = array_size x element_bits (e.g., 16x8 = 128 bits)
 
 {c.BOLD}Address Mapping:{c.RESET}
-  - Bit 31: is_accumulator (0=scratchpad, 1=accumulator)
+  - Bit 31: is_combiner (0=scratchpad, 1=Combiner)
   - Bit 30: accumulate mode (for writes)
   - Bits [bank_bits-1:0]: bank selection
   - Remaining bits: row address within bank
@@ -563,7 +563,7 @@ def visualize_dataflow(
     # Phase 1: Load matrices into scratchpad
     clear_screen()
     print(f"{c.BOLD}{'═' * 70}{c.RESET}")
-    print(f"{c.BOLD}Phase 1: LOAD - DMA Transfer DRAM → Scratchpad{c.RESET}")
+    print(f"{c.BOLD}Phase 1: LOAD - BlockMover Transfer DRAM → Scratchpad{c.RESET}")
     print(f"{'═' * 70}\n")
 
     print("Matrix A (stored in Bank 0, row-major):")
@@ -687,7 +687,7 @@ def visualize_dataflow(
 
     result = array.drain_results()
 
-    print(f"{c.GREEN}ACCUMULATOR - Final Results:{c.RESET}")
+    print(f"{c.GREEN}COMBINER - Final Results:{c.RESET}")
     print(result)
 
     print(f"\n{c.BOLD}Expected C = A @ B:{c.RESET}")
@@ -704,10 +704,10 @@ def visualize_dataflow(
     # Phase 3: Store results
     clear_screen()
     print(f"{c.BOLD}{'═' * 70}{c.RESET}")
-    print(f"{c.BOLD}Phase 3: STORE - DMA Transfer Accumulator → DRAM{c.RESET}")
+    print(f"{c.BOLD}Phase 3: STORE - BlockMover Transfer Combiner → DRAM{c.RESET}")
     print(f"{'═' * 70}\n")
 
-    print("Result rows streamed from accumulator to external DRAM:")
+    print("Result rows streamed from Combiner to external DRAM:")
     for i in range(size):
         print(f"  {c.GREEN}C[{i}] →{c.RESET} {result[i].tolist()}")
         time.sleep(200 / 1000.0)

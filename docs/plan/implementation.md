@@ -134,18 +134,18 @@ systars/
 │   │   └── systolic_array.py  # SystolicArray, the fabric: a grid of PEArrays
 │   ├── memory/
 │   │   ├── scratchpad.py      # L2: scratchpad banks, two read ports
-│   │   ├── accumulator.py     # Result memory (to be replaced by the Combiner, #38)
-│   │   ├── activation.py      # ReLU / ReLU6 on accumulator rows
+│   │   ├── combiner.py        # The Combiner's storage, a result memory (function: #38)
+│   │   ├── activation.py      # ReLU / ReLU6 on Combiner rows
 │   │   ├── stream_buffer.py   # L1: stream buffers and result buffers
 │   │   ├── local_addr.py      # Local address encoding
 │   │   └── skew_buffer.py     # Legacy skew registers (examples and one test only)
 │   ├── controller/
-│   │   ├── load.py            # BlockMover inbound leg, L3 -> L2 or the accumulator (#43)
-│   │   ├── store.py           # BlockMover outbound leg, accumulator -> L3 (#43)
+│   │   ├── load.py            # BlockMover inbound leg, L3 -> L2 or the Combiner (#43)
+│   │   ├── store.py           # BlockMover outbound leg, Combiner -> L3 (#43)
 │   │   ├── execute.py         # The Streamer, L2 -> L1 (#43)
 │   │   ├── sync.py            # Credits and tile-ready tokens (SlotPool, Sync)
 │   │   └── load_transpose.py  # Legacy transposing load
-│   ├── dma/                   # The BlockMover's engines (renamed blockmover/ by #37)
+│   ├── blockmover/            # The BlockMover's engines
 │   │   ├── reader.py          # StreamReader, AXI read
 │   │   ├── writer.py          # StreamWriter, AXI write
 │   │   ├── axi.py             # AXI protocol constants

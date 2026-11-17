@@ -1,10 +1,10 @@
 """
-DMA engines for external memory transfers.
+BlockMover engines for external memory transfers.
 
 This module contains:
-- StreamReader: External memory -> local memory (read DMA)
-- StreamWriter: Local memory -> external memory (write DMA)
-- StridedStreamReader: DMA with strided access for matrix transpose
+- StreamReader: External memory -> local memory (read engine)
+- StreamWriter: Local memory -> external memory (write engine)
+- StridedStreamReader: BlockMover with strided access for matrix transpose
 - DescriptorEngine: Hardware engine for executing descriptor chains
 """
 

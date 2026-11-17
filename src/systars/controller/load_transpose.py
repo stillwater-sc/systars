@@ -1,5 +1,5 @@
 """
-TransposeLoadController - 2D DMA with optional matrix transpose.
+TransposeLoadController - 2D BlockMover with optional matrix transpose.
 
 Handles loading matrices from DRAM to scratchpad with optional transpose:
 - LOAD_CONTIGUOUS: Standard row-by-row copy (B matrix, no transpose needed)
@@ -67,14 +67,14 @@ class TransposeLoadController(Component):
             cmd_elem_bytes: Bytes per element (1, 2, or 4)
             cmd_id: Command ID for tracking
 
-        Strided DMA Interface:
-            dma_req_valid/ready: Request handshake
-            dma_req_addr: Read address
-            dma_req_count: Number of elements
-            dma_req_stride: Stride between elements
-            dma_req_elem_bytes: Element size
-            dma_resp_valid/ready: Response handshake
-            dma_resp_data: Packed row data
+        Strided BlockMover Interface:
+            engine_req_valid/ready: Request handshake
+            engine_req_addr: Read address
+            engine_req_count: Number of elements
+            engine_req_stride: Stride between elements
+            engine_req_elem_bytes: Element size
+            engine_resp_valid/ready: Response handshake
+            engine_resp_data: Packed row data
 
         Scratchpad Interface:
             sp_write_en: Write enable
@@ -106,16 +106,16 @@ class TransposeLoadController(Component):
                 "cmd_src_cols": In(16),  # K dimension
                 "cmd_elem_bytes": In(4),
                 "cmd_id": In(8),
-                # Strided DMA interface
-                "dma_req_valid": Out(1),
-                "dma_req_ready": In(1),
-                "dma_req_addr": Out(64),
-                "dma_req_count": Out(16),
-                "dma_req_stride": Out(16),
-                "dma_req_elem_bytes": Out(4),
-                "dma_resp_valid": In(1),
-                "dma_resp_ready": Out(1),
-                "dma_resp_data": In(sp_width),
+                # Strided BlockMover interface
+                "engine_req_valid": Out(1),
+                "engine_req_ready": In(1),
+                "engine_req_addr": Out(64),
+                "engine_req_count": Out(16),
+                "engine_req_stride": Out(16),
+                "engine_req_elem_bytes": Out(4),
+                "engine_resp_valid": In(1),
+                "engine_resp_ready": Out(1),
+                "engine_resp_data": In(sp_width),
                 # Scratchpad write interface
                 "sp_write_en": Out(1),
                 "sp_write_addr": Out(32),
@@ -161,9 +161,9 @@ class TransposeLoadController(Component):
         is_transpose = Signal()
 
         # Calculated addresses
-        dma_addr = Signal(64)
-        dma_count = Signal(16)
-        dma_stride = Signal(16)
+        engine_addr = Signal(64)
+        engine_count = Signal(16)
+        engine_stride = Signal(16)
 
         # Buffered response
         resp_data_buf = Signal(cfg.sp_width)
@@ -172,12 +172,12 @@ class TransposeLoadController(Component):
         # Default outputs
         m.d.comb += [
             self.cmd_ready.eq(0),
-            self.dma_req_valid.eq(0),
-            self.dma_req_addr.eq(0),
-            self.dma_req_count.eq(0),
-            self.dma_req_stride.eq(0),
-            self.dma_req_elem_bytes.eq(0),
-            self.dma_resp_ready.eq(0),
+            self.engine_req_valid.eq(0),
+            self.engine_req_addr.eq(0),
+            self.engine_req_count.eq(0),
+            self.engine_req_stride.eq(0),
+            self.engine_req_elem_bytes.eq(0),
+            self.engine_resp_ready.eq(0),
             self.sp_write_en.eq(0),
             self.sp_write_addr.eq(0),
             self.sp_write_data.eq(0),
@@ -227,22 +227,22 @@ class TransposeLoadController(Component):
             with m.State("CALC"):
                 m.d.comb += state.eq(STATE_CALC)
 
-                # Calculate DMA parameters for current row
+                # Calculate BlockMover parameters for current row
                 with m.If(is_transpose):
                     # Transpose mode: read column 'current_row' of source
                     # Base addr + column_offset, stride = src_cols
                     m.d.sync += [
-                        dma_addr.eq(dram_base + (current_row * elem_bytes)),
-                        dma_count.eq(src_rows),  # M elements per column
-                        dma_stride.eq(src_cols),  # Stride = row width
+                        engine_addr.eq(dram_base + (current_row * elem_bytes)),
+                        engine_count.eq(src_rows),  # M elements per column
+                        engine_stride.eq(src_cols),  # Stride = row width
                     ]
                 with m.Else():
                     # Contiguous mode: read row 'current_row' of source
                     # Base addr + row_offset, stride = 1 (contiguous)
                     m.d.sync += [
-                        dma_addr.eq(dram_base + (current_row * src_cols * elem_bytes)),
-                        dma_count.eq(src_cols),  # K elements per row
-                        dma_stride.eq(1),  # Contiguous
+                        engine_addr.eq(dram_base + (current_row * src_cols * elem_bytes)),
+                        engine_count.eq(src_cols),  # K elements per row
+                        engine_stride.eq(1),  # Contiguous
                     ]
 
                 m.next = "ISSUE"
@@ -250,26 +250,26 @@ class TransposeLoadController(Component):
             with m.State("ISSUE"):
                 m.d.comb += [
                     state.eq(STATE_ISSUE),
-                    self.dma_req_valid.eq(1),
-                    self.dma_req_addr.eq(dma_addr),
-                    self.dma_req_count.eq(dma_count),
-                    self.dma_req_stride.eq(dma_stride),
-                    self.dma_req_elem_bytes.eq(elem_bytes),
+                    self.engine_req_valid.eq(1),
+                    self.engine_req_addr.eq(engine_addr),
+                    self.engine_req_count.eq(engine_count),
+                    self.engine_req_stride.eq(engine_stride),
+                    self.engine_req_elem_bytes.eq(elem_bytes),
                 ]
 
-                with m.If(self.dma_req_ready):
+                with m.If(self.engine_req_ready):
                     m.next = "RECV"
 
             with m.State("RECV"):
                 m.d.comb += [
                     state.eq(STATE_RECV),
-                    self.dma_resp_ready.eq(1),
+                    self.engine_resp_ready.eq(1),
                 ]
 
-                with m.If(self.dma_resp_valid):
+                with m.If(self.engine_resp_valid):
                     # Buffer the response
                     m.d.sync += [
-                        resp_data_buf.eq(self.dma_resp_data),
+                        resp_data_buf.eq(self.engine_resp_data),
                         resp_valid_buf.eq(1),
                     ]
                     m.next = "WRITE"
@@ -317,7 +317,7 @@ class MatrixLoader(Component):
 
     This component integrates:
     - TransposeLoadController for orchestration
-    - StridedStreamReader for DMA access
+    - StridedStreamReader for BlockMover access
 
     Ports:
         load_a_valid/ready: Load matrix A (with transpose)
@@ -340,7 +340,7 @@ class MatrixLoader(Component):
         self.config = config
         sp_width = config.sp_width
         mask_width = sp_width // 8
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
 
         super().__init__(
             {
@@ -387,7 +387,7 @@ class MatrixLoader(Component):
         cfg = self.config
 
         # Import here to avoid circular dependency
-        from ..dma.strided_reader import StridedStreamReader
+        from ..blockmover.strided_reader import StridedStreamReader
 
         # Instantiate components
         reader = StridedStreamReader(cfg)
@@ -395,19 +395,19 @@ class MatrixLoader(Component):
         m.submodules.reader = reader
         m.submodules.loader = loader
 
-        # Connect DMA reader to loader
+        # Connect BlockMover reader to loader
         m.d.comb += [
-            # Reader request <- Loader DMA request
-            reader.req_valid.eq(loader.dma_req_valid),
-            loader.dma_req_ready.eq(reader.req_ready),
-            reader.req_addr.eq(loader.dma_req_addr),
-            reader.req_count.eq(loader.dma_req_count),
-            reader.req_stride.eq(loader.dma_req_stride),
-            reader.req_elem_bytes.eq(loader.dma_req_elem_bytes),
-            # Reader response -> Loader DMA response
-            loader.dma_resp_valid.eq(reader.resp_valid),
-            reader.resp_ready.eq(loader.dma_resp_ready),
-            loader.dma_resp_data.eq(reader.resp_data),
+            # Reader request <- Loader BlockMover request
+            reader.req_valid.eq(loader.engine_req_valid),
+            loader.engine_req_ready.eq(reader.req_ready),
+            reader.req_addr.eq(loader.engine_req_addr),
+            reader.req_count.eq(loader.engine_req_count),
+            reader.req_stride.eq(loader.engine_req_stride),
+            reader.req_elem_bytes.eq(loader.engine_req_elem_bytes),
+            # Reader response -> Loader BlockMover response
+            loader.engine_resp_valid.eq(reader.resp_valid),
+            reader.resp_ready.eq(loader.engine_resp_ready),
+            loader.engine_resp_data.eq(reader.resp_data),
         ]
 
         # Connect reader to AXI interface (pass through)

@@ -244,6 +244,23 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **The tile's blocks carry the KPU model's names** (#37, 2026-11-17; port of
+  branes-ai/embodied-ai-soc-generator#67, kpugen PR #72). A rename only: the Verilog differs
+  from main only in names.
+  - The accumulator is the **Combiner's storage**: `memory/accumulator.py` → `memory/combiner.py`
+    (`Accumulator`, `AccumulatorBank` → `Combiner`, `CombinerBank`); `acc_capacity_kb`,
+    `acc_banks`, `acc_sub_banks`, `acc_singleported`, `acc_latency`, `acc_slots` →
+    `combiner_*`; `LocalAddr.is_acc` / `IS_ACC_BIT` → `is_combiner` / `IS_COMBINER_BIT`;
+    `SystolicTop`'s `acc_free` / `acc_ready` → `combiner_*`. `acc_bits` keeps its name: it is
+    the MAC's accumulate width.
+  - `dma/` → **`blockmover/`**: the engines keep their names. `DmaOpcode`, `DmaFlags` and
+    `DmaDescriptor` become `BlockMoverOpcode`, `BlockMoverFlags` and `BlockMoverDescriptor`;
+    `dma_buswidth` and `dma_maxbytes` become `blockmover_*`; the controllers' `dma_*` ports
+    become `engine_*`. `AXI_4KB` moves to `systars.blockmover.axi`.
+  - The gen target and cocotb suite `accumulator` are now `combiner`, as are the `just
+    test-cocotb` loop and the CI matrix. `docs/architecture/dma-descriptors.md` is now
+    `blockmover-descriptors.md`, and the docs follow.
+
 - **The implementation plan's layout** (2026-11-17). `docs/plan/implementation.md` showed the
   `pygemmini/` layout the project was first planned in. It now shows the repository as it is,
   with each module's role, and a table of the planned modules that were not built or were

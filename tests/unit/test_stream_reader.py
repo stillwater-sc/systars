@@ -1,5 +1,5 @@
 """
-Unit tests for the StreamReader DMA engine.
+Unit tests for the StreamReader BlockMover engine.
 
 These tests verify:
 1. StreamReader instantiation
@@ -13,8 +13,8 @@ These tests verify:
 import pytest
 from amaranth.sim import Simulator, Tick
 
+from systars.blockmover.reader import StreamReader
 from systars.config import SystolicConfig
-from systars.dma.reader import StreamReader
 
 
 class TestStreamReader:
@@ -24,8 +24,8 @@ class TestStreamReader:
     def config(self):
         """Configuration for tests."""
         return SystolicConfig(
-            dma_buswidth=128,
-            dma_maxbytes=64,
+            blockmover_buswidth=128,
+            blockmover_maxbytes=64,
             grid_rows=4,
             grid_cols=4,
             tile_rows=1,
@@ -275,7 +275,7 @@ class TestStreamReaderVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        config = SystolicConfig(dma_buswidth=128, dma_maxbytes=64)
+        config = SystolicConfig(blockmover_buswidth=128, blockmover_maxbytes=64)
         reader = StreamReader(config)
 
         output = verilog.convert(reader, name="StreamReader")

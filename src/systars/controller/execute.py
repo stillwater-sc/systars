@@ -7,12 +7,12 @@ parallel, into one L1 stream buffer (``memory.stream_buffer``); the buffer strea
 it into the fabric one element per clock. The buffers are loaded on consecutive
 clocks, so buffer ``i`` starts one clock after buffer ``i - 1``: that stagger is the
 skew. The fabric's results leave through the L1 result buffers, which turn them
-back into row-major rows, and the Streamer writes those rows to the accumulator.
+back into row-major rows, and the Streamer writes those rows to the Combiner.
 
 ``R`` and ``C`` are the array's PE rows and columns, and ``KB`` the longest block a
 stream buffer holds (``sp_width / input_bits`` A elements, ``sp_width /
 weight_bits`` B elements: the smaller). An L2 row holds one block, element 0 in the
-low bits. An accumulator row holds ``C`` results.
+low bits. A Combiner row holds ``C`` results.
 
 Modes (``CONFIG``, ``rs1``: 0 = OS, 1 = WS, 2 = IS; WS and IS are one fabric mode,
 the stationary mode, and differ only in the operands the ISA lays out):
@@ -22,14 +22,14 @@ the stationary mode, and differ only in the operands the ISA lays out):
   row ``j`` = ``B[k0:k0+K, j]``), ``K = k_dim`` (at most ``KB``). A reduction may span
   several commands (``cmd_chain``): C stays in the PEs between them. The command
   that ends a reduction sends the C tile north and writes its ``R`` rows to the
-  accumulator at ``rd``.
+  Combiner at ``rd``.
 - **Stationary.** ``PRELOAD``: loads the stationary tile ``W`` (``R x C``,
   row-major) from ``rs1``; ``k_dim`` rows (at most ``R``) are read and the rows
   below them get zero. ``COMPUTE``: ``rs1`` is a streamed tile, column-major (``R``
   rows, row ``k`` = ``X[m0:m0+M, k]``), ``M = k_dim`` (at most ``KB``); the ``M`` rows
-  of ``X @ W`` are written to the accumulator at ``rd``.
+  of ``X @ W`` are written to the Combiner at ``rd``.
 
-``COMPUTE_ACCUMULATE`` adds the result rows to the accumulator instead of
+``COMPUTE_ACCUMULATE`` adds the result rows to the Combiner instead of
 overwriting them. ``cmd_chain`` (OS): bit 0 = this command continues the previous
 command's reduction (no ``first`` marker), bit 1 = the reduction continues into the
 next command (no ``last`` marker, no results). 0 is a whole reduction. A ``COMPUTE``
@@ -51,7 +51,7 @@ then runs to the end without stopping:
 
 **Untracked commands** (``cmd_sync = 0``: a host issuing one command at a time)
 run alone: one starts only when the Streamer is idle, nothing starts while it is
-in flight, and a command with results completes once they are in the accumulator,
+in flight, and a command with results completes once they are in the Combiner,
 so a host can issue a STORE as soon as it sees the completion.
 
 **Events**, each in command order and at most one per clock:
@@ -60,13 +60,13 @@ so a host can issue a STORE as soon as it sees the completion.
   L2: its last block is in L1 (or its last preload row in the fabric). ``SystolicTop``
   returns the command's L2 credit on it.
 - ``result`` (``result_id``, ``result_sync``): the command's results are in the
-  accumulator. ``SystolicTop`` emits the accumulator tile's token on it.
+  Combiner. ``SystolicTop`` emits the Combiner tile's token on it.
 
 ``error`` (sticky) is a schedule or protocol violation: an L1 buffer loaded
 without its credit or overflowing, a collision on a north link, a result
 without a command, or a command with SIGNAL that writes no result (``k_dim = 0``,
 an OS COMPUTE with ``CHAIN_MORE``, PRELOAD, CONFIG or an unknown opcode), whose
-accumulator slot would never get its token. A valid schedule never raises it.
+Combiner slot would never get its token. A valid schedule never raises it.
 
 The command set (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE) follows Gemmini's
 execute commands (ucb-bar/gemmini; see NOTICE). The scheduling around it, L1 stream
@@ -99,10 +99,10 @@ class ExecuteController(Component):
         cmd_*: Command (``valid``/``ready``; fields read in the clock it is accepted)
         cfg_dataflow: Current mode (0 = OS, 1 = stationary)
         sp_a_read_*, sp_b_read_*: The scratchpad's two read ports
-        acc_write_*, acc_accumulate: Accumulator write port
+        combiner_write_*, combiner_accumulate: Combiner write port
         array_*: SystolicArray edges (see ``SystolicArray``)
         completed, completed_id, completed_sync: A command is done with L2
-        result, result_id, result_sync: A command's results are in the accumulator
+        result, result_id, result_sync: A command's results are in the Combiner
         busy, error, state_debug: Status
     """
 
@@ -149,10 +149,10 @@ class ExecuteController(Component):
             "sp_b_read_addr": Out(32),
             "sp_b_read_data": In(config.sp_width),
             "sp_b_read_valid": In(1),
-            "acc_write_req": Out(1),
-            "acc_write_addr": Out(32),
-            "acc_write_data": Out(signed(config.acc_width)),
-            "acc_accumulate": Out(1),
+            "combiner_write_req": Out(1),
+            "combiner_write_addr": Out(32),
+            "combiner_write_data": Out(signed(config.combiner_width)),
+            "combiner_accumulate": Out(1),
             "completed": Out(1),
             "completed_id": Out(8),
             "completed_sync": Out(Sync.BITS),
@@ -316,7 +316,7 @@ class ExecuteController(Component):
 
         # An untracked command (cmd_sync = 0, a host issuing one command at a time)
         # runs alone: it starts when the Streamer is idle, nothing starts while it is
-        # in flight, and it completes once its results are in the accumulator.
+        # in flight, and it completes once its results are in the Combiner.
         untracked = Signal()
         m.d.comb += untracked.eq(self.cmd_sync == 0)
         serial = Signal()
@@ -356,7 +356,7 @@ class ExecuteController(Component):
         tile_rows = Signal(range(KB + R + 1))  # rows of the command's result tile
         m.d.comb += tile_rows.eq(Mux(st_stream, k_len, R))
 
-        # The accumulator token is emitted on the result event, so a tracked command
+        # The Combiner token is emitted on the result event, so a tracked command
         # with SIGNAL that writes no result would leave its slot OWNED forever
         error = Signal()
         with m.If(accept & Sync.fields(self.cmd_sync).signal & ~produces):
@@ -513,11 +513,11 @@ class ExecuteController(Component):
             m.d.sync += direct_pending.eq(0)
 
         # ---------------------------------------------------------------------
-        # Results: L1 result buffers -> accumulator rows
+        # Results: L1 result buffers -> Combiner rows
         # ---------------------------------------------------------------------
         row_count = Signal(range(KB + R + 1))
         row_valid = Signal()
-        row_data = Signal(cfg.acc_width)
+        row_data = Signal(cfg.combiner_width)
         if north is not None and south is not None:
             m.d.comb += [
                 row_valid.eq(Mux(stationary, south.out_valid, north.out_valid)),
@@ -530,10 +530,10 @@ class ExecuteController(Component):
         with m.If(row_valid):
             with m.If(res_q.r_rdy):
                 m.d.comb += [
-                    self.acc_write_req.eq(1),
-                    self.acc_write_addr.eq(tile["rd"] + row_count),
-                    self.acc_write_data.eq(row_data),
-                    self.acc_accumulate.eq(tile["accumulate"]),
+                    self.combiner_write_req.eq(1),
+                    self.combiner_write_addr.eq(tile["rd"] + row_count),
+                    self.combiner_write_data.eq(row_data),
+                    self.combiner_accumulate.eq(tile["accumulate"]),
                 ]
                 with m.If(row_count == tile["rows"] - 1):
                     m.d.sync += row_count.eq(0)

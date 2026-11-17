@@ -18,7 +18,7 @@ def pack_matrix_int8(matrix: np.ndarray, buswidth: int = 128) -> list[int]:
     """
     Pack an int8 matrix into bus-width aligned words.
 
-    The systolic array DMA transfers data in bus-width beats.
+    The systolic tile's BlockMover transfers data in bus-width beats.
     This function packs matrix elements into these beat-sized words.
 
     Args:
@@ -88,7 +88,7 @@ def pack_matrix_int32(matrix: np.ndarray, buswidth: int = 128) -> list[int]:
     """
     Pack an int32 matrix into bus-width aligned words.
 
-    Used for accumulator results which are typically 32-bit.
+    Used for Combiner results which are typically 32-bit.
 
     Args:
         matrix: 2D numpy array of int32 values
@@ -281,14 +281,14 @@ def print_gemm_schedule(schedule: list[dict]):
     print("\nGEMM Tiling Schedule:")
     print("-" * 70)
     for i, op in enumerate(schedule):
-        acc_str = "accumulate" if op["accumulate"] else "overwrite"
+        combiner_str = "accumulate" if op["accumulate"] else "overwrite"
         print(
             f"  Op {i}: A[{op['a_tile'][0]}:{op['a_tile'][1]}, "
             f"{op['a_tile'][2]}:{op['a_tile'][3]}] @ "
             f"B[{op['b_tile'][0]}:{op['b_tile'][1]}, "
             f"{op['b_tile'][2]}:{op['b_tile'][3]}] -> "
             f"C[{op['c_tile'][0]}:{op['c_tile'][1]}, "
-            f"{op['c_tile'][2]}:{op['c_tile'][3]}] ({acc_str})"
+            f"{op['c_tile'][2]}:{op['c_tile'][3]}] ({combiner_str})"
         )
     print("-" * 70)
     print(f"Total operations: {len(schedule)}")

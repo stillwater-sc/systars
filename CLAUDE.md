@@ -109,19 +109,19 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 ### Implemented Components
 
 - PE, PEArray, SystolicArray (core compute hierarchy)
-- Scratchpad (two read ports) and Accumulator memory banks. The accumulator is a
-  Gemmini-style result memory. The KPU tile has none: its **Combiner**, between L1 and L2,
-  merges WS/IS partials and fuses bias, activation, scaling and block-format conversion as
-  results are written to L2 (`docs/architecture/combiner.md`; port #38, after the rename
-  #37).
-- Load/Execute/Store controllers, DMA engines (StreamReader/StreamWriter), and `SystolicTop`,
+- Scratchpad (two read ports) and the Combiner's storage (`memory/combiner.py`), today a
+  Gemmini-style result memory (the accumulator until #37). The KPU's **Combiner**, between L1
+  and L2, merges WS/IS partials and fuses bias, activation, scaling and block-format
+  conversion as results are written to L2 (`docs/architecture/combiner.md`; port #38).
+- Load/Execute/Store controllers, the BlockMover's engines (`blockmover/`: StreamReader,
+  StreamWriter), and `SystolicTop`,
   which computes a verified GEMM end to end (`tests/unit/test_gemm_systolic.py`)
 - `SystolicTop` is a systolic KPU compute tile following kpu-sim's CSP model: AXI = L3,
   scratchpad = L2, the stream and result buffers at the array's edges = L1; LOAD/STORE are the BlockMover (L3 <-> L2) and
   the execute controller is the Streamer (L2 -> L1). A LOAD or STORE moves a whole tile from
   or to any byte address (`cmd_stride`, `cmd_row_bytes`; `tests/unit/test_block_mover.py`),
-  with a corner turn when its opcode is `DmaOpcode.TRANSPOSE`. No burst crosses a 4 KB
-  boundary (`tests/unit/_axi.py` enforces it). A LOAD to an accumulator
+  with a corner turn when its opcode is `BlockMoverOpcode.TRANSPOSE`. No burst crosses a 4 KB
+  boundary (`tests/unit/_axi.py` enforces it). A LOAD to a Combiner
   address (`LocalAddr` bit 31; bit 30 adds) writes a result tile's starting values, in the
   clocks the Streamer leaves the write port free; `CLEAR` (0x05) writes zero rows with no L3
   read, `BROADCAST` (0x06) one L3 row to every row, `BROADCAST_TRANSPOSE` (0x07) with a
@@ -129,8 +129,8 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
   Use KPU/CSP terms (credits, push, tile-ready tokens), never cache terminology
 - Credits and tile-ready tokens (`controller/sync.py`): `SystolicTop` queues each process's
   commands and starts one only when its whole-tile slot credits and tokens are there
-  (`cmd_sync`; `tests/unit/test_credits.py`). A LOAD into the accumulator is the
-  accumulator pool's second producer (`SlotPool(producers=2)`, the `fill_*` ports)
+  (`cmd_sync`; `tests/unit/test_credits.py`). A LOAD into the Combiner is the
+  Combiner pool's second producer (`SlotPool(producers=2)`, the `fill_*` ports)
 - Wavefront tracing and animations (`wavefront.py`): records the `SystolicArray` RTL on the
   Streamer's schedule, checks every PE in every clock against the predicted wavefront, and
   draws value / index / front views as animated SVGs. The docs embed a committed
@@ -140,7 +140,7 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 - Matmul and Conv2d ISA instructions (`isa/`): tile an operation larger than the array and
   push `SystolicTop` commands ahead, double-buffered (`isa/command.py`); Matmul runs OS, WS
   or IS (`CONFIG_DATAFLOW`) and Conv2d runs OS. A bias, or accumulating onto the existing
-  output, starts each output tile from an accumulator LOAD (all three dataflows); Conv2d's padding is
+  output, starts each output tile from a Combiner LOAD (all three dataflows); Conv2d's padding is
   a `CLEAR`; see
   `docs/isa-instructions.md`
 
@@ -191,7 +191,7 @@ output = verilog.convert(pe, name="PE")
 | `grid_rows/cols` | 16 | SystolicArray dimensions (number of PEArrays) |
 | `tile_rows/cols` | 1 | PEArray dimensions (PEs per tile) |
 | `input_bits` | 8 | Input element width |
-| `acc_bits` | 32 | Accumulator width |
+| `acc_bits` | 32 | MAC accumulate width |
 | `dataflow` | OUTPUT_STATIONARY \| B_STATIONARY | Supported dataflow modes (Flag, can combine) |
 | `sp_capacity_kb` | 256 | Scratchpad size |
-| `acc_capacity_kb` | 64 | Accumulator size |
+| `combiner_capacity_kb` | 64 | Combiner storage size |

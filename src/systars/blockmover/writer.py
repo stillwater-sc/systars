@@ -1,8 +1,8 @@
 """
-StreamWriter - DMA engine for local memory to external memory transfers.
+StreamWriter - BlockMover engine for local memory to external memory transfers.
 
 The StreamWriter handles AXI-like burst write transactions to external memory,
-receiving data from the StoreController (reading from Accumulator).
+receiving data from the StoreController (reading from Combiner).
 
 Features (initial implementation):
 - Single outstanding burst request
@@ -19,7 +19,7 @@ from ..config import SystolicConfig
 
 class StreamWriter(Component):
     """
-    DMA write engine for local memory -> external memory transfers.
+    BlockMover write engine for local memory -> external memory transfers.
 
     Accepts write requests from the StoreController and issues AXI-like
     burst write transactions to external memory.
@@ -33,7 +33,7 @@ class StreamWriter(Component):
     Data Interface (from StoreController):
         data_valid: Write data valid
         data_ready: Ready to accept data
-        data: Write data (dma_buswidth bits)
+        data: Write data (blockmover_buswidth bits)
         data_strb: Byte strobes for the beat (default: all bytes)
         data_last: Last beat of burst
 
@@ -52,8 +52,8 @@ class StreamWriter(Component):
     AXI Write Data Channel:
         mem_wvalid: Data valid
         mem_wready: Slave ready
-        mem_wdata: Write data (dma_buswidth bits)
-        mem_wstrb: Write strobes (dma_buswidth/8 bits)
+        mem_wdata: Write data (blockmover_buswidth bits)
+        mem_wstrb: Write strobes (blockmover_buswidth/8 bits)
         mem_wlast: Last beat of burst
 
     AXI Write Response Channel:
@@ -62,12 +62,12 @@ class StreamWriter(Component):
         mem_bresp: Response status (2-bit, 00=OKAY)
 
     Parameters:
-        config: SystolicConfig with DMA parameters
+        config: SystolicConfig with BlockMover parameters
     """
 
     def __init__(self, config: SystolicConfig):
         self.config = config
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
         strb_width = buswidth // 8
 
         super().__init__(
@@ -112,7 +112,7 @@ class StreamWriter(Component):
         cfg = self.config
 
         # Calculate awsize from bus width (log2 of bytes per beat)
-        bytes_per_beat = cfg.dma_buswidth // 8
+        bytes_per_beat = cfg.blockmover_buswidth // 8
         awsize_value = (bytes_per_beat - 1).bit_length()  # log2
 
         # State machine

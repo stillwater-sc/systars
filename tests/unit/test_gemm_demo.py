@@ -5,7 +5,7 @@ This test demonstrates a complete matrix multiply operation:
 1. Load matrix A from DRAM → Scratchpad
 2. Load matrix B from DRAM → Scratchpad
 3. Execute C = A × B on the systolic array
-4. Store matrix C from Accumulator → DRAM
+4. Store matrix C from Combiner → DRAM
 5. Verify results against numpy reference
 
 This serves as both a functional test and an application demo showing
@@ -18,7 +18,7 @@ from amaranth.sim import Simulator, Tick
 
 from systars.config import SystolicConfig
 from systars.top import SystolicTop
-from systars.util.commands import DmaOpcode, OpCode
+from systars.util.commands import BlockMoverOpcode, OpCode
 
 
 class SimulatedDRAM:
@@ -98,11 +98,11 @@ class TestGemmDemo:
             acc_bits=32,
             sp_banks=4,
             sp_capacity_kb=4,
-            acc_banks=4,
-            acc_capacity_kb=4,
-            dma_buswidth=128,
+            combiner_banks=4,
+            combiner_capacity_kb=4,
+            blockmover_buswidth=128,
             spad_read_delay=1,
-            acc_latency=1,
+            combiner_latency=1,
         )
 
     def test_systolic_top_instantiation(self, small_config):
@@ -171,7 +171,7 @@ class TestGemmDemo:
         def testbench():
             # Issue a load command
             yield dut.cmd_type.eq(SystolicTop.CTRL_LOAD)
-            yield dut.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield dut.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield dut.cmd_dram_addr.eq(0x1000)
             yield dut.cmd_local_addr.eq(0x0)
             yield dut.cmd_len.eq(4)
@@ -202,7 +202,7 @@ class TestGemmDemo:
         def testbench():
             # Issue a store command
             yield dut.cmd_type.eq(SystolicTop.CTRL_STORE)
-            yield dut.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield dut.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield dut.cmd_dram_addr.eq(0x2000)
             yield dut.cmd_local_addr.eq(0x0)
             yield dut.cmd_len.eq(4)
@@ -292,7 +292,7 @@ class TestGemmDemoVerilog:
             tile_rows=2,
             tile_cols=2,
             sp_capacity_kb=4,
-            acc_capacity_kb=4,
+            combiner_capacity_kb=4,
         )
 
         dut = SystolicTop(config)
@@ -304,7 +304,7 @@ class TestGemmDemoVerilog:
         assert "axi_awvalid" in output
         assert "systolic_array" in output
         assert "scratchpad" in output
-        assert "accumulator" in output
+        assert "combiner" in output
 
     def test_verilog_contains_submodules(self):
         """Test that generated Verilog contains all submodules."""
@@ -322,7 +322,7 @@ class TestGemmDemoVerilog:
             tile_rows=2,
             tile_cols=2,
             sp_capacity_kb=4,
-            acc_capacity_kb=4,
+            combiner_capacity_kb=4,
         )
 
         dut = SystolicTop(config)
@@ -389,11 +389,11 @@ class TestGemmIntegration:
             acc_bits=32,
             sp_banks=4,
             sp_capacity_kb=4,
-            acc_banks=4,
-            acc_capacity_kb=4,
-            dma_buswidth=128,
+            combiner_banks=4,
+            combiner_capacity_kb=4,
+            blockmover_buswidth=128,
             spad_read_delay=1,
-            acc_latency=1,
+            combiner_latency=1,
         )
 
     def test_load_issues_axi_request(self, test_config):
@@ -404,7 +404,7 @@ class TestGemmIntegration:
         def testbench():
             # Issue load command
             yield dut.cmd_type.eq(SystolicTop.CTRL_LOAD)
-            yield dut.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield dut.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield dut.cmd_dram_addr.eq(0x1000)
             yield dut.cmd_local_addr.eq(0x0)
             yield dut.cmd_len.eq(1)
@@ -439,7 +439,7 @@ class TestGemmIntegration:
         def testbench():
             # Issue store command
             yield dut.cmd_type.eq(SystolicTop.CTRL_STORE)
-            yield dut.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield dut.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield dut.cmd_dram_addr.eq(0x2000)
             yield dut.cmd_local_addr.eq(0x0)
             yield dut.cmd_len.eq(1)

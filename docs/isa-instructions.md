@@ -14,7 +14,7 @@ that `isa.command.connect_to_top` wires to `SystolicTop`:
   K tile, LOAD A (row-major) and B (TRANSPOSE: column-major), one COMPUTE, the K tiles chained
   into one reduction in the PEs. WS: LOAD A (TRANSPOSE) and B, PRELOAD B, COMPUTE A (later K
   tiles accumulate). IS: the same loads, PRELOAD A, COMPUTE B, and the STORE's corner turn
-  writes C from the Cᵀ the accumulator holds. Then STORE the C tile;
+  writes C from the Cᵀ the Combiner holds. Then STORE the C tile;
 - Conv2d runs OS: its per-position LOADs write the A tile row-major, which only OS streams
   (WS and IS stream A column-major), and the filter tile is corner-turned. An array without
   OS cannot run Conv2d yet (a column-write LOAD is the follow-up,
@@ -31,7 +31,7 @@ Systars follows the KPU's CSP model ([kpu-sim](https://github.com/stillwater-sc/
 `docs/01-architecture/kpu-execution-model.md`): `SystolicTop` is a systolic KPU compute tile.
 Its AXI port is its link to **L3** (a memory tile in a SoC; the AXI memory model in tests), the
 scratchpad is **L2**, and the stream and result buffers at the array's edges are **L1**. LOAD and STORE are the
-**BlockMover**'s two legs (L3 → L2, and accumulator → L3); the execute controller is the
+**BlockMover**'s two legs (L3 → L2, and Combiner → L3); the execute controller is the
 **Streamer** (L2 → L1).
 
 A LOAD or STORE moves a whole tile: `len` rows, row `n` at L3 byte address
@@ -50,13 +50,13 @@ No burst crosses a 4 KB boundary, which AXI forbids (#11):
 
 The unit AXI memory model (`tests/unit/_axi.py`) asserts this for every burst a test issues.
 
-The LOAD leg also writes the accumulator. A LOAD's local address picks its destination
-(`LocalAddr`), as the STORE's addresses do: the scratchpad, or with bit 31 the accumulator
-(`row_bytes` 0 is then a whole accumulator row). With bit 30 too, each row is added onto the
-accumulator row instead of overwriting it. The accumulator's write port is shared: the
+The LOAD leg also writes the Combiner. A LOAD's local address picks its destination
+(`LocalAddr`), as the STORE's addresses do: the scratchpad, or with bit 31 the Combiner
+(`row_bytes` 0 is then a whole Combiner row). With bit 30 too, each row is added onto the
+Combiner row instead of overwriting it. The Combiner's write port is shared: the
 Streamer writes its results whenever they arrive, since the fabric never stalls, and the LOAD
 writes in the clocks the Streamer leaves free, holding its stream meanwhile. Three more LOAD
-opcodes (`DmaOpcode`):
+opcodes (`BlockMoverOpcode`):
 
 | Opcode | Effect |
 |---|---|
@@ -66,26 +66,26 @@ opcodes (`DmaOpcode`):
 
 ## Corner turns
 
-A LOAD or STORE with opcode `TRANSPOSE` (`DmaOpcode`, 0x04) is a MEMCPY that turns one tile's
+A LOAD or STORE with opcode `TRANSPOSE` (`BlockMoverOpcode`, 0x04) is a MEMCPY that turns one tile's
 rows into its columns, for the layouts the Streamer reads: each L2 row fills one L1 stream
 buffer. The LOAD leg collects the tile's L3 rows in a corner-turn buffer (`lanes` rows of
 `lanes` elements of `input_bits`, `lanes = sp_width // input_bits`), then writes scratchpad
 row `sp_addr + j` with element `j` of every L3 row: one row per element of an L3 row, zero
-past the `len`-th element. The STORE leg reads the tile's accumulator rows into its own
+past the `len`-th element. The STORE leg reads the tile's Combiner rows into its own
 buffer, back to back, and writes L3 row `i` with element `i` of each: the results an
 input-stationary schedule produces as columns of C reach L3 as its rows. The rows still move
 as a MEMCPY's do (any address, stride, partial rows, bursts), and STORE's activation applies
 per element. A TRANSPOSE moves at most one tile: `len` is clamped to `lanes`. The buffers are
 never cleared, since each turn leaves nothing that a later one could write. A LOAD into the
-accumulator turns `acc_bits` elements (`lanes = acc_width // acc_bits`), for IS, whose
-accumulator holds Cᵀ. That buffer is built only for an array with IS; without it, such a LOAD
+Combiner turns `acc_bits` elements (`lanes = combiner_width // acc_bits`), for IS, whose
+Combiner holds Cᵀ. That buffer is built only for an array with IS; without it, such a LOAD
 completes without moving anything.
 
 ## The fabric, L1 and the Streamer
 
 `R` and `C` are the array's rows and columns in PEs (`grid_rows * tile_rows`,
 `grid_cols * tile_cols`), and `KB` the longest stream block (an L2 row: `sp_width /
-input_bits` elements). An accumulator row holds `C` results.
+input_bits` elements). A Combiner row holds `C` results.
 
 **The fabric.** Every PE has an input register on each of its links, so a value moves one PE
 per clock in every direction and a PEArray is only a structural grouping (it scales to 8x8
@@ -108,7 +108,7 @@ buffer streams it out one element per clock and takes the next block in the cloc
 element leaves. The buffers are loaded one per clock, so buffer `i` starts one clock after
 buffer `i - 1`: that stagger is the skew, and the array has no skew or deskew registers. At
 the edge the results leave (north for OS, south for stationary), one result buffer per
-column turns the columns back into row-major rows for the accumulator.
+column turns the columns back into row-major rows for the Combiner.
 
 **The Streamer** (`controller/execute.py`) reads one L2 row per clock on each of the
 scratchpad's two read ports into L1:
@@ -118,7 +118,7 @@ scratchpad's two read ports into L1:
 | `CONFIG` | `rs1` = 0 selects OS; 1 (WS) or 2 (IS) selects the stationary mode | |
 | `PRELOAD` | does nothing | the stationary tile, row-major, from `rs1`: `k_dim` rows (at most `R`), zero below |
 | `COMPUTE` | an A tile row-major at `rs1` (`R` rows), a B tile column-major at `rs2` (`C` rows), `K = k_dim <= KB`; `cmd_chain` chains K tiles into one reduction | a streamed tile column-major at `rs1` (`R` rows), `M = k_dim <= KB`; `M` result rows |
-| `COMPUTE_ACCUMULATE` | as `COMPUTE`, adding the result rows to the accumulator | |
+| `COMPUTE_ACCUMULATE` | as `COMPUTE`, adding the result rows to the Combiner | |
 
 `cmd_chain` (a `SystolicTop` port): bit 0 = continues the previous command's reduction, bit 1
 = continues into the next (no results yet); 0 is a whole reduction. A command starts only
@@ -134,7 +134,7 @@ when the fabric can take it on schedule and never stalls:
 
 Two in-order events carry each command's `cmd_sync`: **completed** when its last block is in
 L1 (`SystolicTop` returns the L2 credit, so the BlockMover can refill the slot early) and
-**result** (`exec_result`) when its results are in the accumulator (the result token). An
+**result** (`exec_result`) when its results are in the Combiner (the result token). An
 untracked command (`cmd_sync` 0) runs alone and completes with its results, so a host can
 issue one command at a time. `l1_error` (sticky) reports a schedule violation, which a valid
 schedule never raises.
@@ -151,7 +151,7 @@ idealized two-read-port scratchpad; the banked L2 that sustains two vectors per 
 `SystolicTop` has an in-order command queue per process (`ld_queue_length`,
 `ex_queue_length`, `st_queue_length`), and a queue's head is dispatched only when its credits
 and tokens are there (`controller/sync.py`, after kpu-sim's `credit_pool` and `tag_cam`). L2
-and the accumulator hold whole tiles in slots (`l2_slots`, default 4; `acc_slots`, default 2),
+and the Combiner hold whole tiles in slots (`l2_slots`, default 4; `combiner_slots`, default 2),
 one credit per slot: there are no row or burst credits, since the BlockMover sequences its own
 bursts inside a tile. A slot is FREE (its credit is available), OWNED (a producer is filling
 it), READY (its tile-ready token waits for the consumer) or READING (a consumer took the token
@@ -169,14 +169,14 @@ slot it reads (`src`) and the slot it fills (`dst`), with four flags:
 A LOAD acquires and signals its L2 slot (a tile filled by several LOADs: the first acquires,
 the last signals; an OS COMPUTE reads both tiles of its pair, so an OS pair is one slot,
 acquired by the A tile's LOAD and signalled by the B tile's); PRELOAD and COMPUTE wait for and
-release their L2 tile; COMPUTE acquires the accumulator slot on a C tile's first K step and
+release their L2 tile; COMPUTE acquires the Combiner slot on a C tile's first K step and
 signals it (on its result event) on the last; STORE
 waits for and releases it. `cmd_sync = 0` is an untracked command, which starts when its
 process is idle, as before. New ports: `cmd_sync`, `{load,store,exec}_started[_id]` (the CSP
 action starts, matching `*_completed`), the slot state bits (`l2_free`, `l2_ready`,
-`acc_free`, `acc_ready`) and a sticky `sync_error`.
+`combiner_free`, `combiner_ready`) and a sticky `sync_error`.
 
-A LOAD into the accumulator is the accumulator pool's second producer (`SlotPool(producers=2)`,
+A LOAD into the Combiner is the Combiner pool's second producer (`SlotPool(producers=2)`,
 the `fill_*` ports): it acquires the slot (and signals it, if it has `SIGNAL`), and the
 COMPUTEs that accumulate onto it acquire nothing and signal on the last K step. The LOAD queue
 is in order, so the COMPUTE's L2 tiles, loaded after it, are ready only once it is in; no
@@ -184,7 +184,7 @@ extra token is needed. `fill_credit` excludes a slot the Streamer takes in the s
 a credit is never taken twice.
 
 Matmul and Conv2d use the slots in ring order (`isa.command.TileBuffers`): with two A/B slot
-pairs and two accumulator slots (`buffers=2`, the default) the BlockMover fills the next
+pairs and two Combiner slots (`buffers=2`, the default) the BlockMover fills the next
 tile's slot while the Streamer works on the current one, and STOREs overlap the next C tile.
 Issuing in program order cannot deadlock, since every credit a command waits for is returned
 by a command issued earlier.
@@ -197,7 +197,7 @@ output rows that would overlap.
 
 ## Bias and accumulate
 
-Before an output tile's first K step, the BlockMover loads the tile's accumulator slot, and
+Before an output tile's first K step, the BlockMover loads the tile's Combiner slot, and
 every COMPUTE accumulates onto it (`COMPUTE_ACCUMULATE`):
 
 | Instruction | Setting | Loaded into the tile |
@@ -209,7 +209,7 @@ every COMPUTE accumulates onto it (`COMPUTE_ACCUMULATE`):
 | Conv2d | `CONFIG_OPTIONS` bit 0 | the existing Y tile, added onto the bias the same way |
 
 All three Matmul dataflows support both. IS loads with the corner turn (`BROADCAST_TRANSPOSE`
-or `TRANSPOSE` into the accumulator), since its accumulator holds Cᵀ. `UNSUPPORTED_BIAS` and
+or `TRANSPOSE` into the Combiner), since its Combiner holds Cᵀ. `UNSUPPORTED_BIAS` and
 `UNSUPPORTED_ACCUMULATE` are retired (their codes are left unused). Conv2d's padding needs no
 zero row in L3: a padded position is a `CLEAR`, and `CONFIG_ZERO_ADDR` is ignored.
 
@@ -231,9 +231,9 @@ not run `SystolicTop` or check numerical results; the unit tests below do.
 bursts past 256 beats, a GEMM with unaligned, strided operands, and rows and streamed tiles
 that cross a 4 KB boundary, for both legs and a GEMM (`TestFourKBoundaries`).
 
-`test_block_mover.py` also covers LOADs into the accumulator over a busy write port (with
-and without the add flag), `CLEAR` (no L3 read), `BROADCAST` (one) and the accumulator corner
-turn (`TestLoadAccumulator`).
+`test_block_mover.py` also covers LOADs into the Combiner over a busy write port (with
+and without the add flag), `CLEAR` (no L3 read), `BROADCAST` (one) and the Combiner corner
+turn (`TestLoadCombiner`).
 
 `tests/unit/test_matmul.py` and `tests/unit/test_conv2d.py`: the issued commands run through a
 Python model of `SystolicTop` (`tests/unit/_isa.py`) and match numpy (Matmul tiled in M, N and
@@ -250,7 +250,7 @@ with two buffers against 907 with one (OS; WS and IS measure the same), bit-iden
 backpressure changes no value. The Streamer returns a tile's L2 credit a few clocks after it
 starts, so the run is bound by the BlockMover's L3 traffic. With a bias, accumulating onto
 the output, or both (Matmul in OS, WS and IS; Conv2d with a bias row, and onto Y), the
-monitor follows each LOAD into the accumulator as the accumulator pool's second producer.
+monitor follows each LOAD into the Combiner as the Combiner pool's second producer.
 `test_slot_pool_second_producer` checks that `fill_credit` excludes a slot the Streamer takes
 in the same clock, which the in-order queues never make happen on a real `SystolicTop`.
 

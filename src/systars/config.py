@@ -85,7 +85,7 @@ class SystolicConfig:
     """Bit width of weights (typically 8 for INT8)."""
 
     acc_bits: int = 32
-    """Bit width of accumulator (typically 32 for INT32)."""
+    """Accumulate width of the MAC (typically 32 for INT32); also the Combiner's element width."""
 
     output_bits: int = 20
     """Bit width of PE output before accumulation."""
@@ -123,36 +123,36 @@ class SystolicConfig:
     """Read latency from scratchpad in cycles."""
 
     # =========================================================================
-    # Accumulator Configuration
+    # Combiner Configuration
     # =========================================================================
-    acc_capacity_kb: int = 64
-    """Total accumulator capacity in kilobytes."""
+    combiner_capacity_kb: int = 64
+    """Total Combiner capacity in kilobytes."""
 
-    acc_banks: int = 2
-    """Number of accumulator banks."""
+    combiner_banks: int = 2
+    """Number of Combiner banks."""
 
-    acc_sub_banks: int = 1
-    """Sub-banks within each accumulator bank (for single-ported designs)."""
+    combiner_sub_banks: int = 1
+    """Sub-banks within each Combiner bank (for single-ported designs)."""
 
-    acc_singleported: bool = False
-    """If True, accumulator banks are single-ported."""
+    combiner_singleported: bool = False
+    """If True, Combiner banks are single-ported."""
 
-    acc_latency: int = 2
-    """Accumulator access latency in cycles."""
+    combiner_latency: int = 2
+    """Combiner access latency in cycles."""
 
     # =========================================================================
-    # DMA Configuration
+    # BlockMover Configuration
     # =========================================================================
-    dma_maxbytes: int = 64
-    """Maximum bytes per DMA transaction."""
+    blockmover_maxbytes: int = 64
+    """Maximum bytes per BlockMover transaction."""
 
-    dma_buswidth: int = 0
-    """DMA bus width in bits. 0 (default) = automatic: the widest scratchpad or
-    accumulator row, at least 128 bits, rounded up to a power of two. The DMA
+    blockmover_buswidth: int = 0
+    """BlockMover bus width in bits. 0 (default) = automatic: the widest scratchpad or
+    Combiner row, at least 128 bits, rounded up to a power of two. The BlockMover
     moves one row per beat, so an explicit width must be at least that wide."""
 
     max_in_flight_reqs: int = 16
-    """Maximum number of in-flight DMA requests."""
+    """Maximum number of in-flight BlockMover requests."""
 
     # =========================================================================
     # Queue Depths
@@ -161,7 +161,7 @@ class SystolicConfig:
     """Depth of the BlockMover's L3 -> L2 (LOAD) command queue in SystolicTop."""
 
     st_queue_length: int = 2
-    """Depth of the BlockMover's accumulator -> L3 (STORE) command queue."""
+    """Depth of the BlockMover's Combiner -> L3 (STORE) command queue."""
 
     ex_queue_length: int = 8
     """Depth of the Streamer's (execute) command queue."""
@@ -173,8 +173,8 @@ class SystolicConfig:
     """Tile slots in the scratchpad (L2), one credit each. Two per operand (A and
     B) double-buffers. A slot is a tag: commands carry its address explicitly."""
 
-    acc_slots: int = 2
-    """Tile slots in the accumulator, one credit each."""
+    combiner_slots: int = 2
+    """Tile slots in the Combiner, one credit each."""
 
     # =========================================================================
     # Reservation Station Configuration
@@ -250,25 +250,25 @@ class SystolicConfig:
         return self.sp_banks * self.sp_bank_entries
 
     @property
-    def acc_width(self) -> int:
-        """Accumulator row width in bits."""
+    def combiner_width(self) -> int:
+        """Combiner row width in bits."""
         return self.grid_cols * self.tile_cols * self.acc_bits
 
     @property
-    def acc_width_bytes(self) -> int:
-        """Accumulator row width in bytes."""
-        return self.acc_width // 8
+    def combiner_width_bytes(self) -> int:
+        """Combiner row width in bytes."""
+        return self.combiner_width // 8
 
     @property
-    def acc_bank_entries(self) -> int:
-        """Number of rows per accumulator bank."""
-        total_bits = self.acc_capacity_kb * 1024 * 8
-        return total_bits // (self.acc_banks * self.acc_width)
+    def combiner_bank_entries(self) -> int:
+        """Number of rows per Combiner bank."""
+        total_bits = self.combiner_capacity_kb * 1024 * 8
+        return total_bits // (self.combiner_banks * self.combiner_width)
 
     @property
-    def acc_total_rows(self) -> int:
-        """Total number of accumulator rows across all banks."""
-        return self.acc_banks * self.acc_bank_entries
+    def combiner_total_rows(self) -> int:
+        """Total number of Combiner rows across all banks."""
+        return self.combiner_banks * self.combiner_bank_entries
 
     @property
     def sp_addr_bits(self) -> int:
@@ -276,30 +276,30 @@ class SystolicConfig:
         return (self.sp_total_rows - 1).bit_length()
 
     @property
-    def acc_addr_bits(self) -> int:
-        """Bits needed to address all accumulator rows."""
-        return (self.acc_total_rows - 1).bit_length()
+    def combiner_addr_bits(self) -> int:
+        """Bits needed to address all Combiner rows."""
+        return (self.combiner_total_rows - 1).bit_length()
 
     @property
     def local_addr_bits(self) -> int:
         """Bits needed for unified local address (max of sp and acc)."""
-        return max(self.sp_addr_bits, self.acc_addr_bits)
+        return max(self.sp_addr_bits, self.combiner_addr_bits)
 
     @property
     def max_block_len(self) -> int:
         """Maximum block length for scratchpad transfers."""
-        return self.dma_maxbytes // self.sp_width_bytes
+        return self.blockmover_maxbytes // self.sp_width_bytes
 
     @property
-    def max_block_len_acc(self) -> int:
-        """Maximum block length for accumulator transfers."""
-        return self.dma_maxbytes // self.acc_width_bytes
+    def max_block_len_combiner(self) -> int:
+        """Maximum block length for Combiner transfers."""
+        return self.blockmover_maxbytes // self.combiner_width_bytes
 
     def __post_init__(self):
         """Validate configuration parameters."""
-        if self.dma_buswidth == 0:
-            widest = max(128, self.sp_width, self.acc_width)
-            self.dma_buswidth = 1 << (widest - 1).bit_length()
+        if self.blockmover_buswidth == 0:
+            widest = max(128, self.sp_width, self.combiner_width)
+            self.blockmover_buswidth = 1 << (widest - 1).bit_length()
         assert self.grid_rows > 0, "grid_rows must be positive"
         assert self.grid_cols > 0, "grid_cols must be positive"
         assert self.tile_rows > 0, "tile_rows must be positive"
@@ -312,15 +312,15 @@ class SystolicConfig:
         # Banks are interleaved on the low address bits (LocalAddr), so consecutive
         # rows walk the banks: a count that is not a power of two would map some
         # addresses to banks that do not exist
-        for name in ("sp_banks", "acc_banks"):
+        for name in ("sp_banks", "combiner_banks"):
             banks = getattr(self, name)
             assert banks > 0 and banks & (banks - 1) == 0, (
                 f"{name} must be a power of two (banks are the low address bits), got {banks}"
             )
         assert self.sp_capacity_kb > 0, "sp_capacity_kb must be positive"
-        assert self.acc_capacity_kb > 0, "acc_capacity_kb must be positive"
+        assert self.combiner_capacity_kb > 0, "combiner_capacity_kb must be positive"
         # Slot tags are 4-bit fields of cmd_sync (controller/sync.py)
-        for name in ("l2_slots", "acc_slots"):
+        for name in ("l2_slots", "combiner_slots"):
             slots = getattr(self, name)
             assert 1 <= slots <= 16, f"{name} must be 1..16 (a 4-bit tag), got {slots}"
         # A queue of one entry would have a zero-width address in the generated RTL
@@ -331,16 +331,16 @@ class SystolicConfig:
         assert self.sp_width % 8 == 0, (
             f"scratchpad row ({self.sp_width} bits) must be a whole number of bytes"
         )
-        assert self.acc_width % 8 == 0, (
-            f"accumulator row ({self.acc_width} bits) must be a whole number of bytes"
+        assert self.combiner_width % 8 == 0, (
+            f"Combiner row ({self.combiner_width} bits) must be a whole number of bytes"
         )
         assert self.sp_bank_entries >= 1, (
             f"scratchpad of {self.sp_capacity_kb} KiB is too small for {self.sp_banks} "
             f"banks of {self.sp_width}-bit rows"
         )
-        assert self.acc_bank_entries >= 1, (
-            f"accumulator of {self.acc_capacity_kb} KiB is too small for {self.acc_banks} "
-            f"banks of {self.acc_width}-bit rows"
+        assert self.combiner_bank_entries >= 1, (
+            f"Combiner of {self.combiner_capacity_kb} KiB is too small for {self.combiner_banks} "
+            f"banks of {self.combiner_width}-bit rows"
         )
 
 
@@ -357,10 +357,10 @@ LEAN_CONFIG = SystolicConfig(
 
 CHIP_CONFIG = SystolicConfig(
     sp_capacity_kb=64,
-    acc_capacity_kb=32,
+    combiner_capacity_kb=32,
     dataflow=Dataflow.B_STATIONARY,
-    acc_singleported=True,
-    acc_sub_banks=2,
+    combiner_singleported=True,
+    combiner_sub_banks=2,
     array_output_delay=2,
 )
 """Configuration optimized for tapeout."""
@@ -369,6 +369,6 @@ LARGE_CONFIG = SystolicConfig(
     grid_rows=32,
     grid_cols=32,
     sp_capacity_kb=512,
-    acc_capacity_kb=128,
+    combiner_capacity_kb=128,
 )
 """Large configuration for high-performance applications."""

@@ -1,6 +1,6 @@
 """
 Unit tests for ExecuteController (the Streamer), wired to a real SystolicArray.
-Python models serve the scratchpad's two read ports and record the accumulator
+Python models serve the scratchpad's two read ports and record the Combiner
 writes. Commands are untracked (one at a time, ``cmd_sync`` 0) or tracked (pushed
 back to back, ``cmd_sync`` != 0), where the Streamer overlaps them.
 """
@@ -105,7 +105,7 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect
     async def monitor(ctx):
         t = 0
         async for sample in ctx.tick().sample(
-            ctrl.acc_write_req, ctrl.acc_write_addr, ctrl.acc_write_data, ctrl.acc_accumulate,
+            ctrl.combiner_write_req, ctrl.combiner_write_addr, ctrl.combiner_write_data, ctrl.combiner_accumulate,
             ctrl.completed, ctrl.completed_id, ctrl.completed_sync,
             ctrl.result, ctrl.result_id, ctrl.result_sync,
             ctrl.array_in_valid_0, ctrl.error,
@@ -155,7 +155,7 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect
 
 
 def written(log):
-    """The accumulator, as written: address -> row (the last write wins)."""
+    """The Combiner, as written: address -> row (the last write wins)."""
     return {addr: row for addr, row, _ in log["writes"]}
 
 
@@ -234,7 +234,7 @@ class TestCommands:
 
 
 class TestSignalNeedsAResult:
-    """The accumulator token is emitted on the result event: a command with SIGNAL
+    """The Combiner token is emitted on the result event: a command with SIGNAL
     that writes no result would leave its slot OWNED, so the Streamer flags it."""
 
     SIGNAL = TRACKED | Sync.encode(dst=1, acquire=True, signal=True)

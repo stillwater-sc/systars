@@ -4,7 +4,7 @@ Unit tests for the LoadController.
 These tests verify:
 1. LoadController instantiation
 2. MEMCPY command acceptance (for load operations)
-3. DMA request generation
+3. BlockMover request generation
 4. Data reception and scratchpad write
 5. Completion signaling
 6. Verilog generation
@@ -15,7 +15,7 @@ from amaranth.sim import Simulator, Tick
 
 from systars.config import SystolicConfig
 from systars.controller.load import LoadController
-from systars.util.commands import DmaOpcode
+from systars.util.commands import BlockMoverOpcode
 
 
 class TestLoadController:
@@ -25,8 +25,8 @@ class TestLoadController:
     def config(self):
         """Configuration for tests."""
         return SystolicConfig(
-            dma_buswidth=128,
-            dma_maxbytes=64,
+            blockmover_buswidth=128,
+            blockmover_maxbytes=64,
             grid_rows=4,
             grid_cols=4,
             tile_rows=1,
@@ -54,15 +54,15 @@ class TestLoadController:
         assert hasattr(controller, "cmd_len")
         assert hasattr(controller, "cmd_id")
 
-        # DMA interface
-        assert hasattr(controller, "dma_req_valid")
-        assert hasattr(controller, "dma_req_ready")
-        assert hasattr(controller, "dma_req_addr")
-        assert hasattr(controller, "dma_req_len")
-        assert hasattr(controller, "dma_resp_valid")
-        assert hasattr(controller, "dma_resp_ready")
-        assert hasattr(controller, "dma_resp_data")
-        assert hasattr(controller, "dma_resp_last")
+        # BlockMover interface
+        assert hasattr(controller, "engine_req_valid")
+        assert hasattr(controller, "engine_req_ready")
+        assert hasattr(controller, "engine_req_addr")
+        assert hasattr(controller, "engine_req_len")
+        assert hasattr(controller, "engine_resp_valid")
+        assert hasattr(controller, "engine_resp_ready")
+        assert hasattr(controller, "engine_resp_data")
+        assert hasattr(controller, "engine_resp_last")
 
         # Scratchpad interface
         assert hasattr(controller, "sp_write_en")
@@ -102,7 +102,7 @@ class TestLoadController:
         def testbench():
             # Issue MEMCPY command for load
             yield ctrl.cmd_valid.eq(1)
-            yield ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield ctrl.cmd_dram_addr.eq(0x80000000)
             yield ctrl.cmd_sp_addr.eq(0x100)
             yield ctrl.cmd_len.eq(4)  # 4 beats
@@ -117,13 +117,13 @@ class TestLoadController:
             yield ctrl.cmd_valid.eq(0)
             yield Tick()
 
-            # Should see DMA request
-            dma_valid = yield ctrl.dma_req_valid
-            dma_addr = yield ctrl.dma_req_addr
-            dma_len = yield ctrl.dma_req_len
+            # Should see BlockMover request
+            dma_valid = yield ctrl.engine_req_valid
+            engine_addr = yield ctrl.engine_req_addr
+            dma_len = yield ctrl.engine_req_len
             if dma_valid:
                 results["dma_issued"] = True
-                assert dma_addr == 0x80000000
+                assert engine_addr == 0x80000000
                 assert dma_len == 3  # AXI4 style: 4 beats = len 3
 
             yield Tick()
@@ -134,7 +134,7 @@ class TestLoadController:
         sim.run()
 
         assert results["cmd_accepted"], "Command should be accepted"
-        assert results["dma_issued"], "DMA request should be issued"
+        assert results["dma_issued"], "BlockMover request should be issued"
 
     def test_single_beat_transfer(self, config):
         """Test single-beat MEMCPY transfer."""
@@ -144,7 +144,7 @@ class TestLoadController:
         def testbench():
             # Issue MEMCPY command for single beat
             yield ctrl.cmd_valid.eq(1)
-            yield ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield ctrl.cmd_dram_addr.eq(0x1000)
             yield ctrl.cmd_sp_addr.eq(0x10)
             yield ctrl.cmd_len.eq(1)
@@ -154,18 +154,18 @@ class TestLoadController:
             yield ctrl.cmd_valid.eq(0)
             yield Tick()
 
-            # Accept DMA request
-            yield ctrl.dma_req_ready.eq(1)
+            # Accept BlockMover request
+            yield ctrl.engine_req_ready.eq(1)
             yield Tick()
-            yield ctrl.dma_req_ready.eq(0)
+            yield ctrl.engine_req_ready.eq(0)
             yield Tick()
 
-            # Provide DMA response data
+            # Provide BlockMover response data
             # Note: sp_width = grid_cols * tile_cols * input_bits = 4*1*8 = 32 bits
-            # so only lower 32 bits of dma_resp_data will be written
-            yield ctrl.dma_resp_valid.eq(1)
-            yield ctrl.dma_resp_data.eq(0xCAFEBABE)
-            yield ctrl.dma_resp_last.eq(1)
+            # so only lower 32 bits of engine_resp_data will be written
+            yield ctrl.engine_resp_valid.eq(1)
+            yield ctrl.engine_resp_data.eq(0xCAFEBABE)
+            yield ctrl.engine_resp_last.eq(1)
 
             # Check scratchpad write BEFORE Tick (combinational)
             sp_write_en = yield ctrl.sp_write_en
@@ -178,7 +178,7 @@ class TestLoadController:
 
             yield Tick()  # State transitions to DONE
 
-            yield ctrl.dma_resp_valid.eq(0)
+            yield ctrl.engine_resp_valid.eq(0)
 
             # Check completion BEFORE Tick (combinational in DONE state)
             # After Tick, state transitions to IDLE
@@ -208,7 +208,7 @@ class TestLoadController:
         def testbench():
             # Issue MEMCPY command for 4 beats
             yield ctrl.cmd_valid.eq(1)
-            yield ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield ctrl.cmd_dram_addr.eq(0x2000)
             yield ctrl.cmd_sp_addr.eq(0x20)
             yield ctrl.cmd_len.eq(4)
@@ -218,17 +218,17 @@ class TestLoadController:
             yield ctrl.cmd_valid.eq(0)
             yield Tick()
 
-            # Accept DMA request
-            yield ctrl.dma_req_ready.eq(1)
+            # Accept BlockMover request
+            yield ctrl.engine_req_ready.eq(1)
             yield Tick()
-            yield ctrl.dma_req_ready.eq(0)
+            yield ctrl.engine_req_ready.eq(0)
             yield Tick()
 
             # Provide 4 beats of data
             for i in range(4):
-                yield ctrl.dma_resp_valid.eq(1)
-                yield ctrl.dma_resp_data.eq(0x1000 + i)
-                yield ctrl.dma_resp_last.eq(1 if i == 3 else 0)
+                yield ctrl.engine_resp_valid.eq(1)
+                yield ctrl.engine_resp_data.eq(0x1000 + i)
+                yield ctrl.engine_resp_last.eq(1 if i == 3 else 0)
 
                 # Check scratchpad write BEFORE Tick
                 sp_write_en = yield ctrl.sp_write_en
@@ -239,7 +239,7 @@ class TestLoadController:
 
                 yield Tick()
 
-            yield ctrl.dma_resp_valid.eq(0)
+            yield ctrl.engine_resp_valid.eq(0)
             yield Tick()
             yield Tick()
 
@@ -264,7 +264,7 @@ class TestLoadController:
 
             # Issue command
             yield ctrl.cmd_valid.eq(1)
-            yield ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield ctrl.cmd_dram_addr.eq(0x3000)
             yield ctrl.cmd_sp_addr.eq(0x30)
             yield ctrl.cmd_len.eq(1)
@@ -277,15 +277,15 @@ class TestLoadController:
             busy_states.append(("transfer", busy))
 
             # Complete transfer
-            yield ctrl.dma_req_ready.eq(1)
+            yield ctrl.engine_req_ready.eq(1)
             yield Tick()
-            yield ctrl.dma_req_ready.eq(0)
+            yield ctrl.engine_req_ready.eq(0)
             yield Tick()
 
-            yield ctrl.dma_resp_valid.eq(1)
-            yield ctrl.dma_resp_last.eq(1)
+            yield ctrl.engine_resp_valid.eq(1)
+            yield ctrl.engine_resp_last.eq(1)
             yield Tick()
-            yield ctrl.dma_resp_valid.eq(0)
+            yield ctrl.engine_resp_valid.eq(0)
             yield Tick()
             yield Tick()
 
@@ -327,13 +327,13 @@ class TestLoadControllerVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        config = SystolicConfig(dma_buswidth=512, dma_maxbytes=64)
+        config = SystolicConfig(blockmover_buswidth=512, blockmover_maxbytes=64)
         ctrl = LoadController(config)
 
         output = verilog.convert(ctrl, name="LoadController")
         assert "module LoadController" in output
         assert "cmd_valid" in output
-        assert "dma_req_valid" in output
+        assert "engine_req_valid" in output
         assert "sp_write_en" in output
 
         verilog_file = tmp_path / "load_controller.v"
@@ -354,11 +354,11 @@ class TestStridedAndTransposeElaboration:
             pytest.skip("Yosys not found")
         from amaranth.back import verilog
 
+        from systars.blockmover.strided_reader import StridedStreamReader
         from systars.controller.load_transpose import MatrixLoader
-        from systars.dma.strided_reader import StridedStreamReader
 
         cls = {"StridedStreamReader": StridedStreamReader, "MatrixLoader": MatrixLoader}[component]
-        config = SystolicConfig(grid_rows=4, grid_cols=4, dma_buswidth=128)
+        config = SystolicConfig(grid_rows=4, grid_cols=4, blockmover_buswidth=128)
         output = verilog.convert(cls(config), name=component)
         assert f"module {component}" in output
 

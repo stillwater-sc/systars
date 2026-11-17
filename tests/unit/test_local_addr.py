@@ -2,9 +2,9 @@
 Unit tests for the LocalAddr module.
 
 These tests verify:
-1. Address field extraction (is_acc, accumulate, read_full_row)
+1. Address field extraction (is_combiner, accumulate, read_full_row)
 2. Scratchpad bank/row decoding
-3. Accumulator bank/row decoding
+3. Combiner bank/row decoding
 4. Address construction utilities
 5. Garbage address detection
 """
@@ -25,9 +25,9 @@ class TestLocalAddr:
         """Default configuration for tests."""
         return SystolicConfig(
             sp_banks=4,
-            acc_banks=2,
+            combiner_banks=2,
             sp_capacity_kb=256,
-            acc_capacity_kb=64,
+            combiner_capacity_kb=64,
         )
 
     @pytest.fixture
@@ -40,20 +40,20 @@ class TestLocalAddr:
         assert addr_util is not None
         assert addr_util.config == config
         assert addr_util.sp_bank_bits == 2  # log2(4) = 2
-        assert addr_util.acc_bank_bits == 1  # log2(2) = 1
+        assert addr_util.combiner_bank_bits == 1  # log2(2) = 1
 
-    def test_is_acc_flag(self):
-        """Test is_acc bit extraction."""
+    def test_is_combiner_flag(self):
+        """Test is_combiner bit extraction."""
 
         class TestModule(Elaboratable):
             def __init__(self):
                 self.addr = Signal(unsigned(32))
-                self.is_acc = Signal()
+                self.is_combiner = Signal()
                 self.dummy = Signal()  # Create sync domain
 
             def elaborate(self, _platform):
                 m = Module()
-                m.d.comb += self.is_acc.eq(LocalAddr.is_acc(self.addr))
+                m.d.comb += self.is_combiner.eq(LocalAddr.is_combiner(self.addr))
                 m.d.sync += self.dummy.eq(~self.dummy)  # Dummy sync to create domain
                 return m
 
@@ -64,14 +64,14 @@ class TestLocalAddr:
             # Test scratchpad address (bit 31 = 0)
             yield dut.addr.eq(0x0000_0000)
             yield Tick()
-            is_acc = yield dut.is_acc
-            results.append(("sp", is_acc))
+            is_combiner = yield dut.is_combiner
+            results.append(("sp", is_combiner))
 
-            # Test accumulator address (bit 31 = 1)
+            # Test Combiner address (bit 31 = 1)
             yield dut.addr.eq(0x8000_0000)
             yield Tick()
-            is_acc = yield dut.is_acc
-            results.append(("acc", is_acc))
+            is_combiner = yield dut.is_combiner
+            results.append(("acc", is_combiner))
 
         sim = Simulator(dut)
         sim.add_clock(1e-6)
@@ -104,7 +104,7 @@ class TestLocalAddr:
             yield dut.addr.eq(0x0000_0000)
             yield Tick()
             acc = yield dut.accumulate
-            results.append(("no_acc", acc))
+            results.append(("no_combiner", acc))
 
             # Test accumulate (bit 30 = 1)
             yield dut.addr.eq(0x4000_0000)
@@ -117,7 +117,7 @@ class TestLocalAddr:
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results[0] == ("no_acc", 0)
+        assert results[0] == ("no_combiner", 0)
         assert results[1] == ("acc", 1)
 
     def test_garbage_detection(self):
@@ -165,36 +165,36 @@ class TestLocalAddr:
         la = LocalAddr(SystolicConfig(sp_banks=4))
         # Bank 0, row 0
         addr = la.make_sp_addr(0, 0)
-        assert addr & (1 << 31) == 0  # Not accumulator
+        assert addr & (1 << 31) == 0  # Not Combiner
 
         # Bank 2, row 100
         addr = la.make_sp_addr(2, 100)
-        assert addr & (1 << 31) == 0  # Not accumulator
+        assert addr & (1 << 31) == 0  # Not Combiner
 
         # With read_full_row
         addr = la.make_sp_addr(0, 0, read_full_row=True)
         assert addr & (1 << 29) != 0  # read_full_row set
 
-    def test_make_acc_addr(self):
-        """Test accumulator address construction."""
-        la = LocalAddr(SystolicConfig(acc_banks=2))
+    def test_make_combiner_addr(self):
+        """Test Combiner address construction."""
+        la = LocalAddr(SystolicConfig(combiner_banks=2))
         # Bank 0, row 0
-        addr = la.make_acc_addr(0, 0)
-        assert addr & (1 << 31) != 0  # Is accumulator
+        addr = la.make_combiner_addr(0, 0)
+        assert addr & (1 << 31) != 0  # Is Combiner
 
         # With accumulate flag
-        addr = la.make_acc_addr(1, 50, accumulate=True)
-        assert addr & (1 << 31) != 0  # Is accumulator
+        addr = la.make_combiner_addr(1, 50, accumulate=True)
+        assert addr & (1 << 31) != 0  # Is Combiner
         assert addr & (1 << 30) != 0  # Accumulate set
 
     @pytest.mark.parametrize("banks", [2, 4, 8])
     def test_make_addr_round_trips_through_hardware_layout(self, banks):
         """Bank is in the low bank_bits, row above it, for every bank and row."""
-        la = LocalAddr(SystolicConfig(sp_banks=banks, acc_banks=banks))
+        la = LocalAddr(SystolicConfig(sp_banks=banks, combiner_banks=banks))
         bank_bits = (banks - 1).bit_length()
         for bank in range(banks):
             for row in (0, 1, 2, 5):
-                for addr in (la.make_sp_addr(bank, row), la.make_acc_addr(bank, row)):
+                for addr in (la.make_sp_addr(bank, row), la.make_combiner_addr(bank, row)):
                     data = addr & ((1 << LocalAddr.DATA_BITS) - 1)
                     assert data & (banks - 1) == bank
                     assert data >> bank_bits == row
@@ -202,7 +202,7 @@ class TestLocalAddr:
     def test_make_garbage_addr(self):
         """Test garbage address construction."""
         addr = LocalAddr.make_garbage_addr()
-        assert addr & (1 << 31) != 0  # is_acc set
+        assert addr & (1 << 31) != 0  # is_combiner set
         assert addr & (1 << 30) != 0  # accumulate set
         assert addr & (1 << 29) != 0  # read_full_row set
 
@@ -266,11 +266,11 @@ class TestLocalAddr:
         assert addr_util.sp_bank_bits == 2
 
         # With 2 banks, need 1 bit
-        assert addr_util.acc_bank_bits == 1
+        assert addr_util.combiner_bank_bits == 1
 
         # Row bits depend on bank entries
         assert addr_util.sp_row_bits > 0
-        assert addr_util.acc_row_bits > 0
+        assert addr_util.combiner_row_bits > 0
 
 
 class TestLocalAddrEdgeCases:
@@ -278,23 +278,23 @@ class TestLocalAddrEdgeCases:
 
     def test_single_bank(self):
         """Test with single bank configuration."""
-        config = SystolicConfig(sp_banks=1, acc_banks=1)
+        config = SystolicConfig(sp_banks=1, combiner_banks=1)
         addr_util = LocalAddr(config)
 
         # One bank takes no address bits: consecutive rows stay in bank 0
         assert addr_util.sp_bank_bits == 0
-        assert addr_util.acc_bank_bits == 0
+        assert addr_util.combiner_bank_bits == 0
         assert [addr_util.make_sp_addr(0, row) for row in range(3)] == [0, 1, 2]
 
     def test_large_banks(self):
         """Test with many banks."""
-        config = SystolicConfig(sp_banks=16, acc_banks=8)
+        config = SystolicConfig(sp_banks=16, combiner_banks=8)
         addr_util = LocalAddr(config)
 
         # 16 banks needs 4 bits
         assert addr_util.sp_bank_bits == 4
         # 8 banks needs 3 bits
-        assert addr_util.acc_bank_bits == 3
+        assert addr_util.combiner_bank_bits == 3
 
 
 if __name__ == "__main__":

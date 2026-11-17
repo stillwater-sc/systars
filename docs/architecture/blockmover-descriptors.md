@@ -1,10 +1,10 @@
-# DMA Descriptor Architecture
+# BlockMover Descriptor Architecture
 
-This document describes the descriptor-based DMA architecture for SYSTARS, including the descriptor format, memory map, hardware components, and forward refinement path toward virtual memory support.
+This document describes the descriptor-based BlockMover architecture for SYSTARS, including the descriptor format, memory map, hardware components, and forward refinement path toward virtual memory support.
 
 ## Overview
 
-The SYSTARS DMA subsystem uses a **descriptor-based architecture** inspired by modern DMA engines like Intel IOAT (I/O Acceleration Technology). Instead of issuing individual commands for each transfer, software constructs chains of descriptors in memory that the hardware fetches and executes autonomously.
+The SYSTARS BlockMover subsystem uses a **descriptor-based architecture** inspired by modern DMA engines like Intel IOAT (I/O Acceleration Technology). Instead of issuing individual commands for each transfer, software constructs chains of descriptors in memory that the hardware fetches and executes autonomously.
 
 ### Key Benefits
 
@@ -70,7 +70,7 @@ Total: 64 bytes
 
 ## Opcodes
 
-The DMA engine supports the following operation codes:
+The BlockMover engine supports the following operation codes:
 
 | Opcode | Value | Description |
 |--------|-------|-------------|
@@ -93,19 +93,19 @@ The DMA engine supports the following operation codes:
 | `INTERRUPT_ON_COMPLETE` | 0x02 | Generate interrupt when descriptor completes |
 | `WRITEBACK_STATUS` | 0x04 | Write status to `completion` address |
 | `SRC_IS_PATTERN` | 0x08 | `src_addr` contains fill pattern, not address |
-| `DST_IS_LOCAL` | 0x10 | Destination is local memory (scratchpad/accumulator) |
+| `DST_IS_LOCAL` | 0x10 | Destination is local memory (scratchpad/Combiner) |
 | `SRC_IS_LOCAL` | 0x20 | Source is local memory |
 
 ## Memory Map
 
-The DMA engine uses a **unified physical address space** where the address determines the memory type:
+The BlockMover engine uses a **unified physical address space** where the address determines the memory type:
 
 ```
 Address Range                    Memory Type
 ─────────────────────────────────────────────────────────
 0x0000_0000_0000 - 0x0000_FFFF_FFFF    External DRAM (via AXI)
 0x0001_0000_0000 - 0x0001_0000_FFFF    Scratchpad (local SRAM)
-0x0002_0000_0000 - 0x0002_0000_FFFF    Accumulator (local SRAM)
+0x0002_0000_0000 - 0x0002_0000_FFFF    Combiner (local SRAM)
 0x0003_0000_0000 - ...                  Reserved for future use
 ```
 
@@ -120,7 +120,7 @@ def get_memory_region(addr: int) -> str:
     elif addr < 0x0002_0000_0000:
         return "SCRATCHPAD"  # Local memory bank
     elif addr < 0x0003_0000_0000:
-        return "ACCUMULATOR" # Accumulator memory
+        return "COMBINER"
     else:
         return "RESERVED"
 ```
@@ -128,8 +128,8 @@ def get_memory_region(addr: int) -> str:
 This design allows a single `MEMCPY` operation to handle:
 
 - **DRAM → Scratchpad** (load): `src_addr=0x1000`, `dst_addr=0x0001_0000_0100`
-- **Accumulator → DRAM** (store): `src_addr=0x0002_0000_0000`, `dst_addr=0x2000`
-- **Scratchpad → Accumulator** (local copy): Both addresses in local range
+- **Combiner → DRAM** (store): `src_addr=0x0002_0000_0000`, `dst_addr=0x2000`
+- **Scratchpad → Combiner** (local copy): Both addresses in local range
 
 ## Hardware Architecture
 
@@ -254,7 +254,7 @@ write_done       : in  - Write complete
 
 ```python
 from systars.util.commands import (
-    DmaDescriptor, DmaOpcode, DmaFlags, MemoryRegion,
+    BlockMoverDescriptor, BlockMoverOpcode, BlockMoverFlags, MemoryRegion,
     make_memcpy, make_fill, make_fence,
     DescriptorChain,
 )
@@ -458,7 +458,7 @@ Execute: │   Op0       │     │      │ ┌─────────┐
 
 ### Coalescing
 
-For small transfers, batch multiple descriptors into a single large DMA operation:
+For small transfers, batch multiple descriptors into a single large BlockMover operation:
 
 ```python
 # Instead of many small transfers:

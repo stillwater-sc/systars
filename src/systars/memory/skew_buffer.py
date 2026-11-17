@@ -349,12 +349,12 @@ class SkewedArrayFeeder(Component):
     Data flow:
         Scratchpad ──→ Read Scheduler ──→ Skew Buffers ──→ Systolic Array
 
-    Memory organization (after DMA transpose):
+    Memory organization (after BlockMover transpose):
         Scratchpad A banks: Row k of A stored at address k
             Read produces: [A[0,k], A[1,k], ..., A[N-1,k]] (column k of A^T = row k of A)
             Actually for row-major A: [A[k,0], A[k,1], ..., A[k,N-1]]
 
-        Scratchpad B banks: Column k of B stored at address k (transposed by DMA)
+        Scratchpad B banks: Column k of B stored at address k (transposed by BlockMover)
             Read produces: [B[0,k], B[1,k], ..., B[N-1,k]] = column k of B
 
     For C = A @ B, at iteration k:
@@ -373,7 +373,7 @@ class SkewedArrayFeeder(Component):
           This requires reading column k of A, which means strided access
           OR store A transposed: A^T[k,*] = A[*,k] is contiguous
 
-        - B stored column-major (transposed by DMA): B^T[j,*] = B[*,j] is contiguous
+        - B stored column-major (transposed by BlockMover): B^T[j,*] = B[*,j] is contiguous
           For k=0: feed B[0,0] to col 0, B[0,1] to col 1, etc.
           This is row k of B, which is contiguous in original B
 
@@ -386,9 +386,9 @@ class SkewedArrayFeeder(Component):
         - B is stored row-major (natural for feeding columns to array)
 
     Actually, let's match the typical convention:
-        - A stored row-major in original DRAM, DMA loads without transpose
+        - A stored row-major in original DRAM, BlockMover loads without transpose
           Scratchpad A: address i contains row i of A = [A[i,0], A[i,1], ...]
-        - B stored row-major in DRAM, DMA transposes during load
+        - B stored row-major in DRAM, BlockMover transposes during load
           Scratchpad B: address j contains column j of B = [B[0,j], B[1,j], ...]
 
     For matmul iteration k:
@@ -419,13 +419,13 @@ class SkewedArrayFeeder(Component):
         - Store B in "k-major" order: address k has [B[k,0], B[k,1], ..., B[k,cols-1]]
           This means B is stored normally (row-major)
 
-    DMA responsibility:
+    BlockMover responsibility:
         - When loading A from DRAM (row-major), transpose to column-major in scratchpad
         - When loading B from DRAM (row-major), store directly (already correct layout)
 
     Or alternatively, require software to prepare data in the right layout.
 
-    For this implementation, I'll document the expected layout and assume DMA handles it.
+    For this implementation, I'll document the expected layout and assume BlockMover handles it.
 
     Ports:
         start: Begin feeding sequence

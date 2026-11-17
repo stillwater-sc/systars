@@ -16,12 +16,12 @@ These tests verify:
 import pytest
 from amaranth.sim import Simulator, Tick
 
+from systars.blockmover import DescriptorEngine
 from systars.config import SystolicConfig
-from systars.dma import DescriptorEngine
 from systars.util.commands import (
-    DmaDescriptor,
-    DmaFlags,
-    DmaOpcode,
+    BlockMoverDescriptor,
+    BlockMoverFlags,
+    BlockMoverOpcode,
 )
 
 
@@ -32,8 +32,8 @@ class TestDescriptorEngine:
     def config(self):
         """Configuration for tests."""
         return SystolicConfig(
-            dma_buswidth=128,  # 16 bytes per beat
-            dma_maxbytes=64,
+            blockmover_buswidth=128,  # 16 bytes per beat
+            blockmover_maxbytes=64,
             grid_rows=4,
             grid_cols=4,
         )
@@ -171,12 +171,12 @@ class TestDescriptorEngine:
     def test_nop_descriptor_completion(self, config):
         """Test that NOP descriptor completes quickly."""
         engine = DescriptorEngine(config)
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
         bytes_per_beat = buswidth // 8
         desc_beats = 64 // bytes_per_beat  # 4 beats for 128-bit bus
 
         # Create NOP descriptor
-        desc = DmaDescriptor(opcode=DmaOpcode.NOP)
+        desc = BlockMoverDescriptor(opcode=BlockMoverOpcode.NOP)
         desc_bytes = desc.to_bytes()
 
         results = {"done": False}
@@ -226,12 +226,12 @@ class TestDescriptorEngine:
     def test_fence_descriptor_completion(self, config):
         """Test that FENCE descriptor completes."""
         engine = DescriptorEngine(config)
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
         bytes_per_beat = buswidth // 8
         desc_beats = 64 // bytes_per_beat
 
         # Create FENCE descriptor
-        desc = DmaDescriptor(opcode=DmaOpcode.FENCE)
+        desc = BlockMoverDescriptor(opcode=BlockMoverOpcode.FENCE)
         desc_bytes = desc.to_bytes()
 
         results = {"done": False}
@@ -280,13 +280,13 @@ class TestDescriptorEngine:
     def test_memcpy_issues_read_write(self, config):
         """Test that MEMCPY issues both read and write requests."""
         engine = DescriptorEngine(config)
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
         bytes_per_beat = buswidth // 8
         desc_beats = 64 // bytes_per_beat
 
         # Create MEMCPY descriptor: copy 32 bytes from 0x1000 to 0x2000
-        desc = DmaDescriptor(
-            opcode=DmaOpcode.MEMCPY,
+        desc = BlockMoverDescriptor(
+            opcode=BlockMoverOpcode.MEMCPY,
             length=32,
             src_addr=0x1000,
             dst_addr=0x2000,
@@ -352,14 +352,14 @@ class TestDescriptorEngine:
     def test_fill_issues_write_only(self, config):
         """Test that FILL issues write request but not read."""
         engine = DescriptorEngine(config)
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
         bytes_per_beat = buswidth // 8
         desc_beats = 64 // bytes_per_beat
 
         # Create FILL descriptor: fill 32 bytes at 0x2000 with pattern
-        desc = DmaDescriptor(
-            opcode=DmaOpcode.FILL,
-            flags=DmaFlags.SRC_IS_PATTERN,
+        desc = BlockMoverDescriptor(
+            opcode=BlockMoverOpcode.FILL,
+            flags=BlockMoverFlags.SRC_IS_PATTERN,
             length=32,
             src_addr=0xDEADBEEF,  # Pattern
             dst_addr=0x2000,
@@ -419,14 +419,14 @@ class TestDescriptorEngine:
     def test_chained_descriptors(self, config):
         """Test that CHAIN flag causes fetch of next descriptor."""
         engine = DescriptorEngine(config)
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
         bytes_per_beat = buswidth // 8
         desc_beats = 64 // bytes_per_beat
 
         # Create first descriptor with CHAIN flag pointing to second
-        desc1 = DmaDescriptor(
-            opcode=DmaOpcode.NOP,
-            flags=DmaFlags.CHAIN,
+        desc1 = BlockMoverDescriptor(
+            opcode=BlockMoverOpcode.NOP,
+            flags=BlockMoverFlags.CHAIN,
             next_desc=0x2000,  # Next descriptor at 0x2000
         )
         desc1_bytes = desc1.to_bytes()
@@ -485,14 +485,14 @@ class TestDescriptorEngine:
     def test_interrupt_on_complete(self, config):
         """Test that INTERRUPT_ON_COMPLETE flag triggers interrupt."""
         engine = DescriptorEngine(config)
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
         bytes_per_beat = buswidth // 8
         desc_beats = 64 // bytes_per_beat
 
         # Create NOP descriptor with interrupt flag
-        desc = DmaDescriptor(
-            opcode=DmaOpcode.NOP,
-            flags=DmaFlags.INTERRUPT_ON_COMPLETE,
+        desc = BlockMoverDescriptor(
+            opcode=BlockMoverOpcode.NOP,
+            flags=BlockMoverFlags.INTERRUPT_ON_COMPLETE,
         )
         desc_bytes = desc.to_bytes()
 
@@ -569,7 +569,7 @@ class TestDescriptorEngineVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        config = SystolicConfig(dma_buswidth=128, dma_maxbytes=64)
+        config = SystolicConfig(blockmover_buswidth=128, blockmover_maxbytes=64)
         engine = DescriptorEngine(config)
 
         output = verilog.convert(engine, name="DescriptorEngine")
@@ -595,18 +595,20 @@ class TestDescriptorEngineTransfers:
     @pytest.mark.parametrize(
         ("opcode", "beats"),
         [
-            (DmaOpcode.MEMCPY, 1),
-            (DmaOpcode.MEMCPY, 4),
-            (DmaOpcode.MEMCPY, 300),  # two bursts: 256 + 44
-            (DmaOpcode.FILL, 4),
-            (DmaOpcode.FILL, 300),
+            (BlockMoverOpcode.MEMCPY, 1),
+            (BlockMoverOpcode.MEMCPY, 4),
+            (BlockMoverOpcode.MEMCPY, 300),  # two bursts: 256 + 44
+            (BlockMoverOpcode.FILL, 4),
+            (BlockMoverOpcode.FILL, 300),
         ],
     )
     def test_full_transfer(self, opcode, beats):
-        config = SystolicConfig(dma_buswidth=128, dma_maxbytes=64, grid_rows=4, grid_cols=4)
+        config = SystolicConfig(
+            blockmover_buswidth=128, blockmover_maxbytes=64, grid_rows=4, grid_cols=4
+        )
         engine = DescriptorEngine(config)
-        bpb = config.dma_buswidth // 8
-        desc_bytes = DmaDescriptor(
+        bpb = config.blockmover_buswidth // 8
+        desc_bytes = BlockMoverDescriptor(
             opcode=opcode, length=beats * bpb, src_addr=0x10000, dst_addr=0x80000
         ).to_bytes()
         log = {"read_bursts": [], "write_bursts": [], "wlast_at": [], "written": 0}
@@ -688,7 +690,7 @@ class TestDescriptorEngineTransfers:
         assert state["finished"] and state["done"], "descriptor did not complete"
         expected_bursts = [min(256, beats - i) for i in range(0, beats, 256)]
         assert log["write_bursts"] == expected_bursts
-        if opcode == DmaOpcode.MEMCPY:
+        if opcode == BlockMoverOpcode.MEMCPY:
             assert log["read_bursts"] == expected_bursts
         assert log["written"] == beats, f"wrote {log['written']} of {beats} beats"
         assert log["wlast_at"] == expected_bursts, "wlast must mark the last beat of each burst"

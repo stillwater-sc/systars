@@ -1,1 +1,0 @@
-# Accumulator cocotb tests

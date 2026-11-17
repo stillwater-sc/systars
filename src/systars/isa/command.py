@@ -3,7 +3,7 @@ The command port shared by the ISA instructions (``Matmul``, ``Conv2d``).
 
 An ISA instruction issues the same commands a host would: each names its target
 process (``cmd_type``, the ``SystolicTop.CTRL_*`` values) and that process's own
-opcode (``DmaOpcode`` for LOAD/STORE, ``ExecOpcode`` for EXECUTE), with the fields
+opcode (``BlockMoverOpcode`` for LOAD/STORE, ``ExecOpcode`` for EXECUTE), with the fields
 ``SystolicTop`` takes. ``connect_to_top`` wires an instruction straight to a
 ``SystolicTop``.
 
@@ -14,7 +14,7 @@ process's queue has room (``cmd_ready``), and is done once every STORE it issued
 has completed (``cmd_store_completed``): its results are in L3.
 
 ``TileBuffers`` is the instruction's buffer schedule: ``buffers`` A tile slots and
-``buffers`` B tile slots in L2, and ``buffers`` accumulator slots, used in ring
+``buffers`` B tile slots in L2, and ``buffers`` Combiner slots, used in ring
 order. Two buffers let the BlockMover fill the next tile's slot while the Streamer
 works on the current one; one serializes them. An OS COMPUTE reads both tiles of
 its pair, so OS tracks the pair with the A slot's credit alone: the A tile's LOAD
@@ -111,59 +111,61 @@ class TileBuffers:
     """Ring-ordered tile slots for an instruction on a ``dim x dim`` array.
 
     L2 slot ``n`` (A) is scratchpad rows ``[n*dim, (n+1)*dim)``; L2 slot
-    ``buffers + n`` (B) is the ``n``-th tile after the A tiles; accumulator slot
-    ``n`` is accumulator rows ``[n*dim, (n+1)*dim)``. Scratchpad and accumulator
+    ``buffers + n`` (B) is the ``n``-th tile after the A tiles; Combiner slot
+    ``n`` is Combiner rows ``[n*dim, (n+1)*dim)``. Scratchpad and Combiner
     rows are linear in the local address (``LocalAddr``: the bank is the low bits).
     """
 
     def __init__(self, config: SystolicConfig, dim: int, buffers: int, owner: str):
         if buffers < 1:
             raise ValueError(f"{owner}: buffers must be at least 1, got {buffers}")
-        if config.l2_slots < 2 * buffers or config.acc_slots < buffers:
+        if config.l2_slots < 2 * buffers or config.combiner_slots < buffers:
             raise ValueError(
                 f"{owner} with {buffers} buffers needs {2 * buffers} L2 slots and "
-                f"{buffers} accumulator slots (config has {config.l2_slots} and "
-                f"{config.acc_slots})"
+                f"{buffers} Combiner slots (config has {config.l2_slots} and "
+                f"{config.combiner_slots})"
             )
-        if config.sp_total_rows < 2 * buffers * dim or config.acc_total_rows < buffers * dim:
+        if config.sp_total_rows < 2 * buffers * dim or config.combiner_total_rows < buffers * dim:
             raise ValueError(
                 f"{owner} with {buffers} buffers needs {2 * buffers * dim} scratchpad rows "
-                f"and {buffers * dim} accumulator rows"
+                f"and {buffers * dim} Combiner rows"
             )
         self.dim, self.buffers = dim, buffers
-        self.acc_flag = LocalAddr(config).make_acc_addr(0, 0)
+        self.combiner_flag = LocalAddr(config).make_combiner_addr(0, 0)
 
     def build(self, m: Module):
         """Create the ring counters, slot tags and slot addresses."""
         dim, buffers = self.dim, self.buffers
         self.l2_n = Signal(range(buffers), name="l2_buffer")  # the A/B pair in use
-        self.acc_n = Signal(range(buffers), name="acc_buffer")
+        self.combiner_n = Signal(range(buffers), name="combiner_buffer")
         self.a_slot = Signal(4, name="a_slot")
         self.b_slot = Signal(4, name="b_slot")
-        self.acc_slot = Signal(4, name="acc_slot")
+        self.combiner_slot = Signal(4, name="combiner_slot")
         self.a_addr = Signal(32, name="sp_a_addr")
         self.b_addr = Signal(32, name="sp_b_addr")
-        self.acc_addr = Signal(32, name="acc_c_addr")
+        self.combiner_addr = Signal(32, name="combiner_c_addr")
         m.d.comb += [
             self.a_slot.eq(self.l2_n),
             self.b_slot.eq(buffers + self.l2_n),
-            self.acc_slot.eq(self.acc_n),
+            self.combiner_slot.eq(self.combiner_n),
             self.a_addr.eq(self.l2_n * dim),
             self.b_addr.eq((buffers + self.l2_n) * dim),
-            self.acc_addr.eq(self.acc_flag | (self.acc_n * dim)),
+            self.combiner_addr.eq(self.combiner_flag | (self.combiner_n * dim)),
         ]
         return self
 
     def reset(self):
-        return [self.l2_n.eq(0), self.acc_n.eq(0)]
+        return [self.l2_n.eq(0), self.combiner_n.eq(0)]
 
     def next_l2(self):
         """Statements that move on to the next A/B slot pair."""
         return [self.l2_n.eq(Mux(self.l2_n == self.buffers - 1, 0, self.l2_n + 1))]
 
-    def next_acc(self):
-        """Statements that move on to the next accumulator slot."""
-        return [self.acc_n.eq(Mux(self.acc_n == self.buffers - 1, 0, self.acc_n + 1))]
+    def next_combiner(self):
+        """Statements that move on to the next Combiner slot."""
+        return [
+            self.combiner_n.eq(Mux(self.combiner_n == self.buffers - 1, 0, self.combiner_n + 1))
+        ]
 
     # cmd_sync values of the commands a K tile issues
 
@@ -179,14 +181,14 @@ class TileBuffers:
         return Sync.encode(src=slot, wait=True, release=True)
 
     def compute(self, first_k, last_k, slot=None, acquire=None):
-        """COMPUTE: consumes the streamed tile (default: A); fills the accumulator
-        tile across the K steps. It takes the accumulator credit on the first K step
-        (``acquire``, default ``first_k``), unless a LOAD into the accumulator took it."""
+        """COMPUTE: consumes the streamed tile (default: A); fills the Combiner
+        tile across the K steps. It takes the Combiner credit on the first K step
+        (``acquire``, default ``first_k``), unless a LOAD into the Combiner took it."""
         slot = self.a_slot if slot is None else slot
         acquire = first_k if acquire is None else acquire
         return Sync.encode(
             src=slot, wait=True, release=True,
-            dst=self.acc_slot, acquire=acquire, signal=last_k,
+            dst=self.combiner_slot, acquire=acquire, signal=last_k,
         )  # fmt: skip
 
     @staticmethod
@@ -195,8 +197,8 @@ class TileBuffers:
         return Cat(~first_k, ~last_k)
 
     def store(self):
-        """STORE: waits for the result token, returns the accumulator credit."""
-        return Sync.encode(src=self.acc_slot, wait=True, release=True)
+        """STORE: waits for the result token, returns the Combiner credit."""
+        return Sync.encode(src=self.combiner_slot, wait=True, release=True)
 
 
 def connect_to_top(m: Module, isa, top) -> None:

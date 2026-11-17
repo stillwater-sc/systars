@@ -856,7 +856,7 @@ This provides flexibility to configure SYSTARS for different market segments wit
 
 - [Implementation Plan](../plan/implementation.md)
 - [ISA Instructions](../plan/isa-instructions.md)
-- [DMA Descriptors](../architecture/dma-descriptors.md)
+- [BlockMover Descriptors](../architecture/blockmover-descriptors.md)
 
 ---
 
