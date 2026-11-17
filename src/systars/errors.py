@@ -10,11 +10,15 @@ its ``error`` bit rises), and ``SystolicTop`` latches the first error event of a
   macros can't take), SYNC (a credit or token protocol error, in one of the two slot pools)
   or AXI (an error response);
 - the **kind**, from that source's table below;
-- the **command**: the one the responsible controller started last (its type and ID), when
-  the kind names a controller and it has started one. A slot number past the pool comes
-  from a command that can never start, so it names the command at the head of that
-  controller's queue. The Streamer runs commands back to back, so for an L1 or L2 error
-  the named command can be the one after the one at fault;
+- the **command** (its type and ID), when the kind names a controller:
+  - a SYNC fault at a command's completion (a signal or a release,
+    ``SlotPool.error_at_completion``) names the command that completed, though a later one
+    may have started since or wait at the queue head;
+  - a slot number past the pool at a start or a head check comes from a command that can
+    never start, so it names the command at the head of that controller's queue;
+  - every other kind names the command the controller started last, once it has started
+    one. The Streamer runs commands back to back, so for an L1 or L2 error the named
+    command can be the one after the one at fault;
 - the **cycle** it was seen (``ERR_CYCLE``, from the free-running ``CYCLE`` counter), and
   whether another source raised an error in the same clock (``MULTI``).
 

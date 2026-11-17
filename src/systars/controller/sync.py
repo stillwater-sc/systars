@@ -203,6 +203,9 @@ class SlotPool(Component):
                 "ready": Out(slots),
                 "error": Out(1),
                 "error_kind": Out(4),
+                # The first error came from a completion's transition (a signal or a
+                # release), not from a start or a queue-head check (errors.py)
+                "error_at_completion": Out(1),
             }
         )
 
@@ -228,15 +231,22 @@ class SlotPool(Component):
 
         error = Signal()
         kind = Signal(4)
-        m.d.comb += [self.error.eq(error), self.error_kind.eq(kind)]
+        at_completion = Signal()
+        m.d.comb += [
+            self.error.eq(error),
+            self.error_kind.eq(kind),
+            self.error_at_completion.eq(at_completion),
+        ]
 
-        def fault(k: SlotError):
-            """Raise the error (in the current condition); the first one's kind is kept."""
+        def fault(k: SlotError, completion: bool = False):
+            """Raise the error (in the current condition); the first one's kind is kept,
+            and whether it came from a completion (a signal or a release)."""
             m.d.sync += error.eq(1)
             with m.If(~error):
-                m.d.sync += kind.eq(k)
+                m.d.sync += [kind.eq(k), at_completion.eq(completion)]
 
-        def transition(strobe, slot, src, dst, bad: SlotError, no_slot: SlotError):
+        def transition(strobe, slot, src, dst, bad: SlotError, no_slot: SlotError,
+                       completion: bool = False):  # fmt: skip
             sources = src if isinstance(src, tuple) else (src,)
             for s in range(n):
                 with m.If(strobe & (slot == s)):
@@ -246,10 +256,10 @@ class SlotPool(Component):
                     with m.If(from_ok):
                         m.d.sync += state[s].eq(dst)
                     with m.Else():
-                        fault(bad)
+                        fault(bad, completion)
             if n < 1 << SLOT_BITS:
                 with m.If(strobe & (slot >= n)):
-                    fault(no_slot)
+                    fault(no_slot, completion)
 
         # Each transition starts from a different state, so at most one applies to a
         # slot in a cycle (a take and a RELEASE without WAIT of one READY slot at once
@@ -258,25 +268,25 @@ class SlotPool(Component):
         transition(self.prod_take, self.prod_slot, SlotState.FREE, SlotState.OWNED,
                    E.TAKE_NOT_FREE, E.PROD_NO_SUCH_SLOT)  # fmt: skip
         transition(self.prod_signal, self.prod_signal_slot, SlotState.OWNED, SlotState.READY,
-                   E.SIGNAL_NOT_OWNED, E.PROD_NO_SUCH_SLOT)  # fmt: skip
+                   E.SIGNAL_NOT_OWNED, E.PROD_NO_SUCH_SLOT, completion=True)  # fmt: skip
         if self.producers == 2:
             transition(self.fill_take, self.fill_slot, SlotState.FREE, SlotState.OWNED,
                        E.FILL_TAKE_NOT_FREE, E.FILL_NO_SUCH_SLOT)  # fmt: skip
             transition(self.fill_signal, self.fill_signal_slot, SlotState.OWNED, SlotState.READY,
-                       E.FILL_SIGNAL_NOT_OWNED, E.FILL_NO_SUCH_SLOT)  # fmt: skip
+                       E.FILL_SIGNAL_NOT_OWNED, E.FILL_NO_SUCH_SLOT, completion=True)  # fmt: skip
             # Two producers moving one slot in a clock (a take is excluded above)
             with m.If(
                 self.prod_signal
                 & self.fill_signal
                 & (self.prod_signal_slot == self.fill_signal_slot)
             ):
-                fault(E.DOUBLE_SIGNAL)
+                fault(E.DOUBLE_SIGNAL, completion=True)
         transition(self.cons_take, self.cons_slot, SlotState.READY, SlotState.READING,
                    E.WAIT_NOT_READY, E.CONS_NO_SUCH_SLOT)  # fmt: skip
         transition(
             self.cons_release, self.cons_release_slot,
             (SlotState.READING, SlotState.READY), SlotState.FREE,
-            E.RELEASE_NOT_HELD, E.CONS_NO_SUCH_SLOT,
+            E.RELEASE_NOT_HELD, E.CONS_NO_SUCH_SLOT, completion=True,
         )  # fmt: skip
         with m.If(self.cons_take & self.cons_release & (self.cons_slot == self.cons_release_slot)):
             fault(E.TAKE_AND_RELEASE)

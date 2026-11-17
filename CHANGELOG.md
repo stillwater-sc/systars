@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     into names. `tests/unit/test_first_error.py` checks every source.
   - **systars-only.** kpugen's CSRs (`ERR_INFO`, `ERR_CYCLE`, `CYCLE`) and its runtime's
     reporting have no counterpart here.
+  - **A review fix ahead of kpugen** (esg#106). A SYNC fault at a command's completion (a
+    signal or a release) now names the command that completed, not the one started last or
+    waiting at the queue head (`SlotPool.error_at_completion`).
 
 - **The Combiner replaces the accumulator** (#38, 2026-11-17; port of
   branes-ai/embodied-ai-soc-generator#74, #75, #76 and #77, kpugen PRs #78, #79, #81 and

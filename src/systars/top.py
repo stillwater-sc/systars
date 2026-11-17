@@ -649,6 +649,26 @@ class SystolicTop(Component):
             last[ctrl_type], started[ctrl_type] = last_id, has_started
             head[ctrl_type] = getattr(self, f"{name}_started_id")
 
+        # The command each completion event belongs to, as it fired: a pool's signal or
+        # release at a command's completion names that command, though a later one may
+        # have started since (or wait at the queue head)
+        def last_of(pulse, ident, name):
+            held = Signal(8, name=f"{name}_done_id")
+            with m.If(pulse):
+                m.d.sync += held.eq(ident)
+            return held
+
+        done = {
+            "bm_in": last_of(self.bm_in_completed, self.bm_in_completed_id, "bm_in"),
+            "bm_out": last_of(self.bm_out_completed, self.bm_out_completed_id, "bm_out"),
+            "streamer": last_of(
+                self.streamer_completed, self.streamer_completed_id, "streamer"
+            ),  # fmt: skip
+            "streamer_result": last_of(
+                self.streamer_result, self.streamer_result_id, "streamer_result"
+            ),  # fmt: skip
+        }
+
         def risen(bit, name):
             prev = Signal(name=f"{name}_prev")
             m.d.sync += prev.eq(bit)
@@ -670,32 +690,49 @@ class SystolicTop(Component):
             (combiner_pool, SlotPoolId.COMBINER,
              {self.CTRL_EXEC: prod, self.CTRL_LOAD: fill, self.CTRL_STORE: cons}),
         )  # fmt: skip
+        # Per pool and process: the completion event that drives its signal or release
+        # (L2: a LOAD signals on its completion, the Streamer releases on its own; the
+        # Combiner: the Streamer signals on its result, a LOAD fills and a STORE releases
+        # on their completions)
+        completion_ids = {
+            SlotPoolId.L2: {self.CTRL_LOAD: done["bm_in"], self.CTRL_EXEC: done["streamer"]},
+            SlotPoolId.COMBINER: {self.CTRL_EXEC: done["streamer_result"],
+                                  self.CTRL_LOAD: done["bm_in"], self.CTRL_STORE: done["bm_out"]},
+        }  # fmt: skip
         l2_writes = {L2Error.WRITE_PAST_L2, L2Error.WRITE_BANK_BUSY}  # the LOAD's writes
 
-        # Events, in priority order for a clock with several:
-        # (fired, source, kind, names a process, the process, its queue head's command)
+        # Events, in priority order for a clock with several: (fired, source, kind, names
+        # a process, the process, its queue head's command, a completion's command and
+        # its ID)
         events = []
         l2_kind = scratchpad.error_kind
         l2_proc = Mux(any_of(l2_kind, l2_writes), self.CTRL_LOAD, self.CTRL_EXEC)
-        events.append((risen(scratchpad.error, "l2_error"), ErrorSource.L2, l2_kind, 1, l2_proc, 0))
+        events.append((risen(scratchpad.error, "l2_error"), ErrorSource.L2, l2_kind, 1, l2_proc,
+                       0, 0, 0))  # fmt: skip
         events.append((risen(streamer.error, "l1_error"), ErrorSource.L1,
-                       streamer.error_kind, 1, self.CTRL_EXEC, 0))  # fmt: skip
+                       streamer.error_kind, 1, self.CTRL_EXEC, 0, 0, 0))  # fmt: skip
         for pool, pool_id, owners in pools:
             kind = pool.error_kind
             tag = pool_id.name.lower()
             proc = Signal(2, name=f"{tag}_slot_err_proc")
             named = Signal(name=f"{tag}_slot_err_named")
+            done_id = Signal(8, name=f"{tag}_slot_err_done_id")
             for ctrl_type, kinds in owners.items():
                 with m.If(any_of(kind, kinds)):
-                    m.d.comb += [proc.eq(ctrl_type), named.eq(1)]
+                    m.d.comb += [proc.eq(ctrl_type), named.eq(1),
+                                 done_id.eq(completion_ids[pool_id][ctrl_type])]  # fmt: skip
+            at_done = pool.error_at_completion
+            # A slot past the pool names the queue head only when a start or a head check
+            # raised it; at a completion it is the completing command's
             events.append((risen(pool.error, f"{tag}_slot_error"), ErrorSource.SYNC,
-                           sync_kind(pool_id, 0) | kind, named, proc, any_of(kind, queued)))  # fmt: skip
+                           sync_kind(pool_id, 0) | kind, named, proc,
+                           any_of(kind, queued) & ~at_done, at_done, done_id))  # fmt: skip
         for write, valid, ready, resp, ctrl_type in (
             (False, self.axi_rvalid, self.axi_rready, self.axi_rresp, self.CTRL_LOAD),
             (True, self.axi_bvalid, self.axi_bready, self.axi_bresp, self.CTRL_STORE),
         ):
             events.append((valid & ready & (resp != 0), ErrorSource.AXI,
-                           axi_kind(write, 0) | resp << 2, 1, ctrl_type, 0))  # fmt: skip
+                           axi_kind(write, 0) | resp << 2, 1, ctrl_type, 0, 0, 0))  # fmt: skip
 
         # The highest-priority event of the clock, and whether there was another
         any_event = Signal()
@@ -704,10 +741,13 @@ class SystolicTop(Component):
         named = Signal()
         proc = Signal(2)
         from_head = Signal()
-        for fired, src, k, nm, p, hd in reversed(events):
+        from_done = Signal()
+        done_id = Signal(8)
+        for fired, src, k, nm, p, hd, dn, dn_id in reversed(events):
             with m.If(fired):
                 m.d.comb += [any_event.eq(1), source.eq(src), kind.eq(k), named.eq(nm),
-                             proc.eq(p), from_head.eq(hd)]  # fmt: skip
+                             proc.eq(p), from_head.eq(hd), from_done.eq(dn),
+                             done_id.eq(dn_id)]  # fmt: skip
         multi = Signal()
         m.d.comb += multi.eq(sum(e[0].as_unsigned() for e in events) > 1)
         cmd_id = Signal(8)
@@ -716,10 +756,11 @@ class SystolicTop(Component):
             for ctrl_type in last:
                 with m.Case(ctrl_type):
                     m.d.comb += [
-                        cmd_id.eq(Mux(from_head, head[ctrl_type], last[ctrl_type])),
+                        cmd_id.eq(Mux(from_done, done_id,
+                                      Mux(from_head, head[ctrl_type], last[ctrl_type]))),
                         # A process that has started nothing has no last command to name
-                        cmd_valid.eq(named & (from_head | started[ctrl_type])),
-                    ]
+                        cmd_valid.eq(named & (from_done | from_head | started[ctrl_type])),
+                    ]  # fmt: skip
 
         valid = Signal()
         info = Signal(32)

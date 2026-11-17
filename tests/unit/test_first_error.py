@@ -80,6 +80,11 @@ def test_every_slot_error_kind_is_provoked():
     assert set(SLOT_CASES) == set(SlotError)
 
 
+# The kinds a completion raises (a signal or a release), so the tile names the command that
+# completed; the others come from a start or a queue-head check
+AT_COMPLETION = {E.SIGNAL_NOT_OWNED, E.FILL_SIGNAL_NOT_OWNED, E.DOUBLE_SIGNAL, E.RELEASE_NOT_HELD}
+
+
 @pytest.mark.parametrize("kind", list(SLOT_CASES), ids=lambda k: k.name)
 def test_the_slot_pool_names_the_protocol_error(kind):
     producers, before, breaking = SLOT_CASES[kind]
@@ -93,6 +98,7 @@ def test_the_slot_pool_names_the_protocol_error(kind):
         await ctx.tick()
         assert ctx.get(pool.error)
         assert ctx.get(pool.error_kind) == kind
+        assert ctx.get(pool.error_at_completion) == (kind in AT_COMPLETION)
 
     run_sim(pool, tb)
 
@@ -234,6 +240,46 @@ def test_a_command_that_never_starts_is_named_from_its_queue():
     run_sim(top, tb, max_cycles=2_000)
     kind = sync_kind(SlotPoolId.L2, SlotError.PROD_NO_SUCH_SLOT)
     assert out["info"] == pack(ErrorSource.SYNC, kind, cmd_type=SystolicTop.CTRL_LOAD, cmd_id=9)
+
+
+def _completion_fault(first_sync, second):
+    """COMPUTE 7 with ``first_sync``, then ``second`` (the fields of command 8) pushed
+    behind it: the capture after the first sync error."""
+    cfg = SystolicConfig(grid_rows=2, grid_cols=2, tile_rows=1, tile_cols=1, spad_read_delay=4)
+    top = SystolicTop(cfg)
+    rows = cfg.grid_rows
+    g = cfg.l2_group_rows
+    out = {}
+
+    async def tb(ctx):
+        compute = {"type": SystolicTop.CTRL_EXEC, "opcode": ExecOpcode.COMPUTE, "rs1": 0,
+                   "rs2": g, "k_dim": rows}  # fmt: skip
+        await _issue(ctx, top, **compute, rd=0, id=7, sync=first_sync)
+        await _issue(ctx, top, **compute, rd=rows, id=8, **second)
+        await _until_error(ctx, top, top.sync_error, limit=400)
+        await ctx.tick()
+        out["info"] = ctx.get(top.err_info)
+
+    run_sim(top, tb, max_cycles=2_000)
+    return out["info"]
+
+
+def test_a_release_past_the_pool_names_the_command_that_completed():
+    """COMPUTE 7 RELEASEs slot 15 without a WAIT, so it starts, and the fault comes at its
+    completion, while an untracked COMPUTE 8 waits at the queue head: the capture names 7,
+    the command whose release broke the protocol, not the queued 8."""
+    info = _completion_fault(Sync.encode(src=15, release=True), {"sync": 0})
+    kind = sync_kind(SlotPoolId.L2, SlotError.CONS_NO_SUCH_SLOT)
+    assert info == pack(ErrorSource.SYNC, kind, cmd_type=SystolicTop.CTRL_EXEC, cmd_id=7)
+
+
+def test_a_completion_fault_names_its_command_though_a_later_one_started():
+    """COMPUTE 7 RELEASEs an L2 slot it never waited for; COMPUTE 8 starts before 7
+    completes. The fault comes at 7's completion: the capture names 7, not the command the
+    Streamer started last."""
+    info = _completion_fault(Sync.encode(src=1, release=True), {"sync": Sync.encode(dst=1)})
+    kind = sync_kind(SlotPoolId.L2, SlotError.RELEASE_NOT_HELD)
+    assert info == pack(ErrorSource.SYNC, kind, cmd_type=SystolicTop.CTRL_EXEC, cmd_id=7)
 
 
 # =============================================================================
