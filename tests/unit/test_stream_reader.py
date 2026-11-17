@@ -25,7 +25,6 @@ class TestStreamReader:
         """Configuration for tests."""
         return SystolicConfig(
             blockmover_buswidth=128,
-            blockmover_maxbytes=64,
             grid_rows=4,
             grid_cols=4,
             tile_rows=1,
@@ -275,7 +274,7 @@ class TestStreamReaderVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        config = SystolicConfig(blockmover_buswidth=128, blockmover_maxbytes=64)
+        config = SystolicConfig(blockmover_buswidth=128)
         reader = StreamReader(config)
 
         output = verilog.convert(reader, name="StreamReader")

@@ -27,7 +27,6 @@ class TestStoreController:
         """Configuration for tests."""
         return SystolicConfig(
             blockmover_buswidth=128,
-            blockmover_maxbytes=64,
             grid_rows=4,
             grid_cols=4,
             tile_rows=1,
@@ -449,9 +448,7 @@ class TestStoreControllerVerilogGeneration:
             pytest.skip("Yosys not found")
 
         # 4 x 32-bit Combiner row = 128 bits: one row per 128-bit BlockMover beat
-        config = SystolicConfig(
-            grid_rows=4, grid_cols=4, blockmover_buswidth=128, blockmover_maxbytes=64
-        )
+        config = SystolicConfig(grid_rows=4, grid_cols=4, blockmover_buswidth=128)
         ctrl = StoreController(config)
 
         output = verilog.convert(ctrl, name="StoreController")
