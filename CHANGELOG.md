@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Run tracing for a tile, and the differential harness** (#18, part; kpu-gen's
+  `kpu_gen.trace` and `tests/fuzz`, branes-ai/embodied-ai-soc-generator #27, #45, #83, #84,
+  #85).
+  - **`systars.trace`.** `TileRecorder` taps a `SystolicTop` simulation and writes a trace
+    bundle in kpu-gen's format: every command from accept to completion with its AXI
+    transactions, the internal lanes (`lanes.py`: L2 ports, slots, the Combiner, each
+    process's queue; the fine L1 and result-buffer lanes), and the first error.
+    `check_trace` checks its invariants, `render` draws a text report and an SVG timeline,
+    and `perf.summary` summarises it. `python -m systars.trace BUNDLE [--check] [--svg DIR]
+    [--perf]` reports on a saved one.
+  - **What changed from kpu-gen.** `lanes.py`, `check.py`, `render.py` and `perf.py` are
+    kpu-gen's. `probes.py` and `recorder.py` keep only the standalone-tile path: no NoC
+    links, SoC DMA, memory cells or annotation-derived residencies, and those tables stay
+    empty.
+  - **The differential harness** (`tests/fuzz`). It runs random `Matmul` programs against
+    the reference models, shrinks a failure and writes its trace. `just fuzz [SEEDS]` and
+    `just tile-trace [SEED]` run it, and `pytest tests/fuzz` runs a default set.
+    `tests/unit/test_tile_trace.py` is kpu-gen's, without its SoC test.
+  - **Not yet.** The `.dflow` export for kpu-sim's viewer needs an issuer that annotates
+    its commands (the rest of #18). New guide: `docs/guides/tile-trace.md`.
+
 - **The tile's queued and forward-hit status outputs** (#52, 2026-11-17; the systolic part
   of branes-ai/embodied-ai-soc-generator#85, kpugen PR #93).
   - **Queued ports.** `SystolicTop` gains `bm_in_queued`, `bm_out_queued` and

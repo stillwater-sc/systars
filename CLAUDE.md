@@ -137,6 +137,11 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 - A first-error capture (`errors.py`, #51): `SystolicTop` latches the first L1, L2, sync or
   AXI error, its kind, the command responsible and the clock (`err_info`, `err_cycle`,
   `err_rearm`; kpugen's tile maps them to its `ERR_*` CSRs)
+- Run tracing (`trace/`, #18, kpu-gen's trace package for a standalone tile): `TileRecorder`
+  records a `SystolicTop` run (commands, internal lanes, first error) as a kpu-gen trace
+  bundle; `python -m systars.trace BUNDLE --check --svg DIR` reports on it. The differential
+  harness (`tests/fuzz`, `just fuzz`, `just tile-trace SEED`) runs random Matmul programs
+  against the reference models (`docs/guides/tile-trace.md`)
 - Credits and tile-ready tokens (`controller/sync.py`): `SystolicTop` queues each process's
   commands and starts one only when its whole-tile slot credits and tokens are there
   (`cmd_sync`; `tests/unit/test_credits.py`). A LOAD into the Combiner is the
