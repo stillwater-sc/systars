@@ -106,6 +106,7 @@ references:
     institution:
       name: Yale University
     thesis-type: PhD
+    year: 1993
   - type: conference-paper
     title: "Gemmini: Enabling Systematic Deep-Learning Architecture Evaluation via Full-Stack Integration"
     authors:
