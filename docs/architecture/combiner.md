@@ -2,9 +2,9 @@
 
 The **Combiner** is the KPU tile's unit on the result path, between L1 and L2. It is a new
 concept, added on 2026-11-14 for the KPU RTL generator
-(branes-ai/embodied-ai-soc-generator#68). systars does not have it yet (#38). In kpu-sim it
-is the Vector Engine, renamed and given the merge of partials (stillwater-sc/kpu-sim#427,
-stillwater-sc/kpu-sim#429). It replaces systars's accumulator.
+(branes-ai/embodied-ai-soc-generator#68), and ported to systars in #38. In kpu-sim it is
+the Vector Engine, renamed and given the merge of partials (stillwater-sc/kpu-sim#427,
+stillwater-sc/kpu-sim#429). It replaced systars's accumulator.
 
 ```text
 fabric → L1 result buffers → Combiner → L2 (scratchpad) → BlockMover (STORE) → L3

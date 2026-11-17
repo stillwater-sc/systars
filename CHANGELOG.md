@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The docs (`docs/architecture/combiner.md`, the lineage page, `NOTICE`, README,
   `CLAUDE.md`) no longer describe a Gemmini-style accumulator.
+  A review fix ahead of kpugen: when requantizing first, a CLIP bound outside the narrow
+  range now saturates the narrow result instead of wrapping it (RTL and model).
 
 - **A banked L2 of two bank groups of 1R1W macros** (#17, 2026-11-17; port of
   branes-ai/embodied-ai-soc-generator#24, kpugen PR #73). The scratchpad is now built the

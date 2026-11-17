@@ -136,6 +136,9 @@ def set_profile(ctx, dut, n, profile):
             Activation.CLIP.value,
             Requant(mul=1, shift=2, enable=True, act_first=True, clip_lo=-100, clip_hi=40),
         ),  # fmt: skip
+        # CLIP bounds outside int8 after requantizing: the result saturates, not wraps
+        (Activation.CLIP.value, Requant(enable=True, clip_lo=200, clip_hi=300)),
+        (Activation.CLIP.value, Requant(enable=True, clip_lo=-300, clip_hi=-200)),
     ],
 )
 def test_the_combiner_applies_it_on_the_final_commit_only(code, rq):

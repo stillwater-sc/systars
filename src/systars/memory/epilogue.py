@@ -85,7 +85,8 @@ class Profile:
     """Apply the SFU before requantizing (on the wide results)."""
     clip_lo: int = 0
     """CLIP's lower bound (signed 16-bit), in the domain the SFU works in: the narrow
-    results when requantizing first, else the wide ones. Keep the bounds within it."""
+    results when requantizing first, else the wide ones. A bound outside the narrow
+    range saturates the narrow result (it doesn't wrap)."""
     clip_hi: int = 0
     """CLIP's upper bound (signed 16-bit)."""
     sfu: int = 0
@@ -159,8 +160,9 @@ def epilogue_model(values: list[int], cfg: Profile, out_bits: int) -> list[int]:
             out.append(sfu_model(x, sfu, cfg))
         elif cfg.act_first:
             out.append(requant_model(sfu_model(x, sfu, cfg), cfg, out_bits))
-        else:
-            out.append(sfu_model(requant_model(x, cfg, out_bits), sfu, cfg))
+        else:  # the SFU on the narrow result; CLIP's bounds may lie outside it
+            lo, hi = -(1 << (out_bits - 1)), (1 << (out_bits - 1)) - 1
+            out.append(min(hi, max(lo, sfu_model(requant_model(x, cfg, out_bits), sfu, cfg))))
     return out
 
 
@@ -229,11 +231,15 @@ class EpilogueLane(Component):
         m.d.comb += src.eq(Mux(self.act_first, act, self.x))
         rq = Signal(signed(self.narrow))
         m.d.comb += rq.eq(requantize(src, self.mul, self.shift, self.narrow))
+        # The SFU after requantizing works on the narrow result, but CLIP's 16-bit bounds
+        # may lie outside it: saturate, as the model does, rather than wrap
+        post = Signal(signed(16))
+        m.d.comb += post.eq(sfu(rq, self.code, self.clip_lo, self.clip_hi))
+        lo, hi = -(1 << (self.narrow - 1)), (1 << (self.narrow - 1)) - 1
+        post_sat = Mux(post < lo, lo, Mux(post > hi, hi, post))
         m.d.comb += [
             self.wide_out.eq(act),
-            self.narrow_out.eq(
-                Mux(self.act_first, rq, sfu(rq, self.code, self.clip_lo, self.clip_hi))
-            ),
+            self.narrow_out.eq(Mux(self.act_first, rq, post_sat)),
         ]
         return m
 
