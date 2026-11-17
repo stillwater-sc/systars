@@ -18,6 +18,7 @@ from amaranth import Elaboratable, Module, Signal
 from amaranth.sim import Simulator, Tick
 
 from systars.config import SystolicConfig
+from systars.errors import L2Error
 from systars.memory.scratchpad import (
     IdealScratchpad,
     L2Layout,
@@ -343,9 +344,10 @@ class TestL2:
 
 
 class TestConflictMonitor:
-    """``error`` flags every access the macros can't take, and stays set."""
+    """``error`` flags every access the macros can't take, and stays set; ``error_kind``
+    names the first one (#84)."""
 
-    def run_pairs(self, cfg, pairs, *, expect_error):
+    def run_pairs(self, cfg, pairs, *, expect_error, kind=None):
         dut = Scratchpad(cfg)
         rows = fill(cfg)
 
@@ -358,15 +360,19 @@ class TestConflictMonitor:
             assert got_a == [rows[a] for a, _ in pairs if a is not None]
             await ctx.tick().repeat(3)
             assert ctx.get(dut.error) == expect_error  # sticky
+            if kind is not None:
+                assert ctx.get(dut.error_kind) == kind
 
         run_sim(dut, tb)
 
     def test_both_reads_in_the_a_group(self):
-        self.run_pairs(small(), [(0, None), (1, 4)], expect_error=True)
+        self.run_pairs(
+            small(), [(0, None), (1, 4)], expect_error=True, kind=L2Error.READS_SAME_GROUP
+        )
 
     def test_both_reads_in_the_b_group(self):
         g = small().l2_group_rows
-        self.run_pairs(small(), [(g, g + 1)], expect_error=True)
+        self.run_pairs(small(), [(g, g + 1)], expect_error=True, kind=L2Error.READS_SAME_GROUP)
 
     def test_reads_in_different_groups_in_either_order(self):
         g = small().l2_group_rows
@@ -376,11 +382,40 @@ class TestConflictMonitor:
         """Occupancy 2: two reads of one bank two clocks apart are fine, one apart not."""
         cfg = small(l2_bank_occupancy=2, l2_macro_rows=0)
         self.run_pairs(cfg, [(0, None), (1, None), (2, None)], expect_error=False)
-        self.run_pairs(cfg, [(0, None), (2, None)], expect_error=True)
+        self.run_pairs(cfg, [(0, None), (2, None)], expect_error=True, kind=L2Error.READ_BANK_BUSY)
 
     def test_a_row_past_l2(self):
         cfg = small()
-        self.run_pairs(cfg, [(None, cfg.sp_total_rows)], expect_error=True)
+        self.run_pairs(
+            cfg, [(None, cfg.sp_total_rows)], expect_error=True, kind=L2Error.READ_B_PAST_L2
+        )
+
+    @pytest.mark.parametrize(
+        "first,kind",
+        [("write", L2Error.WRITE_PAST_L2), ("read_a", L2Error.READ_A_PAST_L2)],
+    )
+    def test_the_first_error_names_the_kind(self, first, kind):
+        """A write or a port-A read past L2, then both reads in one group: the kind stays
+        the first error's."""
+        cfg = small()
+        dut = Scratchpad(cfg)
+
+        async def tb(ctx):
+            port, addr = {"write": (dut.write_req, dut.write_addr),
+                          "read_a": (dut.read_req, dut.read_addr)}[first]  # fmt: skip
+            ctx.set(port, 1)
+            ctx.set(addr, cfg.sp_total_rows)
+            await ctx.tick()
+            ctx.set(port, 0)
+            assert ctx.get(dut.error) and ctx.get(dut.error_kind) == kind
+            ctx.set(dut.read_req, 1)
+            ctx.set(dut.read_b_req, 1)
+            ctx.set(dut.read_addr, 0)
+            ctx.set(dut.read_b_addr, 1)
+            await ctx.tick().repeat(2)
+            assert ctx.get(dut.error_kind) == kind
+
+        run_sim(dut, tb)
 
 
 @pytest.mark.parametrize("seed", range(3))

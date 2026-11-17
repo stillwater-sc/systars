@@ -17,6 +17,7 @@ from systars.controller.streamer import (
 )
 from systars.controller.sync import Sync
 from systars.core.systolic_array import SystolicArray
+from systars.errors import L1Error
 from systars.memory.scratchpad import Scratchpad
 from systars.util.commands import ExecOpcode
 
@@ -172,6 +173,7 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect
         while ctx.get(ctrl.busy) or len(log["completed"]) < len(commands):
             await ctx.tick()
         await ctx.tick().repeat(2)
+        log["error_kind"] = ctx.get(ctrl.error_kind)
         if harness.l2 is not None:
             log["l2_error"] = ctx.get(harness.l2.error)
 
@@ -285,6 +287,7 @@ class TestSignalNeedsAResult:
         log = run(Harness(config()), {}, [(opcode, {**fields, "sync": self.SIGNAL})],
                   tracked=True, expect_error=True)  # fmt: skip
         assert not log["results"]
+        assert log["error_kind"] == L1Error.SIGNAL_NO_RESULT
 
     def test_signal_on_the_result_is_not(self):
         harness = Harness(config())

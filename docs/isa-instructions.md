@@ -142,10 +142,29 @@ Two events carry each command's `cmd_sync`:
   own path, so its completion can come before that of a COMPUTE issued ahead of it. The
   credit is returned by the slot `cmd_sync` names, so the order doesn't matter.
 - **result** (`streamer_result`), when its results are in the Combiner: the result token.
-  It is always in command order. An
-untracked command (`cmd_sync` 0) runs alone and completes with its results, so a host can
-issue one command at a time. `l1_error` (sticky) reports a schedule violation, which a valid
-schedule never raises.
+  It is always in command order.
+
+An untracked command (`cmd_sync` 0) runs alone and completes with its results, so a host can
+issue one command at a time.
+
+**Errors.** The sticky error bits report what a valid program never raises:
+
+- `l1_error`: a Streamer schedule or L1 buffer violation;
+- `l2_error`: an L2 access the macros can't take;
+- `sync_error`: a credit or token protocol error;
+- the AXI error, from an error response.
+
+**The first error** (`src/systars/errors.py`, after kpugen esg#84). `SystolicTop` latches
+the first error event of all of them in `err_info`:
+
+- the source, and its kind from the source's table: for example both reads in one group,
+  a busy bank, or a slot released without a wait;
+- the command responsible (type and ID), when its process has started one;
+- whether another source fired in the same clock.
+
+`err_cycle` holds the clock it was seen, from the free-running `cycle`. Pulsing `err_rearm`
+re-arms the capture; the L1, L2 and sync bits stay set until reset.
+`FirstError.decode` turns `err_info` into names.
 
 Verified by `tests/unit/test_systolic_array.py` and `test_pe*.py` (the result clocks, back to
 back tiles, the `2R - 2` collision), `test_stream_buffer.py`, `test_streamer.py`

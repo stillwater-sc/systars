@@ -97,6 +97,7 @@ from amaranth.lib.fifo import SyncFIFO
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import Dataflow, SystolicConfig
+from ..errors import FirstErrorKind, L1Error
 from ..memory.stream_buffer import ResultBuffers, StreamBuffers
 from ..util.commands import ExecOpcode
 from .sync import Sync
@@ -122,7 +123,19 @@ class Streamer(Component):
         completed, completed_id, completed_sync: A command is done with L2
         result, result_id, result_sync: A command's results are in the Combiner
         busy, error, state_debug: Status
+        error_kind: The first error's ``L1Error`` (tiles/systolic/errors.py), from the clock
+            ``error`` rises
     """
+
+    # Each L1 buffer and the kind its error reports (its error: a load without credit, or
+    # a result buffer overflow)
+    L1_UNITS = (
+        ("a_buf", L1Error.A_LOAD_WITHOUT_CREDIT),
+        ("b_buf", L1Error.B_LOAD_WITHOUT_CREDIT),
+        ("w_buf", L1Error.W_LOAD_WITHOUT_CREDIT),
+        ("north", L1Error.NORTH_RESULT_OVERFLOW),
+        ("south", L1Error.SOUTH_RESULT_OVERFLOW),
+    )
 
     def __init__(self, config: SystolicConfig):
         """Build the ports for ``config``'s array and the L1 stream and result buffers."""
@@ -191,6 +204,7 @@ class Streamer(Component):
             "result_sync": Out(Sync.BITS),
             "busy": Out(1),
             "error": Out(1),
+            "error_kind": Out(4),
             "state_debug": Out(8),
         }
         for i in range(rows):
@@ -436,8 +450,15 @@ class Streamer(Component):
         # The Combiner token is emitted on the result event, so a tracked command
         # with SIGNAL that writes no result would leave its slot OWNED forever
         error = Signal()
-        with m.If(accept & Sync.fields(self.cmd_sync).signal & ~produces):
+        local_kind = Signal(4)  # the first of this controller's own errors
+
+        def fault(k: L1Error):
             m.d.sync += error.eq(1)
+            with m.If(~error):
+                m.d.sync += local_kind.eq(k)
+
+        with m.If(accept & Sync.fields(self.cmd_sync).signal & ~produces):
+            fault(L1Error.SIGNAL_NO_RESULT)
 
         with m.If(accept):
             with m.If(direct):
@@ -713,16 +734,23 @@ class Streamer(Component):
                 with m.Else():
                     m.d.sync += row_count.eq(row_count + 1)
             with m.Else():
-                m.d.sync += error.eq(1)
+                fault(L1Error.RESULT_WITHOUT_COMMAND)
 
         with m.If(self.array_out_collision):
-            m.d.sync += error.eq(1)
-        any_error = error | a_buf.error
-        for unit in (b_buf, w_buf, north, south):
-            if unit is not None:
-                any_error = any_error | unit.error
+            fault(L1Error.NORTH_COLLISION)
+        # This controller's own errors, then each L1 buffer's (L1_UNITS): the first to
+        # rise names the kind
+        buffers = {"a_buf": a_buf, "b_buf": b_buf, "w_buf": w_buf, "north": north,
+                   "south": south}  # fmt: skip
+        units = [(error, local_kind)] + [
+            (buffers[name].error, k) for name, k in self.L1_UNITS if buffers[name] is not None
+        ]
+        m.submodules.first_kind = first = FirstErrorKind(len(units), 4)
+        for i, (err, k) in enumerate(units):
+            m.d.comb += [getattr(first, f"error_{i}").eq(err), getattr(first, f"kind_{i}").eq(k)]
         m.d.comb += [
-            self.error.eq(any_error),
+            self.error.eq(first.error),
+            self.error_kind.eq(first.kind),
             self.busy.eq(~idle),
             self.state_debug.eq(Mux(idle, self.STATE_IDLE, self.STATE_BUSY)),
         ]

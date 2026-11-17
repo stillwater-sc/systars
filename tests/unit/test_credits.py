@@ -29,6 +29,7 @@ from amaranth import Elaboratable, Module
 
 from systars.config import Dataflow, SystolicConfig
 from systars.controller.sync import SlotPool, SlotState, Sync
+from systars.errors import SlotError
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.conv2d import Conv2d, Conv2dCmd
 from systars.isa.matmul import Matmul, MatmulCmd
@@ -78,11 +79,14 @@ def test_slot_pool_cycle_and_errors():
         assert state() == [FREE, READY] and ctx.get(pool.cons_ready)
         await pulse(pool.cons_release, pool.cons_release_slot, 1)
         assert state() == [FREE, FREE] and not ctx.get(pool.error)
-        # Releasing a slot that holds no tile is a protocol error (sticky)
+        # Releasing a slot that holds no tile is a protocol error (sticky), and its
+        # kind (#84) stays the first one's after another
         await pulse(pool.cons_release, pool.cons_release_slot, 0)
         assert state() == [FREE, FREE] and ctx.get(pool.error)
+        assert ctx.get(pool.error_kind) == SlotError.RELEASE_NOT_HELD
+        await pulse(pool.prod_signal, pool.prod_signal_slot, 0)
         await ctx.tick()
-        assert ctx.get(pool.error)
+        assert ctx.get(pool.error) and ctx.get(pool.error_kind) == SlotError.RELEASE_NOT_HELD
 
     run_sim(pool, testbench)
 
