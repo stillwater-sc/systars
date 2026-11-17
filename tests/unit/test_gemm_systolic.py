@@ -117,7 +117,7 @@ class Host:
 
 
 A_L3, B_L3, C_L3 = 0x1000, 0x4000, 0x8000
-A_SP, B_SP = 0, 128
+A_SP = 0  # L2 rows: A in the A bank group, B at the start of the B group (cfg.l2_group_rows)
 
 
 class Layout:
@@ -152,6 +152,7 @@ def gemm(cfg, mode, A, B, *, weight_rows=None, repeat=1, poison=None):
     numpy Generator) every scratchpad and Combiner word starts random, not
     zero, as on hardware with no power-up contents.
     """
+    B_SP = cfg.l2_group_rows
     lay = Layout(cfg)
     R, C, KB = lay.rows, lay.cols, lay.kb
     beat = cfg.blockmover_buswidth // 8

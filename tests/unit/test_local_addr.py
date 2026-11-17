@@ -3,8 +3,7 @@ Unit tests for the LocalAddr module.
 
 These tests verify:
 1. Address field extraction (is_combiner, accumulate, read_full_row)
-2. Scratchpad bank/row decoding
-3. Combiner bank/row decoding
+2. Combiner bank/row decoding (L2's rows are linear: see test_scratchpad.py)
 4. Address construction utilities
 5. Garbage address detection
 """
@@ -24,7 +23,6 @@ class TestLocalAddr:
     def config(self):
         """Default configuration for tests."""
         return SystolicConfig(
-            sp_banks=4,
             combiner_banks=2,
             sp_capacity_kb=256,
             combiner_capacity_kb=64,
@@ -39,7 +37,6 @@ class TestLocalAddr:
         """Test that LocalAddr can be instantiated."""
         assert addr_util is not None
         assert addr_util.config == config
-        assert addr_util.sp_bank_bits == 2  # log2(4) = 2
         assert addr_util.combiner_bank_bits == 1  # log2(2) = 1
 
     def test_is_combiner_flag(self):
@@ -160,21 +157,6 @@ class TestLocalAddr:
         assert results[0] == ("valid", 0)
         assert results[1] == ("garbage", 1)
 
-    def test_make_sp_addr(self):
-        """Test scratchpad address construction."""
-        la = LocalAddr(SystolicConfig(sp_banks=4))
-        # Bank 0, row 0
-        addr = la.make_sp_addr(0, 0)
-        assert addr & (1 << 31) == 0  # Not Combiner
-
-        # Bank 2, row 100
-        addr = la.make_sp_addr(2, 100)
-        assert addr & (1 << 31) == 0  # Not Combiner
-
-        # With read_full_row
-        addr = la.make_sp_addr(0, 0, read_full_row=True)
-        assert addr & (1 << 29) != 0  # read_full_row set
-
     def test_make_combiner_addr(self):
         """Test Combiner address construction."""
         la = LocalAddr(SystolicConfig(combiner_banks=2))
@@ -189,12 +171,12 @@ class TestLocalAddr:
 
     @pytest.mark.parametrize("banks", [2, 4, 8])
     def test_make_addr_round_trips_through_hardware_layout(self, banks):
-        """Bank is in the low bank_bits, row above it, for every bank and row."""
-        la = LocalAddr(SystolicConfig(sp_banks=banks, combiner_banks=banks))
+        """A Combiner address has its bank in the low bank_bits, row above it."""
+        la = LocalAddr(SystolicConfig(combiner_banks=banks))
         bank_bits = (banks - 1).bit_length()
         for bank in range(banks):
             for row in (0, 1, 2, 5):
-                for addr in (la.make_sp_addr(bank, row), la.make_combiner_addr(bank, row)):
+                for addr in (la.make_combiner_addr(bank, row),):
                     data = addr & ((1 << LocalAddr.DATA_BITS) - 1)
                     assert data & (banks - 1) == bank
                     assert data >> bank_bits == row
@@ -206,70 +188,14 @@ class TestLocalAddr:
         assert addr & (1 << 30) != 0  # accumulate set
         assert addr & (1 << 29) != 0  # read_full_row set
 
-    def test_sp_bank_extraction(self):
-        """Test scratchpad bank index extraction."""
-
-        class TestModule(Elaboratable):
-            def __init__(self, config):
-                self.addr = Signal(unsigned(32))
-                self.bank = Signal(unsigned(2))
-                self.addr_util = LocalAddr(config)
-                self.dummy = Signal()
-
-            def elaborate(self, _platform):
-                m = Module()
-                m.d.comb += self.bank.eq(self.addr_util.sp_bank(self.addr))
-                m.d.sync += self.dummy.eq(~self.dummy)
-                return m
-
-        config = SystolicConfig(sp_banks=4)
-        dut = TestModule(config)
-        results = []
-
-        def testbench():
-            # Bank 0
-            yield dut.addr.eq(0b00)
-            yield Tick()
-            bank = yield dut.bank
-            results.append(bank)
-
-            # Bank 1
-            yield dut.addr.eq(0b01)
-            yield Tick()
-            bank = yield dut.bank
-            results.append(bank)
-
-            # Bank 2
-            yield dut.addr.eq(0b10)
-            yield Tick()
-            bank = yield dut.bank
-            results.append(bank)
-
-            # Bank 3
-            yield dut.addr.eq(0b11)
-            yield Tick()
-            bank = yield dut.bank
-            results.append(bank)
-
-        sim = Simulator(dut)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        assert results == [0, 1, 2, 3]
-
     def test_bit_widths(self, config):
         """Test computed bit widths."""
         addr_util = LocalAddr(config)
-
-        # With 4 banks, need 2 bits
-        assert addr_util.sp_bank_bits == 2
 
         # With 2 banks, need 1 bit
         assert addr_util.combiner_bank_bits == 1
 
         # Row bits depend on bank entries
-        assert addr_util.sp_row_bits > 0
         assert addr_util.combiner_row_bits > 0
 
 
@@ -278,21 +204,18 @@ class TestLocalAddrEdgeCases:
 
     def test_single_bank(self):
         """Test with single bank configuration."""
-        config = SystolicConfig(sp_banks=1, combiner_banks=1)
+        config = SystolicConfig(combiner_banks=1)
         addr_util = LocalAddr(config)
 
         # One bank takes no address bits: consecutive rows stay in bank 0
-        assert addr_util.sp_bank_bits == 0
         assert addr_util.combiner_bank_bits == 0
-        assert [addr_util.make_sp_addr(0, row) for row in range(3)] == [0, 1, 2]
+        assert [addr_util.make_combiner_addr(0, row) & 0xFFFF for row in range(3)] == [0, 1, 2]
 
     def test_large_banks(self):
         """Test with many banks."""
-        config = SystolicConfig(sp_banks=16, combiner_banks=8)
+        config = SystolicConfig(combiner_banks=8)
         addr_util = LocalAddr(config)
 
-        # 16 banks needs 4 bits
-        assert addr_util.sp_bank_bits == 4
         # 8 banks needs 3 bits
         assert addr_util.combiner_bank_bits == 3
 

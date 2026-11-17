@@ -28,7 +28,7 @@ SYSTARS uses KPU names for its memories, never cache names:
 | Level | Implementation | Written by | Read by |
 |---|---|---|---|
 | L3 | Outside the tile, over AXI | BlockMover STORE | BlockMover LOAD |
-| L2 | `memory/scratchpad.py`, two read ports | BlockMover LOAD | Streamer |
+| L2 | `memory/scratchpad.py`: two bank groups of 1R1W banks ([L2](l2.md)) | BlockMover LOAD | Streamer |
 | Combiner | `memory/combiner.py` | Streamer results; a LOAD with `LocalAddr` bit 31 | BlockMover STORE |
 | L1 | `memory/stream_buffer.py` | Streamer | The fabric (stream buffers); the Streamer (result buffers) |
 
@@ -109,8 +109,6 @@ These come from the Streamer's docstring and are checked by the tests:
 
 - `SystolicTop` and the controllers are not synthesis targets yet: `just synth` covers the PE,
   the arrays, the scratchpad and the Combiner.
-- The L2 behind the Streamer is an idealized scratchpad with two read ports; the banked L2 that
-  sustains two vectors per clock is open (#17).
 - Conv2d runs only in OS. WS and IS need a column-write LOAD
   (branes-ai/embodied-ai-soc-generator#25).
 - Matmul loads both operand tiles for every output tile (`isa/matmul.py`), so L3 supplies A

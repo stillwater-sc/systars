@@ -2,12 +2,12 @@
 Streamer - turns L2 tiles into streams through L1 into the fabric.
 
 The Streamer is the only process that reads L2 for the fabric. It reads one L2 row
-per clock on each of the scratchpad's two read ports and writes each row, in
-parallel, into one L1 stream buffer (``memory.stream_buffer``); the buffer streams
-it into the fabric one element per clock. The buffers are loaded on consecutive
-clocks, so buffer ``i`` starts one clock after buffer ``i - 1``: that stagger is the
-skew. The fabric's results leave through the L1 result buffers, which turn them
-back into row-major rows, and the Streamer writes those rows to the Combiner.
+per clock on each of L2's two read ports (one per bank group, ``memory/scratchpad.py``)
+and writes each row, in parallel, into one L1 stream buffer (``memory.stream_buffer``);
+the buffer streams it into the fabric one element per clock. The buffers are loaded on
+consecutive clocks, so buffer ``i`` starts one clock after buffer ``i - 1``: that
+stagger is the skew. The fabric's results leave through the L1 result buffers, which
+turn them back into row-major rows, and the Streamer writes those rows to the Combiner.
 
 ``R`` and ``C`` are the array's PE rows and columns, and ``KB`` the longest block a
 stream buffer holds (``sp_width / input_bits`` A elements, ``sp_width /

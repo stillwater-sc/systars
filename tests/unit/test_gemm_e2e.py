@@ -231,7 +231,6 @@ class TestGemmEndToEnd:
             input_bits=8,
             weight_bits=8,
             acc_bits=32,
-            sp_banks=4,
             sp_capacity_kb=4,
             combiner_banks=4,
             combiner_capacity_kb=4,

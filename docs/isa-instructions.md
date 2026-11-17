@@ -110,8 +110,9 @@ buffer `i - 1`: that stagger is the skew, and the array has no skew or deskew re
 the edge the results leave (north for OS, south for stationary), one result buffer per
 column turns the columns back into row-major rows for the Combiner.
 
-**The Streamer** (`controller/streamer.py`) reads one L2 row per clock on each of the
-scratchpad's two read ports into L1:
+**The Streamer** (`controller/streamer.py`) reads one L2 row per clock on each of L2's two
+read ports into L1, one per bank group: A tiles live in the A group (rows below
+`l2_group_rows`) and B tiles in the B group ([L2](architecture/l2.md)):
 
 | Command (`ExecOpcode`) | OS | Stationary (WS, IS) |
 |---|---|---|

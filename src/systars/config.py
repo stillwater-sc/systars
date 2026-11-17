@@ -11,6 +11,7 @@ in the processing elements.
 
 from dataclasses import dataclass
 from enum import Enum, Flag, auto
+from math import gcd
 
 
 class Dataflow(Flag):
@@ -110,11 +111,24 @@ class SystolicConfig:
     sp_capacity_kb: int = 256
     """Total scratchpad capacity in kilobytes."""
 
-    sp_banks: int = 4
-    """Number of scratchpad banks (more banks = more parallelism)."""
-
     spad_read_delay: int = 4
-    """Read latency from scratchpad in cycles."""
+    """L2 read latency in cycles (pipelined: a bank takes a new read every
+    ``l2_bank_occupancy`` clocks, whatever the latency)."""
+
+    l2_bank_occupancy: int = 1
+    """Clocks an L2 bank's macro is busy per access: 1 for a pipelined macro, the
+    latency for one that isn't. Each bank group has at least this many banks, so
+    the Streamer's consecutive rows never meet a busy bank (#24)."""
+
+    l2_macro_rows: int = 4096
+    """Deepest SRAM macro the L2 is built from, in rows (0 = no limit). A group
+    deeper than this is split into more banks."""
+
+    l2_ideal: bool = False
+    """Build L2 as the idealized reference model instead of the banked one: one
+    memory with two read ports, so any two rows can be read in the same clock.
+    Real macros don't work like that; it is kept to compare results and cycles
+    against (``memory/scratchpad.py``)."""
 
     # =========================================================================
     # Combiner Configuration
@@ -184,15 +198,54 @@ class SystolicConfig:
         return self.sp_width // 8
 
     @property
-    def sp_bank_entries(self) -> int:
-        """Number of rows per scratchpad bank."""
-        total_bits = self.sp_capacity_kb * 1024 * 8
-        return total_bits // (self.sp_banks * self.sp_width)
+    def sp_total_rows(self) -> int:
+        """L2 rows: the capacity in rows, rounded down to even so the A and B bank
+        groups are the same size."""
+        return (self.sp_capacity_kb * 1024 * 8 // self.sp_width) & ~1
 
     @property
-    def sp_total_rows(self) -> int:
-        """Total number of scratchpad rows across all banks."""
-        return self.sp_banks * self.sp_bank_entries
+    def l2_group_rows(self) -> int:
+        """Rows in each L2 bank group: the lower half is the A group, the upper
+        half the B group."""
+        return self.sp_total_rows // 2
+
+    @property
+    def l2_group_banks(self) -> int:
+        """Banks per L2 group: enough that no bank is deeper than ``l2_macro_rows``,
+        and, for a macro busy more than one clock per access, a bank is never asked
+        again within ``l2_bank_occupancy`` clocks.
+
+        Every Streamer command reads ``dim`` consecutive rows (``dim``: the array's
+        rows and columns, their gcd if they differ) from a base that is a multiple of
+        ``dim`` (``isa.command.TileBuffers``). So with occupancy > 1 the count is a
+        divisor of ``dim`` of at least the occupancy, and the banks cycle with no
+        break from one command to the next; or, if the depth needs more banks than
+        ``dim``, a multiple of ``dim``, so each command reads its own aligned block of
+        banks. A pipelined macro (occupancy 1) takes any count."""
+        by_depth = -(-self.l2_group_rows // self.l2_macro_rows) if self.l2_macro_rows else 1
+        occ = self.l2_bank_occupancy
+        if occ == 1:
+            return max(by_depth, 1)
+        dim = self.l2_dim
+        need = max(occ, by_depth)
+        divisors = [d for d in range(need, dim + 1) if dim % d == 0]
+        return divisors[0] if divisors else -(-need // dim) * dim
+
+    @property
+    def l2_dim(self) -> int:
+        """Rows a Streamer command reads from L2: the array's rows and columns (their
+        gcd, for a non-square array)."""
+        return gcd(self.grid_rows * self.tile_rows, self.grid_cols * self.tile_cols)
+
+    @property
+    def sp_banks(self) -> int:
+        """L2 banks in all: two groups of ``l2_group_banks``."""
+        return 2 * self.l2_group_banks
+
+    @property
+    def sp_bank_entries(self) -> int:
+        """Rows per L2 bank (the last banks of a group may leave some unused)."""
+        return -(-self.l2_group_rows // self.l2_group_banks)
 
     @property
     def combiner_width(self) -> int:
@@ -247,11 +300,18 @@ class SystolicConfig:
         # Banks are interleaved on the low address bits (LocalAddr), so consecutive
         # rows walk the banks: a count that is not a power of two would map some
         # addresses to banks that do not exist
-        for name in ("sp_banks", "combiner_banks"):
-            banks = getattr(self, name)
-            assert banks > 0 and banks & (banks - 1) == 0, (
-                f"{name} must be a power of two (banks are the low address bits), got {banks}"
-            )
+        banks = self.combiner_banks
+        assert banks > 0 and banks & (banks - 1) == 0, (
+            f"combiner_banks must be a power of two (banks are the low address bits), got {banks}"
+        )
+        assert self.l2_bank_occupancy >= 1, "l2_bank_occupancy must be at least 1"
+        # A macro busy longer than a command's dim reads would be re-read too soon
+        # whatever the banking (one buffer re-reads the same rows every dim clocks)
+        assert self.l2_bank_occupancy <= self.l2_dim, (
+            f"l2_bank_occupancy ({self.l2_bank_occupancy}) must be at most the array "
+            f"dimension ({self.l2_dim})"
+        )
+        assert self.l2_macro_rows >= 0, "l2_macro_rows must be 0 (no limit) or positive"
         assert self.sp_capacity_kb > 0, "sp_capacity_kb must be positive"
         assert self.combiner_capacity_kb > 0, "combiner_capacity_kb must be positive"
         # Slot tags are 4-bit fields of cmd_sync (controller/sync.py)
@@ -269,9 +329,9 @@ class SystolicConfig:
         assert self.combiner_width % 8 == 0, (
             f"Combiner row ({self.combiner_width} bits) must be a whole number of bytes"
         )
-        assert self.sp_bank_entries >= 1, (
-            f"scratchpad of {self.sp_capacity_kb} KiB is too small for {self.sp_banks} "
-            f"banks of {self.sp_width}-bit rows"
+        assert self.l2_group_rows >= 1, (
+            f"L2 of {self.sp_capacity_kb} KiB is too small for two groups of "
+            f"{self.sp_width}-bit rows"
         )
         assert self.combiner_bank_entries >= 1, (
             f"Combiner of {self.combiner_capacity_kb} KiB is too small for {self.combiner_banks} "

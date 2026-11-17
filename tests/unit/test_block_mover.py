@@ -430,8 +430,9 @@ class TestGemmAnyLayout:
         np.testing.assert_array_equal(C, A @ B)
 
     def test_one_bank(self):
-        """One scratchpad and one Combiner bank: consecutive rows stay in bank 0."""
-        cfg = config(4, sp_banks=1, combiner_banks=1)
+        """One bank per L2 group and one Combiner bank: consecutive rows stay in one bank."""
+        cfg = config(4, l2_macro_rows=0, combiner_banks=1)
+        assert cfg.l2_group_banks == 1
         rng = np.random.default_rng(12)
         A = rng.integers(-128, 128, (4, 4))
         B = rng.integers(-128, 128, (4, 4))
@@ -534,11 +535,11 @@ class TestFourKBoundaries:
             assert log[n + 1] == (kind, page, 1)
 
 
-@pytest.mark.parametrize("field", ["sp_banks", "combiner_banks"])
 @pytest.mark.parametrize("banks", [3, 6])
-def test_bank_count_must_be_a_power_of_two(field, banks):
+def test_combiner_bank_count_must_be_a_power_of_two(banks):
+    """The Combiner's banks are the low address bits. L2's needn't be (L2Layout)."""
     with pytest.raises(AssertionError, match="power of two"):
-        config(**{field: banks})
+        config(combiner_banks=banks)
 
 
 def test_cmd_fields_default_to_whole_rows_one_beat_apart():

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A banked L2 of two bank groups of 1R1W macros** (#17, 2026-11-17; port of
+  branes-ai/embodied-ai-soc-generator#24, kpugen PR #73). The scratchpad is now built the
+  way real SRAM macros allow, in place of the idealized model whose every bank had two
+  read ports.
+  - **Two bank groups by address half.** A below `l2_group_rows`, B above. The ISA's
+    `TileBuffers` places A slots in the A group and B slots in the B group, so the
+    Streamer's two reads of a clock never share a macro (OS, WS and IS).
+  - **Banks.** Each group's rows interleave over `l2_group_banks` 1R1W pipelined banks,
+    `max(l2_bank_occupancy, ceil(group rows / l2_macro_rows))`; any count, not only powers
+    of two. Writes have their own port and never wait.
+  - **Conflict monitor.** A crossbar connects the two read ports to the groups, and a sticky
+    bank-conflict monitor (`SystolicTop.l2_error`) flags both reads in one group, a busy
+    bank, or a row past L2.
+  - **Reference model.** The idealized model stays as the reference (`l2_ideal`): a long
+    GEMM gives bit-identical C in the same cycles on both, in every dataflow.
+  - **Config.** `sp_banks` is now derived (two groups of `l2_group_banks`).
+    `LocalAddr`'s scratchpad bank decode moved into the L2 layout: an L2 address is a
+    linear row. New fields: `l2_bank_occupancy`, `l2_macro_rows`, `l2_ideal`.
+  - **systars-only.** The cocotb `systolic_top` bench places its B tiles at `B_BASE`, the
+    B group's first row. kpugen's `L2_B_BASE` CSR and runtime changes have no counterpart
+    here. New page: `docs/architecture/l2.md`.
+
 - **Lineage and credits** (2026-11-16). A new [Lineage](docs/architecture/lineage.md) page
   sets out where systars's method comes from: Karp, Miller and Winograd's uniform recurrence
   equations, and Moldovan's, Quinton's and S. Y. Kung's space-time mapping with a schedule
