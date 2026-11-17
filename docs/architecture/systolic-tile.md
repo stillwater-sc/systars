@@ -59,8 +59,9 @@ queue lengths. The presets are `DEFAULT_CONFIG`, `LEAN_CONFIG`, `CHIP_CONFIG` an
 
 One fabric runs all three dataflows. The PE has only two modes: weight-stationary (WS) and
 input-stationary (IS) differ only in which operand the ISA lays out as stationary. A `CONFIG`
-command selects the mode at run time (`rs1`: 0 = OS, 1 = WS, 2 = IS), and
-`SystolicConfig.dataflow` decides which modes are built.
+command selects the mode at run time (`rs1`: 0 = OS, 1 = WS, 2 = IS), and `SystolicConfig.dataflow` decides which modes are built: WS needs `B_STATIONARY`
+and IS needs `A_STATIONARY`, so the default (`OUTPUT_STATIONARY | B_STATIONARY`) builds OS
+and WS.
 
 | | Output-stationary (OS) | Weight-stationary (WS) | Input-stationary (IS) |
 |---|---|---|---|
@@ -89,11 +90,11 @@ column while `in_shift` is high; only the shift enable is broadcast. Each PE com
 These come from the Streamer's docstring and are checked by the tests:
 
 - The next command starts `I` clocks after the previous one: `I = max(K, R, C)` for OS,
-  `max(M, R)` for stationary and `R` for `PRELOAD`. With `K >= R, C`, tiles stream back to
-  back with no bubbles.
+  `max(M, R)` for stationary and `R` for `PRELOAD`. With `K >= R, C`, the next tile's blocks reach L1 as the previous ones
+  finish. In OS, back-to-back reductions are also bound by the drain rule below.
 - **The OS drain rule.** A command that ends a reduction starts so its results leave `2R - 1`
-  clocks after the previous reduction's, so two results never collide on a north link. With
-  `K >= 2R - 1` (chained K tiles count) the rule costs nothing.
+  clocks after the previous reduction's, so two results never collide on a north link. With `K >= 2R - 1` (chained K tiles count) the rule costs nothing; on a 4x4 array
+  with `K = 4`, consecutive single-command reductions start 7 clocks apart instead of 4.
 - `PRELOAD` waits until the previous stationary stream has left the array; `CONFIG` waits
   until the Streamer is idle.
 

@@ -42,8 +42,11 @@ examples/
 └── simd/maspar/                  # MasPar SIMD array animations
 ```
 
-Examples 07 and 08 drive the current `SystolicTop` design; 02, 03, 05 and 06 predate the
-registered fabric and the BlockMover's corner turns. See the
+Example 07 prints the command stream an ISA instruction pushes to `SystolicTop`, run against
+a stand-in controller, and 08 records the current `SystolicArray` RTL. Neither runs the
+integrated tile: `tests/unit/test_gemm_systolic.py`, `tests/unit/test_matmul.py` and the
+cocotb `systolic_top` suite do. Examples 02, 03, 05 and 06 predate the registered fabric and
+the BlockMover's corner turns. See the
 [onboarding guide](../docs/getting-started/onboarding.md) for what is current.
 
 ## Example Workflow

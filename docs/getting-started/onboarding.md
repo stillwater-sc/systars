@@ -128,7 +128,9 @@ registered fabric and the CSP rework, and three packages model other architectur
 | `simt/`, `simd/maspar/` | Side package | Models of an NVIDIA-style SM and a MasPar SIMD array, with animations and energy estimates |
 
 In `examples/gemm/`, 02 and 03 animate the textbook model, 05 uses the legacy skew buffer and
-06 the legacy transposing load. Examples 07 and 08 drive the current design, so start there.
+06 the legacy transposing load. Example 07 (an ISA command stream) and 08 (the current `SystolicArray` RTL) reflect the
+current design, so start there; the integrated tile runs in `tests/unit/test_gemm_systolic.py`,
+`tests/unit/test_matmul.py` and the cocotb `systolic_top` suite.
 `docs/sessions/` holds dated development logs: useful history, not specifications.
 
 ## House rules

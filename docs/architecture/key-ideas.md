@@ -30,17 +30,23 @@ sets, and the tests assert that the flags stay low.
 
 ## 4. Bubble-free streaming
 
-A stream buffer takes its next block in the clock its last element leaves. With K >= R, C,
-consecutive tiles flow with no gap, and the fabric stays fully busy across tile boundaries: the
-16x16 animation on the [wavefront page](../wavefront-animation.md) plots the busy fraction.
+A stream buffer takes its next block in the clock its last element leaves, so with
+K >= R, C the next tile's blocks reach the fabric with no gap. In OS, back-to-back reductions
+are also bound by the drain rule: their results must leave at least 2R - 1 clocks apart, so
+they stream without bubbles only when K >= 2R - 1 (chained K tiles count). On a 4x4 array with
+K = 4, consecutive single-command reductions start 7 clocks apart, not 4. When both conditions
+hold, the fabric stays fully busy across tile boundaries: the 16x16 animation (K = 32) on the
+[wavefront page](../wavefront-animation.md) plots the busy fraction.
 
 ## 5. CSP flow control from the KPU
 
 L2 and the accumulator hold whole tiles in slots, one credit each, and a slot is always in
 exactly one of four states: FREE, OWNED, READY or READING. Every command carries `cmd_sync`
 flags (ACQUIRE, SIGNAL, WAIT, RELEASE). Commands are pushed ahead with no completion round
-trip, and issuing in program order cannot deadlock, since every credit a command waits for is
-returned by a command issued before it. With two buffers, an 8x8x16 Matmul on a 4x4 array
+trip. The streams the ISA instructions issue cannot deadlock, since every credit a command
+waits for is returned by a command issued before it. The controller does not check that
+order: a hand-written stream that queues a WAIT ahead of its producer on the same in-order
+queue stalls that queue. With two buffers, an 8x8x16 Matmul on a 4x4 array
 takes 744 cycles instead of 907, with bit-identical results. (`controller/sync.py`,
 `isa/command.py`, `tests/unit/test_credits.py`)
 
