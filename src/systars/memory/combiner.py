@@ -147,6 +147,9 @@ class Combiner(Component):
                 # A request is in the pipeline: reconfigure the epilogue only when
                 # this (and the tile's busy) is clear
                 "busy": Out(1),
+                # Status (kpu_gen.trace, #85): an accumulate commit took its row from the
+                # pipeline's recent commits, not the bank (forwarding)
+                "forward_hit": Out(1),
                 **{f"scale_{n}": In(32, init=1) for n in range(PROFILES)},
                 **{f"control_{n}": In(32) for n in range(PROFILES)},
                 **{f"clip_{n}": In(32) for n in range(PROFILES)},
@@ -226,9 +229,13 @@ class Combiner(Component):
                     m.d.comb += from_bank.eq(bank.read_data)
         current = Signal(signed(width))
         m.d.comb += current.eq(from_bank)
+        hits = []
         for i in reversed(range(latency)):  # the newest match wins: checked last
-            with m.If(h_valid[i] & (h_key[i] == c_key)):
+            hit = h_valid[i] & (h_key[i] == c_key)
+            hits.append(hit)
+            with m.If(hit):
                 m.d.comb += current.eq(h_data[i])
+        m.d.comb += self.forward_hit.eq(c_valid & c_acc & Cat(*hits).any())
         summed = Signal(signed(width))
         m.d.comb += summed.eq(
             Cat(
