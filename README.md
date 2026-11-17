@@ -26,6 +26,11 @@ Systars generates synthesizable Verilog for configurable systolic array accelera
 - **Modern Python**: Clean, type-hinted Python 3.10+ codebase
 - **Amaranth HDL**: Leverage Python's expressiveness for hardware design
 - **Comprehensive Testing**: Unit tests with Amaranth's built-in simulator
+- **A KPU compute tile**: `SystolicTop` moves whole tiles between L3, L2 and L1 on credits and tile-ready tokens
+
+New to the project? Start with the [introduction](docs/getting-started/introduction.md) and
+[your first week](docs/getting-started/onboarding.md), or the
+[documentation site](https://stillwater-sc.github.io/systars/).
 
 ## Installation
 
@@ -134,7 +139,7 @@ Key parameters in `SystolicConfig`:
 | `tile_cols` | 1 | PEArray width (PEs per tile) |
 | `input_bits` | 8 | Input element width |
 | `acc_bits` | 32 | Accumulator width |
-| `dataflow` | OUTPUT_STATIONARY \| A_STATIONARY \| B_STATIONARY | Supported dataflow modes |
+| `dataflow` | OUTPUT_STATIONARY \| B_STATIONARY | Supported dataflow modes (OS and WS; IS needs `A_STATIONARY`) |
 | `sp_capacity_kb` | 256 | Scratchpad size |
 | `acc_capacity_kb` | 64 | Accumulator size |
 
@@ -225,20 +230,23 @@ stream↓  stream↓                                  stream│
 ```
 systars/
 ├── src/systars/
-│   ├── config.py          # Configuration dataclass
-│   ├── arithmetic/        # Arithmetic operations
+│   ├── config.py          # SystolicConfig and presets
+│   ├── targets.py         # The RTL targets that just gen / just synth / CI read
+│   ├── top.py             # SystolicTop, the compute tile
 │   ├── core/              # PE, PEArray, SystolicArray
-│   │   └── pe.py          # Processing Element
-│   ├── memory/            # Scratchpad, Accumulator
-│   ├── controller/        # Load/Execute/Store controllers
-│   ├── dma/               # DMA engines
-│   ├── util/              # Utilities (transposer, etc.)
-│   └── loop/              # Loop unrollers
-├── tests/
-│   ├── unit/              # Unit tests
-│   └── integration/       # Integration tests
-├── examples/              # Example configurations
-├── scripts/               # Build/generation scripts
+│   ├── memory/            # Scratchpad (L2), Accumulator, L1 stream/result buffers
+│   ├── controller/        # Streamer (execute), BlockMover (load, store), credits (sync)
+│   ├── dma/               # AXI StreamReader/StreamWriter
+│   ├── isa/               # Matmul and Conv2d instructions, the command port
+│   ├── wavefront.py       # RTL wavefront tracing, checking and animations
+│   ├── util/              # Opcodes and command helpers
+│   ├── stencil/           # Side package: line-buffer stencil machine
+│   ├── simt/, simd/       # Side packages: SIMT (NVIDIA-style SM) and MasPar SIMD models
+│   └── loop/              # Placeholder for the loop unrollers
+├── tests/unit/            # pytest + Amaranth simulator
+├── verif/cocotb/          # RTL tests on Verilator
+├── examples/              # Demos (gemm/, conv/, simt/, simd/, stencil/)
+├── scripts/               # RTL and wavefront generation
 ├── docs/                  # Documentation (the source of the site)
 └── docs-site/             # Starlight site built from docs/ (GitHub Pages)
 ```
@@ -272,10 +280,15 @@ See [implementation plan](./docs/plan/implementation.md) for the detailed implem
 - [x] StreamWriter (AXI-like burst write)
 - [x] DescriptorEngine (DMA descriptor chains)
 
-### Phase 5: Loop Unrollers (Current)
+### Phase 5: ISA Instructions and the KPU Tile (Current)
 
-- [ ] Matrix multiply loop (LoopMatmul)
-- [ ] Convolution loop (LoopConv)
+- [x] Registered fabric, L1 stream buffers and a bubble-free Streamer (OS, WS, IS)
+- [x] Credits and tile-ready tokens between the CSP processes
+- [x] Matmul and Conv2d instructions, with bias and accumulate
+- [x] cocotb: Matmul and Conv2d on the Verilated SystolicTop
+- [ ] Banked L2 sustaining two vectors per clock (#17)
+- [ ] Conv2d in WS and IS
+- [ ] Hardware loop unrollers (LoopMatmul, LoopConv)
 
 ### Phase 6: Validation
 

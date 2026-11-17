@@ -53,10 +53,15 @@ export const ROOT_FILES = {
 
 /** Sidebar order inside a group (lower first); pages not listed sort after, by title. */
 const ORDER = {
-  'getting-started/development-environment.md': 1,
-  'getting-started/development-workflow.md': 2,
+  'getting-started/introduction.md': 1,
+  'getting-started/onboarding.md': 2,
+  'getting-started/development-environment.md': 3,
+  'getting-started/development-workflow.md': 4,
   'guides/isa-instructions.md': 1,
   'guides/wavefront-animation.md': 2,
+  'guides/glossary.md': 3,
+  'architecture/systolic-tile.md': 1,
+  'architecture/key-ideas.md': 2,
 };
 
 // -- Collect the pages -----------------------------------------------

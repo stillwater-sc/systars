@@ -19,26 +19,35 @@ python examples/gemm/01_simple_matmul.py --size 8
 
 ```
 examples/
-├── common/                      # Shared utilities
-│   ├── dram_model.py           # Simulated DRAM memory model
-│   └── tensor_utils.py         # Matrix packing/tiling utilities
+├── common/                       # Shared utilities
+│   ├── cli.py                    # Common command-line options
+│   ├── dram_model.py             # Simulated DRAM memory model
+│   └── tensor_utils.py           # Matrix packing/tiling utilities
 │
-├── gemm/                        # Matrix multiply demonstrations
-│   ├── 01_simple_matmul.py     # Basic C = A × B
-│   ├── 02_animated_wavefront.py # Terminal wavefront animation
-│   └── 03_wavefront_gif.py     # Generate shareable GIF
+├── gemm/                         # Matrix multiply
+│   ├── 01_simple_matmul.py       # Basic C = A × B command sequence
+│   ├── 02_animated_wavefront.py  # Terminal wavefront animation (textbook model)
+│   ├── 03_wavefront_gif.py       # Shareable GIF (textbook model)
+│   ├── 04_memory_dataflow.py     # Memory subsystem and dataflow diagram
+│   ├── 05_skew_buffer_timing.py  # Legacy skew-buffer timing
+│   ├── 06_transpose_dma.py       # Legacy transposing load
+│   ├── 07_isa_matmul.py          # The Matmul instruction's command stream
+│   └── 08_rtl_wavefront.py       # Wavefront recorded from the RTL and checked
 │
-├── nn/                          # Neural network operators (planned)
-│   ├── 01_fc_layer.py          # Fully connected layer
-│   ├── 02_conv2d.py            # 2D convolution via im2col
-│   └── 03_conv3d.py            # 3D convolution
+├── conv/
+│   └── 01_isa_conv2d.py          # The Conv2d instruction's command stream
 │
-├── dsp/                         # Digital signal processing (planned)
-│   └── 01_fir_filter.py        # FIR filter implementation
-│
-└── scientific/                  # Scientific computing (planned)
-    └── 01_iterative_solver.py  # Linear system solver
+├── stencil/                      # Line-buffer stencil machine animations
+├── simt/                         # SIMT models (nv/, nv_v1/; amd/ and maspar/ are placeholders)
+└── simd/maspar/                  # MasPar SIMD array animations
 ```
+
+Example 07 prints the command stream an ISA instruction pushes to `SystolicTop`, run against
+a stand-in controller, and 08 records the current `SystolicArray` RTL. Neither runs the
+integrated tile: `tests/unit/test_gemm_systolic.py`, `tests/unit/test_matmul.py` and the
+cocotb `systolic_top` suite do. Examples 02, 03, 05 and 06 predate the registered fabric and
+the BlockMover's corner turns. See the
+[onboarding guide](../docs/getting-started/onboarding.md) for what is current.
 
 ## Example Workflow
 

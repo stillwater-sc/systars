@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="644" viewBox="0 0 760 644" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13">
+<title>SystolicTop data path: operands flow down the left, results climb the right</title>
+<style>
+.bg{fill:#ffffff}.fg{fill:#1b1f24}.muted{fill:#59636e}
+.box{fill:none;stroke:#8c959f;stroke-width:1.25}.edge{fill:none;stroke:#8c959f;stroke-width:1.25}.head{fill:#8c959f}
+.accent{fill:#2f6fde;fill-opacity:.12;stroke:#2f6fde;stroke-width:2}
+@media (prefers-color-scheme: dark){
+.bg{fill:#17181c}.fg{fill:#e6e8eb}.muted{fill:#9aa4ae}
+.box,.edge{stroke:#6e7781}.head{fill:#6e7781}.accent{fill:#5b9bff;stroke:#5b9bff}}
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="head" d="M0 0L10 5L0 10z"/></marker></defs>
+<rect class="bg" width="760" height="644" rx="6"/>
+<text x="24" y="30" font-size="15" font-weight="600" class="fg">Operands flow down the left, results climb the right</text>
+<text x="24" y="50" font-size="11.5" class="muted">Every command starts only when its credits and tile-ready tokens are there (controller/sync.py).</text>
+<g class="edge" marker-end="url(#arrow)">
+<path d="M189 124V176"/><path d="M571 176V124"/>
+<path d="M189 248V300"/><path d="M571 300V248"/>
+<path d="M189 372V424"/><path d="M571 424V372"/>
+<path d="M189 496V548"/><path d="M571 548V496"/>
+</g>
+<rect class="box" x="24" y="68" width="712" height="56" rx="8"/>
+<text x="380" y="92" text-anchor="middle" font-weight="600" class="fg">L3 · external memory over the AXI master port</text>
+<text x="380" y="110" text-anchor="middle" font-size="11.5" class="muted">a memory tile in a SoC; a byte-addressed Python model in the tests</text>
+<rect class="box" x="24" y="176" width="330" height="72" rx="8"/>
+<text x="189" y="200" text-anchor="middle" font-weight="600" class="fg">L2 · Scratchpad</text>
+<text x="189" y="218" text-anchor="middle" font-size="11.5" class="muted">whole-tile slots, one credit each</text>
+<text x="189" y="234" text-anchor="middle" font-size="11.5" class="muted">two read ports feed the Streamer</text>
+<rect class="box" x="406" y="176" width="330" height="72" rx="8"/>
+<text x="571" y="200" text-anchor="middle" font-weight="600" class="fg">Accumulator</text>
+<text x="571" y="218" text-anchor="middle" font-size="11.5" class="muted">C tiles in slots; a LOAD can preset a bias or C</text>
+<text x="571" y="234" text-anchor="middle" font-size="11.5" class="muted">STORE applies the activation per element</text>
+<rect class="accent" x="24" y="300" width="712" height="72" rx="8"/>
+<text x="380" y="324" text-anchor="middle" font-weight="600" class="fg">Streamer · controller/execute.py</text>
+<text x="380" y="342" text-anchor="middle" font-size="11.5" class="fg">starts a command only when the fabric can take it on schedule, then never stalls</text>
+<text x="380" y="358" text-anchor="middle" font-size="11.5" class="muted">events: completed (L2 credit returned) and result (accumulator token emitted)</text>
+<rect class="box" x="24" y="424" width="330" height="72" rx="8"/>
+<text x="189" y="448" text-anchor="middle" font-weight="600" class="fg">L1 stream buffers</text>
+<text x="189" y="466" text-anchor="middle" font-size="11.5" class="muted">one per row (A) and per column (B)</text>
+<text x="189" y="482" text-anchor="middle" font-size="11.5" class="muted">loaded on consecutive clocks: the skew</text>
+<rect class="box" x="406" y="424" width="330" height="72" rx="8"/>
+<text x="571" y="448" text-anchor="middle" font-weight="600" class="fg">L1 result buffers</text>
+<text x="571" y="466" text-anchor="middle" font-size="11.5" class="muted">one FIFO per array column</text>
+<text x="571" y="482" text-anchor="middle" font-size="11.5" class="muted">turn result columns back into rows</text>
+<rect class="box" x="24" y="548" width="712" height="72" rx="8"/>
+<text x="380" y="572" text-anchor="middle" font-weight="600" class="fg">SystolicArray · R × C PEs (PE → PEArray → grid of PEArrays)</text>
+<text x="380" y="590" text-anchor="middle" font-size="11.5" class="muted">every PE link registered: a value moves one PE per clock; no skew registers</text>
+<text x="380" y="606" text-anchor="middle" font-size="11.5" class="muted">A east · B and partial sums south · OS results north</text>
+<g font-size="11.5" class="muted">
+<text x="199" y="154">BlockMover LOAD</text><text x="581" y="154">BlockMover STORE</text>
+<text x="199" y="278">one L2 row per clock per port</text><text x="581" y="278">result rows</text>
+<text x="199" y="402">a block per buffer</text><text x="581" y="402">row-major rows</text>
+<text x="199" y="526">staggered element streams</text><text x="581" y="526">results by column</text>
+</g>
+</svg>
