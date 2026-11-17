@@ -1,25 +1,39 @@
 """
-The Combiner, in its first form: a result memory.
+The Combiner: the unit on the result path that merges partials into L2's result group.
 
-In the KPU model the Combiner merges partials and fuses bias, activation, scaling and
-block-format conversion on the way into L2 (#68, ``docs/architecture/kpu-tile.md``).
-Today it is a multi-bank memory that holds the results (ported from SYSTARS's
-accumulator). It provides:
-- Multiple banks for parallel access
-- Accumulate mode (add to existing value)
-- Activation functions (RELU, etc.)
+In the KPU model the Combiner sits between the L1 result buffers and L2. It merges
+the partials of a reduction (the WS/IS sum over K blocks, and ``COMPUTE_ACCUMULATE``
+onto an existing C) and fuses bias, scaling, activation and block-format conversion as
+results are written to L2 (#68, ``docs/architecture/kpu-tile.md``). This is its first
+part (#74): the merge, on L2's result group.
 
-Architecture:
-    ┌─────────────────────────────────────────────┐
-    │             Combiner Controller             │
-    │  ┌─────────┐ ┌─────────┐     ┌─────────┐   │
-    │  │ Bank 0  │ │ Bank 1  │ ... │ Bank N  │   │
-    │  │ + Activ │ │ + Activ │     │ + Activ │   │
-    │  └─────────┘ └─────────┘     └─────────┘   │
-    └─────────────────────────────────────────────┘
+**The result group (C).** Result rows live in their own group of L2 banks beside the A
+and B groups (``memory/scratchpad.py``), as the L2 model gives one group per concurrent
+access stream (``docs/architecture/l2.md``). Its rows are ``combiner_width`` wide (``C``
+results of ``acc_bits``), and a local address with the Combiner bit (``LocalAddr``) names
+one; the bank is the address's low bits. Its banks are 1R1W macros, pipelined, with read
+latency ``combiner_latency``, like the A and B groups'. There is no second read port:
+the merge and STORE share the one.
 
-This storage follows Gemmini's accumulator (ucb-bar/gemmini; see NOTICE). #38 gives
-the Combiner the KPU model's function (docs/architecture/combiner.md).
+**The merge.** A request (``write_*``: the Streamer's result rows, which never wait,
+and in the clocks they leave free a LOAD's rows into the group) is a row to write, with
+``accumulate`` to add it to the row's current value. Every request runs down a
+``combiner_latency``-clock pipeline and commits at its end:
+
+- an ``accumulate`` request reads its row in its first clock, on the bank's read port,
+  and commits the element-wise sum (each ``acc_bits`` lane wraps on its own);
+- an overwrite commits its row as it is.
+
+So requests commit in order, one per clock, and the Streamer never waits. A row a
+request reads may still be on its way to the bank: the read can't see the commits of
+the ``combiner_latency`` clocks before it lands, so the pipeline keeps those commits
+and forwards the latest one for the same row. Back-to-back K blocks onto the same rows
+see each other's sums.
+
+**STORE** reads the group on the same read port, in clocks the merge isn't reading
+(``read_ready``): the BlockMover waits, the Streamer never does. It is also held off a
+row with a request still in the pipeline, so it reads only committed rows whatever the
+order of the tokens and completions around it.
 """
 
 from amaranth import Cat, Module, Mux, Signal, signed, unsigned
@@ -27,52 +41,33 @@ from amaranth.lib.memory import Memory
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
-from .activation import activate_row
 from .local_addr import LocalAddr
 
 
 class CombinerBank(Component):
     """
-    Single Combiner bank with read/write ports and activation.
-
-    Features:
-    - Read port with optional activation function
-    - Write port with accumulate mode (add to existing)
-    - Configurable read latency
+    One bank of L2's result group: a 1R1W macro, pipelined.
 
     Ports:
-        read_addr: Address to read from
-        read_en: Read enable
-        read_data: Data read (with activation applied)
-        read_valid: High when read_data is valid
-        read_activation: Activation function select (0=NONE, 1=RELU)
-
-        write_addr: Address to write to
-        write_en: Write enable
-        write_data: Data to write
-        accumulate: 1 = add to existing, 0 = overwrite
+        read_addr, read_en: a read (bank row); one per clock
+        read_data, read_valid: its data, ``combiner_latency`` clocks later
+        write_addr, write_en, write_data: a write
     """
 
     def __init__(self, config: SystolicConfig, bank_id: int):
         self.config = config
         self.bank_id = bank_id
-
         width = config.combiner_width
         row_bits = max(1, (config.combiner_bank_entries - 1).bit_length())
-
         super().__init__(
             {
-                # Read port with activation
                 "read_addr": In(unsigned(row_bits)),
                 "read_en": In(1),
                 "read_data": Out(signed(width)),
                 "read_valid": Out(1),
-                "read_activation": In(3),  # Activation function select
-                # Write port with accumulate mode
                 "write_addr": In(unsigned(row_bits)),
                 "write_en": In(1),
                 "write_data": In(signed(width)),
-                "accumulate": In(1),
             }
         )
 
@@ -81,154 +76,58 @@ class CombinerBank(Component):
         cfg = self.config
         width = cfg.combiner_width
 
-        # Create memory (signed values stored as unsigned)
         mem = Memory(shape=unsigned(width), depth=cfg.combiner_bank_entries, init=[])
         m.submodules.mem = mem
         self.mem = mem  # for testbenches (no hardware)
 
-        # Read port
-        rd_port = mem.read_port()
-        m.d.comb += [
-            rd_port.addr.eq(self.read_addr),
-            rd_port.en.eq(self.read_en),
-        ]
-
-        # Raw data from memory (interpret as signed)
-        raw_data = Signal(signed(width))
-        m.d.comb += raw_data.eq(rd_port.data.as_signed())
-
-        # Apply the activation function to each acc_bits element of the row
-        activated = Signal(signed(width))
-        n_elems = width // cfg.acc_bits
-        m.d.comb += activated.eq(
-            activate_row(raw_data, self.read_activation, cfg.acc_bits, n_elems)
-        )
-
-        # Pipeline through read latency
-        # Memory read port has inherent 1-cycle latency (synchronous read)
-        # combiner_latency is TOTAL latency from read_en to valid output
-        # So we need (combiner_latency - 1) additional pipeline stages
+        # The memory provides the first clock of latency; the rest is pipeline
         latency = max(1, cfg.combiner_latency)
-        extra_stages = latency - 1  # Memory provides 1 cycle
+        rd = mem.read_port()
+        m.d.comb += [rd.addr.eq(self.read_addr), rd.en.eq(self.read_en)]
+        valid = [Signal(name=f"rv_{i}") for i in range(latency)]
+        m.d.sync += valid[0].eq(self.read_en)
+        for i in range(1, latency):
+            m.d.sync += valid[i].eq(valid[i - 1])
+        m.d.comb += self.read_valid.eq(valid[-1])
+        value = rd.data.as_signed()
+        for i in range(latency - 1):
+            stage = Signal(signed(width), name=f"rd_{i}")
+            m.d.sync += stage.eq(value)
+            value = stage
+        m.d.comb += self.read_data.eq(value)
 
-        if extra_stages == 0:
-            # Memory latency only - output directly (with 1 cycle delay for valid)
-            m.d.sync += self.read_valid.eq(self.read_en)
-            m.d.comb += self.read_data.eq(activated)
-        else:
-            # Pipeline stages for data and valid (on top of memory's 1 cycle)
-            valid_pipe = [Signal(name=f"v_{i}") for i in range(extra_stages + 1)]
-            data_pipe = [Signal(signed(width), name=f"d_{i}") for i in range(extra_stages)]
-
-            # First valid stage tracks read_en
-            m.d.sync += valid_pipe[0].eq(self.read_en)
-
-            # Data pipeline starts from memory output (activated is already 1 cycle delayed)
-            if extra_stages >= 1:
-                m.d.sync += data_pipe[0].eq(activated)
-
-            # Additional pipeline stages
-            for i in range(1, extra_stages + 1):
-                m.d.sync += valid_pipe[i].eq(valid_pipe[i - 1])
-            for i in range(1, extra_stages):
-                m.d.sync += data_pipe[i].eq(data_pipe[i - 1])
-
-            m.d.comb += self.read_valid.eq(valid_pipe[-1])
-            if extra_stages >= 1:
-                m.d.comb += self.read_data.eq(data_pipe[-1])
-            else:
-                m.d.comb += self.read_data.eq(activated)
-
-        # Write port. Every write is pipelined by one cycle so that an accumulate
-        # write can read the current value first (read-modify-write):
-        #   cycle N:   request (write_en, write_addr, write_data, accumulate) is
-        #              registered; for accumulate, the current value is read
-        #   cycle N+1: the registered request is committed; for accumulate, the
-        #              value read in cycle N is added to the registered data
-        # The commit is selected by the *registered* accumulate flag, so callers
-        # may drop `accumulate` together with `write_en` after the request cycle.
-        wr_port = mem.write_port()
-
-        # Read port for read-modify-write, transparent to the write port so that
-        # back-to-back accumulates to the same row see each other's result.
-        combiner_rd_port = mem.read_port(transparent_for=(wr_port,))
-        existing_value = Signal(signed(width))
+        wr = mem.write_port()
         m.d.comb += [
-            combiner_rd_port.addr.eq(self.write_addr),
-            combiner_rd_port.en.eq(self.write_en & self.accumulate),
-            existing_value.eq(combiner_rd_port.data.as_signed()),
+            wr.addr.eq(self.write_addr),
+            wr.data.eq(self.write_data.as_unsigned()),
+            wr.en.eq(self.write_en),
         ]
-
-        write_en_d = Signal()
-        write_addr_d = Signal(unsigned(max(1, (cfg.combiner_bank_entries - 1).bit_length())))
-        write_data_d = Signal(signed(width))
-        accumulate_d = Signal()
-
-        m.d.sync += [
-            write_en_d.eq(self.write_en),
-            write_addr_d.eq(self.write_addr),
-            write_data_d.eq(self.write_data),
-            accumulate_d.eq(self.write_en & self.accumulate),
-        ]
-
-        # Element-wise add for accumulate (no carries between packed elements)
-        accumulated = Signal(signed(width))
-        n_combiner = width // cfg.acc_bits
-        m.d.comb += accumulated.eq(
-            Cat(
-                *[
-                    (
-                        existing_value[i * cfg.acc_bits : (i + 1) * cfg.acc_bits].as_signed()
-                        + write_data_d[i * cfg.acc_bits : (i + 1) * cfg.acc_bits].as_signed()
-                    )[: cfg.acc_bits]
-                    for i in range(n_combiner)
-                ]
-            )
-        )
-
-        m.d.comb += [
-            wr_port.addr.eq(write_addr_d),
-            wr_port.data.eq(Mux(accumulate_d, accumulated, write_data_d).as_unsigned()),
-            wr_port.en.eq(write_en_d),
-        ]
-
         return m
 
 
 class Combiner(Component):
     """
-    Multi-bank Combiner memory with address decoding.
-
-    The Combiner contains multiple banks for storing computation results.
-    It supports accumulate mode (add to existing) and activation functions.
+    The Combiner's merge, on L2's result group (see the module docstring).
 
     Ports:
-        read_req: Request to read
-        read_addr: Full 32-bit local address
-        read_data: Data read from selected bank (with activation)
-        read_valid: High when read_data is valid
-        read_activation: Activation function to apply
-
-        write_req: Request to write
-        write_addr: Full 32-bit local address
-        write_data: Data to write
-        accumulate: 1 = add to existing, 0 = overwrite
+        write_req, write_addr, write_data, accumulate: a result row to commit (a local
+            address with the Combiner bit), added to the row's value with ``accumulate``.
+            One per clock, never refused.
+        read_req, read_addr: STORE's read; it is taken in a clock with ``read_ready``
+            (hold ``read_req`` until then)
+        read_data, read_valid: its row, ``combiner_latency`` clocks after it was taken
     """
 
     def __init__(self, config: SystolicConfig):
         self.config = config
-
         width = config.combiner_width
-
         super().__init__(
             {
-                # Read interface
                 "read_req": In(1),
                 "read_addr": In(unsigned(32)),
+                "read_ready": Out(1),
                 "read_data": Out(signed(width)),
                 "read_valid": Out(1),
-                "read_activation": In(3),
-                # Write interface
                 "write_req": In(1),
                 "write_addr": In(unsigned(32)),
                 "write_data": In(signed(width)),
@@ -239,66 +138,127 @@ class Combiner(Component):
     def elaborate(self, _platform):
         m = Module()
         cfg = self.config
+        width = cfg.combiner_width
+        eb = cfg.acc_bits
+        lanes = width // eb
+        latency = max(1, cfg.combiner_latency)
+        la = LocalAddr(cfg)
+        key_bits = la.combiner_bank_bits + la.combiner_row_bits
 
-        # Instantiate banks
         banks = [CombinerBank(cfg, i) for i in range(cfg.combiner_banks)]
         self.banks = banks  # for testbenches (no hardware)
         for i, bank in enumerate(banks):
             m.submodules[f"bank_{i}"] = bank
 
-        # Address decoding utilities
-        addr_util = LocalAddr(cfg)
+        def key(addr):
+            """A row's bank and bank row: the address bits that name it."""
+            return addr[:key_bits] if key_bits else Signal(1)
 
-        # Read path
-        read_bank_sel = Signal(unsigned(addr_util.combiner_bank_bits))
-        read_row_addr = Signal(unsigned(addr_util.combiner_row_bits))
+        # --- Request stage: an accumulate reads its row now ---
+        w_bank = Signal(max(1, la.combiner_bank_bits))
+        w_row = Signal(la.combiner_row_bits)
+        m.d.comb += [w_bank.eq(la.combiner_bank(self.write_addr)), w_row.eq(la.combiner_row(self.write_addr))]  # fmt: skip
+        merge_reads = Signal()
+        m.d.comb += merge_reads.eq(self.write_req & self.accumulate)
 
-        m.d.comb += [
-            read_bank_sel.eq(addr_util.combiner_bank(self.read_addr)),
-            read_row_addr.eq(addr_util.combiner_row(self.read_addr)),
+        # The pipeline: stage i holds the request of i + 1 clocks ago; it commits at
+        # the end (stage latency - 1), when its read's data arrives
+        st_valid = [Signal(name=f"p{i}_valid") for i in range(latency)]
+        st_acc = [Signal(name=f"p{i}_acc") for i in range(latency)]
+        st_key = [Signal(max(1, key_bits), name=f"p{i}_key") for i in range(latency)]
+        st_bank = [Signal(max(1, la.combiner_bank_bits), name=f"p{i}_bank") for i in range(latency)]
+        st_row = [Signal(la.combiner_row_bits, name=f"p{i}_row") for i in range(latency)]
+        st_data = [Signal(signed(width), name=f"p{i}_data") for i in range(latency)]
+        m.d.sync += [
+            st_valid[0].eq(self.write_req),
+            st_acc[0].eq(merge_reads),
+            st_key[0].eq(key(self.write_addr)),
+            st_bank[0].eq(w_bank),
+            st_row[0].eq(w_row),
+            st_data[0].eq(self.write_data),
         ]
-
-        # Pipeline the bank selection to match read latency
-        latency = max(1, cfg.combiner_latency)
-        bank_sel_pipe = [
-            Signal(unsigned(addr_util.combiner_bank_bits), name=f"abs_{i}") for i in range(latency)
-        ]
-        m.d.sync += bank_sel_pipe[0].eq(read_bank_sel)
         for i in range(1, latency):
-            m.d.sync += bank_sel_pipe[i].eq(bank_sel_pipe[i - 1])
-
-        # Route read request to banks
-        for i, bank in enumerate(banks):
-            m.d.comb += [
-                bank.read_addr.eq(read_row_addr),
-                bank.read_en.eq(self.read_req & (read_bank_sel == i)),
-                bank.read_activation.eq(self.read_activation),
+            m.d.sync += [
+                st_valid[i].eq(st_valid[i - 1]),
+                st_acc[i].eq(st_acc[i - 1]),
+                st_key[i].eq(st_key[i - 1]),
+                st_bank[i].eq(st_bank[i - 1]),
+                st_row[i].eq(st_row[i - 1]),
+                st_data[i].eq(st_data[i - 1]),
             ]
+        c_valid, c_acc, c_key = st_valid[-1], st_acc[-1], st_key[-1]
+        c_bank, c_row, c_data = st_bank[-1], st_row[-1], st_data[-1]
 
-        # Mux read data from selected bank
-        for i, bank in enumerate(banks):
-            with m.If(bank_sel_pipe[-1] == i):
-                m.d.comb += [
-                    self.read_data.eq(bank.read_data),
-                    self.read_valid.eq(bank.read_valid),
+        # The commits of the last `latency` clocks: a read issued `latency` clocks ago
+        # didn't see them (newest first)
+        h_valid = [Signal(name=f"h{i}_valid") for i in range(latency)]
+        h_key = [Signal(max(1, key_bits), name=f"h{i}_key") for i in range(latency)]
+        h_data = [Signal(signed(width), name=f"h{i}_data") for i in range(latency)]
+
+        # --- Commit stage ---
+        from_bank = Signal(signed(width))
+        with m.Switch(c_bank):
+            for i, bank in enumerate(banks):
+                with m.Case(i):
+                    m.d.comb += from_bank.eq(bank.read_data)
+        current = Signal(signed(width))
+        m.d.comb += current.eq(from_bank)
+        for i in reversed(range(latency)):  # the newest match wins: checked last
+            with m.If(h_valid[i] & (h_key[i] == c_key)):
+                m.d.comb += current.eq(h_data[i])
+        summed = Signal(signed(width))
+        m.d.comb += summed.eq(
+            Cat(
+                *[
+                    (
+                        current[i * eb : (i + 1) * eb].as_signed()
+                        + c_data[i * eb : (i + 1) * eb].as_signed()
+                    )[:eb]
+                    for i in range(lanes)
                 ]
-
-        # Write path
-        write_bank_sel = Signal(unsigned(addr_util.combiner_bank_bits))
-        write_row_addr = Signal(unsigned(addr_util.combiner_row_bits))
-
-        m.d.comb += [
-            write_bank_sel.eq(addr_util.combiner_bank(self.write_addr)),
-            write_row_addr.eq(addr_util.combiner_row(self.write_addr)),
-        ]
-
-        # Route write request to appropriate bank
-        for i, bank in enumerate(banks):
-            m.d.comb += [
-                bank.write_addr.eq(write_row_addr),
-                bank.write_data.eq(self.write_data),
-                bank.accumulate.eq(self.accumulate),
-                bank.write_en.eq(self.write_req & (write_bank_sel == i)),
+            )  # fmt: skip
+        )
+        commit = Signal(signed(width))
+        m.d.comb += commit.eq(Mux(c_acc, summed, c_data))
+        m.d.sync += [h_valid[0].eq(c_valid), h_key[0].eq(c_key), h_data[0].eq(commit)]
+        for i in range(1, latency):
+            m.d.sync += [
+                h_valid[i].eq(h_valid[i - 1]),
+                h_key[i].eq(h_key[i - 1]),
+                h_data[i].eq(h_data[i - 1]),
             ]
 
+        # --- STORE's read: a clock the merge leaves free, a row with nothing pending ---
+        r_key = key(self.read_addr)
+        pending = Signal()
+        m.d.comb += pending.eq(self.write_req & (key(self.write_addr) == r_key))
+        for i in range(latency):
+            with m.If(st_valid[i] & (st_key[i] == r_key)):
+                m.d.comb += pending.eq(1)
+        grant = Signal()
+        m.d.comb += [grant.eq(self.read_req & ~merge_reads & ~pending), self.read_ready.eq(grant)]
+        r_bank = Signal(max(1, la.combiner_bank_bits))
+        m.d.comb += r_bank.eq(la.combiner_bank(self.read_addr))
+
+        # --- The banks: one read (the merge's or STORE's) and one write a clock ---
+        for i, bank in enumerate(banks):
+            m.d.comb += [
+                bank.read_en.eq((merge_reads & (w_bank == i)) | (grant & (r_bank == i))),
+                bank.read_addr.eq(Mux(merge_reads, w_row, la.combiner_row(self.read_addr))),
+                bank.write_en.eq(c_valid & (c_bank == i)),
+                bank.write_addr.eq(c_row),
+                bank.write_data.eq(commit),
+            ]
+
+        # STORE's data: its read's bank, `latency` clocks later
+        r_sel = [Signal(max(1, la.combiner_bank_bits), name=f"rs{i}_bank") for i in range(latency)]
+        r_valid = [Signal(name=f"rs{i}_valid") for i in range(latency)]
+        m.d.sync += [r_sel[0].eq(r_bank), r_valid[0].eq(grant)]
+        for i in range(1, latency):
+            m.d.sync += [r_sel[i].eq(r_sel[i - 1]), r_valid[i].eq(r_valid[i - 1])]
+        m.d.comb += self.read_valid.eq(r_valid[-1])
+        with m.Switch(r_sel[-1]):
+            for i, bank in enumerate(banks):
+                with m.Case(i):
+                    m.d.comb += self.read_data.eq(bank.read_data)
         return m

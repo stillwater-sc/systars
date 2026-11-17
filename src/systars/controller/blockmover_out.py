@@ -73,6 +73,8 @@ class BlockMoverOut(Component):
             combiner_read_addr: Read address (local format)
             combiner_read_data: Read data (combiner_width bits)
             combiner_read_valid: Data valid
+            combiner_read_ready: the read is taken this clock (hold the request until
+                then: the Combiner's merge has the read port first)
 
         BlockMover Interface (to StreamWriter):
             engine_req_valid: Request valid
@@ -134,6 +136,7 @@ class BlockMoverOut(Component):
                 "combiner_read_addr": Out(32),
                 "combiner_read_data": In(signed(combiner_width)),
                 "combiner_read_valid": In(1),
+                "combiner_read_ready": In(1, init=1),
                 # BlockMover interface (to StreamWriter)
                 "engine_req_valid": Out(1),
                 "engine_req_ready": In(1),
@@ -278,7 +281,8 @@ class BlockMoverOut(Component):
                         self.combiner_read_req.eq(1),
                         self.combiner_read_addr.eq(combiner_addr_reg + issued),
                     ]
-                    m.d.sync += issued.eq(issued + 1)
+                    with m.If(self.combiner_read_ready):
+                        m.d.sync += issued.eq(issued + 1)
                 with m.If(self.combiner_read_valid):
                     for n in range(lanes):
                         with m.If(received == n):
@@ -303,12 +307,15 @@ class BlockMoverOut(Component):
 
             # --- Read the row from the Combiner ---
             with m.State("READ_COMBINER"):
-                with m.If(~transpose):
+                with m.If(transpose):
+                    m.next = "WAIT_VALID"
+                with m.Else():
                     m.d.comb += [
                         self.combiner_read_req.eq(1),
                         self.combiner_read_addr.eq(combiner_addr_reg + row),
                     ]
-                m.next = "WAIT_VALID"
+                    with m.If(self.combiner_read_ready):
+                        m.next = "WAIT_VALID"
 
             # A TRANSPOSE's row is in the corner-turn buffer: no Combiner read
             with m.State("WAIT_VALID"), m.If(self.combiner_read_valid | transpose):

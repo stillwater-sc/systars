@@ -1,476 +1,257 @@
 """
-Unit tests for the Combiner module.
+Unit tests for the Combiner (memory/combiner.py, #74): the merge of result rows into
+L2's result group.
 
 These tests verify:
-1. CombinerBank instantiation
-2. Basic write/read operations
-3. Accumulate mode (add to existing)
-4. Activation functions (RELU)
-5. Multi-bank Combiner routing
+1. A bank of the result group: a 1R1W macro with the read latency
+2. The merge: overwrite, accumulate (each lane wraps on its own), commit order
+3. Forwarding: accumulates onto one row at every spacing, back to back included
+4. STORE's read: it waits while the merge reads, and for a row with a request pending
+5. A random request and read sequence against a Python model
 6. Verilog generation
 """
 
+import random
+
 import pytest
-from amaranth.sim import Simulator, Tick
 
-from systars.config import Activation, SystolicConfig
+from systars.config import SystolicConfig
 from systars.memory.combiner import Combiner, CombinerBank
-
-
-class TestCombinerBank:
-    """Test suite for CombinerBank."""
-
-    @pytest.fixture
-    def config(self):
-        """Configuration for tests with shorter latency."""
-        return SystolicConfig(
-            combiner_banks=2,
-            combiner_capacity_kb=8,  # Smaller for faster tests
-            combiner_latency=2,  # Short latency
-            grid_rows=4,
-            grid_cols=4,
-            tile_rows=1,
-            tile_cols=1,
-        )
-
-    @pytest.fixture
-    def bank(self, config):
-        """Create an CombinerBank instance."""
-        return CombinerBank(config, bank_id=0)
-
-    def test_bank_instantiation(self, bank, config):
-        """Test that CombinerBank can be instantiated."""
-        assert bank is not None
-        assert bank.config == config
-        assert bank.bank_id == 0
-
-    def test_bank_has_correct_ports(self, bank):
-        """Test that bank has all required ports."""
-        # Read ports
-        assert hasattr(bank, "read_addr")
-        assert hasattr(bank, "read_en")
-        assert hasattr(bank, "read_data")
-        assert hasattr(bank, "read_valid")
-        assert hasattr(bank, "read_activation")
-
-        # Write ports
-        assert hasattr(bank, "write_addr")
-        assert hasattr(bank, "write_en")
-        assert hasattr(bank, "write_data")
-        assert hasattr(bank, "accumulate")
-
-    def test_bank_write_overwrite(self, config):
-        """Test basic write (overwrite mode)."""
-        bank = CombinerBank(config, bank_id=0)
-        results = []
-
-        def testbench():
-            # Write to address 0 (overwrite mode)
-            yield bank.write_addr.eq(0)
-            yield bank.write_data.eq(100)
-            yield bank.accumulate.eq(0)
-            yield bank.write_en.eq(1)
-            yield Tick()
-
-            yield bank.write_en.eq(0)
-            yield Tick()
-
-            # Read back
-            yield bank.read_addr.eq(0)
-            yield bank.read_activation.eq(Activation.NONE.value)
-            yield bank.read_en.eq(1)
-            yield Tick()
-
-            yield bank.read_en.eq(0)
-            # Wait for latency-1 more ticks (valid is high for only one cycle)
-            for _ in range(config.combiner_latency - 1):
-                yield Tick()
-
-            valid = yield bank.read_valid
-            data = yield bank.read_data
-            results.append({"valid": valid, "data": data})
-
-        sim = Simulator(bank)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        assert results[0]["valid"] == 1
-        assert results[0]["data"] == 100
-
-    def test_bank_write_accumulate(self, config):
-        """Test accumulate mode (add to existing)."""
-        bank = CombinerBank(config, bank_id=0)
-        results = []
-
-        def testbench():
-            # First write: 100
-            yield bank.write_addr.eq(0)
-            yield bank.write_data.eq(100)
-            yield bank.accumulate.eq(0)  # Overwrite first
-            yield bank.write_en.eq(1)
-            yield Tick()
-
-            yield bank.write_en.eq(0)
-            yield Tick()
-            yield Tick()
-
-            # Accumulate: add 50
-            yield bank.write_addr.eq(0)
-            yield bank.write_data.eq(50)
-            yield bank.accumulate.eq(1)  # Accumulate mode
-            yield bank.write_en.eq(1)
-            yield Tick()
-
-            # Drop accumulate together with write_en, as Streamer does
-            yield bank.write_en.eq(0)
-            yield bank.accumulate.eq(0)
-            yield Tick()
-            yield Tick()
-
-            # Read back
-            yield bank.read_addr.eq(0)
-            yield bank.read_activation.eq(Activation.NONE.value)
-            yield bank.read_en.eq(1)
-            yield Tick()
-
-            yield bank.read_en.eq(0)
-            for _ in range(config.combiner_latency - 1):
-                yield Tick()
-
-            valid = yield bank.read_valid
-            data = yield bank.read_data
-            results.append({"valid": valid, "data": data})
-
-        sim = Simulator(bank)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        assert results[0]["valid"] == 1
-        # Should be 100 + 50 = 150
-        assert results[0]["data"] == 150
-
-    def test_bank_relu_activation(self, config):
-        """Test RELU activation function."""
-        bank = CombinerBank(config, bank_id=0)
-        results = []
-
-        def testbench():
-            # Write negative value to address 0
-            yield bank.write_addr.eq(0)
-            # Use signed representation for -50
-            yield bank.write_data.eq((-50) & ((1 << config.combiner_width) - 1))
-            yield bank.accumulate.eq(0)
-            yield bank.write_en.eq(1)
-            yield Tick()
-
-            # Write positive value to address 1
-            yield bank.write_addr.eq(1)
-            yield bank.write_data.eq(100)
-            yield Tick()
-
-            yield bank.write_en.eq(0)
-            yield Tick()
-
-            # Read address 0 with RELU
-            yield bank.read_addr.eq(0)
-            yield bank.read_activation.eq(Activation.RELU.value)
-            yield bank.read_en.eq(1)
-            yield Tick()
-
-            yield bank.read_en.eq(0)
-            for _ in range(config.combiner_latency - 1):
-                yield Tick()
-
-            valid = yield bank.read_valid
-            data = yield bank.read_data
-            results.append({"addr": 0, "valid": valid, "data": data})
-
-            # Extra tick before next read
-            yield Tick()
-
-            # Read address 1 with RELU
-            yield bank.read_addr.eq(1)
-            yield bank.read_en.eq(1)
-            yield Tick()
-
-            yield bank.read_en.eq(0)
-            for _ in range(config.combiner_latency - 1):
-                yield Tick()
-
-            valid = yield bank.read_valid
-            data = yield bank.read_data
-            results.append({"addr": 1, "valid": valid, "data": data})
-
-        sim = Simulator(bank)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        # Address 0: negative value should become 0 with RELU
-        assert results[0]["valid"] == 1
-        assert results[0]["data"] == 0
-
-        # Address 1: positive value stays positive
-        assert results[1]["valid"] == 1
-        assert results[1]["data"] == 100
-
-    def test_bank_elaboration(self, bank):
-        """Test that CombinerBank elaborates without errors."""
-
-        def testbench():
-            yield Tick()
-
-        sim = Simulator(bank)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-
-class TestCombiner:
-    """Test suite for multi-bank Combiner."""
-
-    @pytest.fixture
-    def config(self):
-        """Configuration for tests."""
-        return SystolicConfig(
-            combiner_banks=2,
-            combiner_capacity_kb=8,
-            combiner_latency=2,
-            grid_rows=4,
-            grid_cols=4,
-            tile_rows=1,
-            tile_cols=1,
-        )
-
-    @pytest.fixture
-    def combiner(self, config):
-        """Create an Combiner instance."""
-        return Combiner(config)
-
-    def test_combiner_instantiation(self, combiner, config):
-        """Test that Combiner can be instantiated."""
-        assert combiner is not None
-        assert combiner.config == config
-
-    def test_combiner_has_correct_ports(self, combiner):
-        """Test that Combiner has all required ports."""
-        # Read interface
-        assert hasattr(combiner, "read_req")
-        assert hasattr(combiner, "read_addr")
-        assert hasattr(combiner, "read_data")
-        assert hasattr(combiner, "read_valid")
-        assert hasattr(combiner, "read_activation")
-
-        # Write interface
-        assert hasattr(combiner, "write_req")
-        assert hasattr(combiner, "write_addr")
-        assert hasattr(combiner, "write_data")
-        assert hasattr(combiner, "accumulate")
-
-    def test_combiner_bank_routing(self, config):
-        """Test that addresses are routed to correct banks."""
-        acc = Combiner(config)
-        results = []
-
-        def testbench():
-            # Write to bank 0 (address = row << 1 | bank)
-            yield acc.write_addr.eq(0b0)  # Bank 0, row 0
-            yield acc.write_data.eq(111)
-            yield acc.accumulate.eq(0)
-            yield acc.write_req.eq(1)
-            yield Tick()
-
-            # Write to bank 1
-            yield acc.write_addr.eq(0b1)  # Bank 1, row 0
-            yield acc.write_data.eq(222)
-            yield Tick()
-
-            yield acc.write_req.eq(0)
-            yield Tick()
-
-            # Read from bank 0
-            yield acc.read_addr.eq(0b0)
-            yield acc.read_activation.eq(Activation.NONE.value)
-            yield acc.read_req.eq(1)
-            yield Tick()
-            yield acc.read_req.eq(0)
-
-            for _ in range(config.combiner_latency - 1):
-                yield Tick()
-
-            valid = yield acc.read_valid
-            data = yield acc.read_data
-            results.append({"bank": 0, "valid": valid, "data": data})
-
-            # Extra tick before next read
-            yield Tick()
-
-            # Read from bank 1
-            yield acc.read_addr.eq(0b1)
-            yield acc.read_req.eq(1)
-            yield Tick()
-            yield acc.read_req.eq(0)
-
-            for _ in range(config.combiner_latency - 1):
-                yield Tick()
-
-            valid = yield acc.read_valid
-            data = yield acc.read_data
-            results.append({"bank": 1, "valid": valid, "data": data})
-
-        sim = Simulator(acc)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-        assert results[0]["valid"] == 1
-        assert results[0]["data"] == 111
-
-        assert results[1]["valid"] == 1
-        assert results[1]["data"] == 222
-
-    def test_combiner_elaboration(self, combiner):
-        """Test that Combiner elaborates without errors."""
-
-        def testbench():
-            yield Tick()
-
-        sim = Simulator(combiner)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-
-
-class TestCombinerVerilogGeneration:
-    """Test Verilog generation for Combiner modules."""
-
-    def test_generate_bank_verilog(self, tmp_path):
-        """Test that CombinerBank can generate valid Verilog."""
-        from amaranth._toolchain.yosys import find_yosys
-        from amaranth.back import verilog
-
-        try:
-            find_yosys(lambda ver: ver >= (0, 40))
-        except Exception:
-            pytest.skip("Yosys not found")
-
-        config = SystolicConfig(combiner_banks=2, combiner_capacity_kb=8, combiner_latency=2)
-        bank = CombinerBank(config, bank_id=0)
-
-        output = verilog.convert(bank, name="CombinerBank")
-        assert "module CombinerBank" in output
-        assert "read_addr" in output
-        assert "write_data" in output
-        assert "accumulate" in output
-
-        verilog_file = tmp_path / "combiner_bank.v"
-        verilog_file.write_text(output)
-        assert verilog_file.exists()
-
-    def test_generate_accumulator_verilog(self, tmp_path):
-        """Test that Combiner can generate valid Verilog."""
-        from amaranth._toolchain.yosys import find_yosys
-        from amaranth.back import verilog
-
-        try:
-            find_yosys(lambda ver: ver >= (0, 40))
-        except Exception:
-            pytest.skip("Yosys not found")
-
-        config = SystolicConfig(combiner_banks=2, combiner_capacity_kb=8, combiner_latency=2)
-        acc = Combiner(config)
-
-        output = verilog.convert(acc, name="Combiner")
-        assert "module Combiner" in output
-
-        # Should have bank submodules
-        assert "bank_0" in output
-        assert "bank_1" in output
-
-        verilog_file = tmp_path / "combiner.v"
-        verilog_file.write_text(output)
-        assert verilog_file.exists()
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
-
-class TestCombinerBankRowSemantics:
-    """Accumulate and activation operate on each acc_bits element of a packed row."""
-
-    @pytest.fixture
-    def cfg(self):
-        # 2 elements of 32 bits per row
-        return SystolicConfig(
-            grid_rows=2, grid_cols=2, combiner_banks=2, combiner_capacity_kb=1, combiner_latency=1
-        )
-
-    @staticmethod
-    def pack(values, bits=32):
-        return sum((v % (1 << bits)) << (i * bits) for i, v in enumerate(values))
-
-    @staticmethod
-    def unpack(value, n, bits=32):
-        out = []
-        for i in range(n):
-            v = (value >> (i * bits)) & ((1 << bits) - 1)
-            out.append(v - (1 << bits) if v >> (bits - 1) else v)
-        return out
-
-    def _run(self, bank, writes, activation=Activation.NONE.value):
-        """Issue (data, accumulate) writes to row 0 on consecutive cycles, then read row 0."""
-        out = {}
-
-        async def testbench(ctx):
-            for data, acc in writes:
-                ctx.set(bank.write_addr, 0)
-                ctx.set(bank.write_data, data)
-                ctx.set(bank.accumulate, acc)
-                ctx.set(bank.write_en, 1)
-                await ctx.tick()
+from systars.memory.local_addr import LocalAddr
+
+from ._sim import run_sim, skip_without_yosys
+
+
+def config(latency=2, **fields):
+    base = {"grid_rows": 4, "grid_cols": 4, "tile_rows": 1, "tile_cols": 1,
+            "combiner_capacity_kb": 1, "combiner_banks": 2, "combiner_latency": latency}  # fmt: skip
+    return SystolicConfig(**{**base, **fields})
+
+
+def pack(values, bits=32):
+    return sum((v & ((1 << bits) - 1)) << (i * bits) for i, v in enumerate(values))
+
+
+def unpack(word, bits=32, n=4):
+    vals = [(word >> (i * bits)) & ((1 << bits) - 1) for i in range(n)]
+    return [v - (1 << bits) if v >> (bits - 1) else v for v in vals]
+
+
+def addr(cfg, row):
+    """The local address of result row ``row`` (bank in the low bits)."""
+    la = LocalAddr(cfg)
+    return la.make_combiner_addr(row % cfg.combiner_banks, row // cfg.combiner_banks)
+
+
+def model_add(a, b, n=4):
+    return [((x + y + (1 << 31)) % (1 << 32)) - (1 << 31) for x, y in zip(a, b, strict=True)][:n]
+
+
+class Driver:
+    """Drives the Combiner one clock at a time and models it."""
+
+    def __init__(self, ctx, dut, cfg):
+        self.ctx, self.dut, self.cfg = ctx, dut, cfg
+        self.lanes = cfg.combiner_width // cfg.acc_bits
+        self.model = {}
+
+    async def clock(self, req=None, read=None):
+        """One clock: ``req`` = (row, values, accumulate) or None; ``read`` = a row for
+        STORE to read (held by the caller until taken). Returns whether it was taken."""
+        ctx, dut = self.ctx, self.dut
+        if req is not None:
+            row, values, acc = req
+            ctx.set(dut.write_req, 1)
+            ctx.set(dut.write_addr, addr(self.cfg, row))
+            ctx.set(dut.write_data, pack(values))
+            ctx.set(dut.accumulate, acc)
+            old = self.model.get(row, [0] * self.lanes)
+            self.model[row] = model_add(old, values, self.lanes) if acc else list(values)
+        else:
+            ctx.set(dut.write_req, 0)
+            ctx.set(dut.accumulate, 0)
+        ctx.set(dut.read_req, read is not None)
+        ctx.set(dut.read_addr, addr(self.cfg, read) if read is not None else 0)
+        taken = read is not None and ctx.get(dut.read_ready)
+        await ctx.tick()
+        return taken
+
+    async def drain(self):
+        for _ in range(self.cfg.combiner_latency + 2):
+            await self.clock()
+
+    async def read(self, row):
+        """STORE's read of ``row``: wait for it to be taken, then for its data."""
+        while not await self.clock(read=row):
+            pass
+        for _ in range(self.cfg.combiner_latency + 2):
+            if self.ctx.get(self.dut.read_valid):
+                return unpack(self.ctx.get(self.dut.read_data), n=self.lanes)
+            await self.clock()
+        raise AssertionError("no read data")
+
+
+class TestBank:
+    def test_one_read_and_one_write_port(self):
+        bank = CombinerBank(config(), 0)
+        for port in ("read_addr", "read_en", "read_data", "read_valid",
+                     "write_addr", "write_en", "write_data"):  # fmt: skip
+            assert hasattr(bank, port)
+        assert not hasattr(bank, "accumulate") and not hasattr(bank, "read_activation")
+
+    @pytest.mark.parametrize("latency", [1, 2, 3])
+    def test_the_read_latency(self, latency):
+        cfg = config(latency)
+        bank = CombinerBank(cfg, 0)
+
+        async def tb(ctx):
+            ctx.set(bank.write_en, 1)
+            ctx.set(bank.write_addr, 3)
+            ctx.set(bank.write_data, 0x1234)
+            await ctx.tick()
             ctx.set(bank.write_en, 0)
-            ctx.set(bank.accumulate, 0)
-            await ctx.tick()
-            await ctx.tick()
-            ctx.set(bank.read_addr, 0)
-            ctx.set(bank.read_activation, activation)
             ctx.set(bank.read_en, 1)
+            ctx.set(bank.read_addr, 3)
             await ctx.tick()
             ctx.set(bank.read_en, 0)
-            out["valid"] = ctx.get(bank.read_valid)
-            out["data"] = ctx.get(bank.read_data)
+            for _ in range(latency - 1):
+                assert not ctx.get(bank.read_valid)
+                await ctx.tick()
+            assert ctx.get(bank.read_valid) and ctx.get(bank.read_data) == 0x1234
 
-        sim = Simulator(bank)
-        sim.add_clock(1e-6)
-        sim.add_testbench(testbench)
-        sim.run()
-        assert out["valid"] == 1
-        return out["data"] % (1 << bank.config.combiner_width)
+        run_sim(bank, tb)
 
-    def test_back_to_back_accumulates_same_row(self, cfg):
-        bank = CombinerBank(cfg, bank_id=0)
-        p = self.pack
-        data = self._run(bank, [(p([100, 1]), 0), (p([50, 2]), 1), (p([25, 3]), 1)])
-        assert self.unpack(data, 2) == [175, 6]
 
-    def test_accumulate_does_not_carry_between_elements(self, cfg):
-        bank = CombinerBank(cfg, bank_id=0)
-        p = self.pack
-        data = self._run(bank, [(p([-1, 10]), 0), (p([1, 0]), 1)])
-        assert self.unpack(data, 2) == [0, 10]
+class TestMerge:
+    @pytest.mark.parametrize("latency", [1, 2, 4])
+    def test_overwrite_then_accumulate(self, latency):
+        cfg = config(latency)
+        dut = Combiner(cfg)
 
-    @pytest.mark.parametrize(
-        ("activation", "expected"),
-        [
-            (Activation.NONE.value, [-5, 9]),
-            (Activation.RELU.value, [0, 9]),
-            (Activation.RELU6.value, [0, 6]),
-        ],
-    )
-    def test_activation_is_per_element(self, cfg, activation, expected):
-        bank = CombinerBank(cfg, bank_id=0)
-        data = self._run(bank, [(self.pack([-5, 9]), 0)], activation=activation)
-        assert self.unpack(data, 2) == expected
+        async def tb(ctx):
+            d = Driver(ctx, dut, cfg)
+            await d.clock((5, [1, -2, 3, -4], 0))
+            await d.drain()
+            await d.clock((5, [10, 20, 30, 40], 1))
+            await d.drain()
+            assert await d.read(5) == [11, 18, 33, 36]
+
+        run_sim(dut, tb)
+
+    def test_each_lane_wraps_on_its_own(self):
+        cfg = config()
+        dut = Combiner(cfg)
+        big = (1 << 31) - 1
+
+        async def tb(ctx):
+            d = Driver(ctx, dut, cfg)
+            await d.clock((2, [big, -1, 0, -(1 << 31)], 0))
+            await d.clock((2, [1, 1, -1, -1], 1))
+            await d.drain()
+            assert await d.read(2) == [-(1 << 31), 0, -1, big]
+
+        run_sim(dut, tb)
+
+    @pytest.mark.parametrize("latency", [1, 2, 3, 4])
+    @pytest.mark.parametrize("gap", [0, 1, 2, 3, 4, 5])
+    def test_accumulates_onto_one_row_at_every_spacing(self, latency, gap):
+        """Five accumulates onto one row, ``gap`` idle clocks apart (0: back to back),
+        with an unrelated row written between: each sees the last one's sum."""
+        cfg = config(latency)
+        dut = Combiner(cfg)
+
+        async def tb(ctx):
+            d = Driver(ctx, dut, cfg)
+            await d.clock((7, [100, 200, 300, 400], 0))
+            for n in range(5):
+                await d.clock((7, [n, -n, 2 * n, 1], 1))
+                for g in range(gap):
+                    await d.clock((1, [g, g, g, g], g % 2) if g == 1 else None)
+            await d.drain()
+            assert await d.read(7) == d.model[7]
+            assert d.model[7] == [110, 190, 320, 405]
+
+        run_sim(dut, tb)
+
+
+class TestStoreRead:
+    def test_store_waits_while_the_merge_reads(self):
+        """An accumulate stream holds STORE off the read port; overwrites don't."""
+        cfg = config()
+        dut = Combiner(cfg)
+        seen = {}
+
+        async def tb(ctx):
+            d = Driver(ctx, dut, cfg)
+            await d.clock((0, [9, 9, 9, 9], 0))
+            await d.drain()
+            taken = [await d.clock((1, [1, 1, 1, 1], 1), read=0) for _ in range(6)]
+            seen["during_accumulates"] = any(taken)
+            taken = [await d.clock((2 + i, [1, 1, 1, 1], 0), read=0) for i in range(3)]
+            seen["during_overwrites"] = taken[0]
+
+        run_sim(dut, tb)
+        assert seen == {"during_accumulates": False, "during_overwrites": True}
+
+    def test_store_waits_for_a_pending_row(self):
+        """STORE asks for a row whose write is still in the pipeline: it is taken only
+        once the row is committed, and reads the new value."""
+        cfg = config(latency=3)
+        dut = Combiner(cfg)
+
+        async def tb(ctx):
+            d = Driver(ctx, dut, cfg)
+            assert not await d.clock((4, [5, 6, 7, 8], 0), read=4)
+            assert await d.read(4) == [5, 6, 7, 8]
+
+        run_sim(dut, tb)
+
+
+@pytest.mark.parametrize("latency", [1, 2, 3])
+@pytest.mark.parametrize("seed", range(3))
+def test_random_requests_and_reads_match_the_model(latency, seed):
+    """Requests every clock (overwrites, accumulates, idle) over a few rows, with STORE
+    reads among them: every read returns the model's row as of when it was taken."""
+    cfg = config(latency)
+    dut = Combiner(cfg)
+    rng = random.Random(seed)
+
+    async def tb(ctx):
+        d = Driver(ctx, dut, cfg)
+        for row in range(6):
+            await d.clock((row, [rng.randrange(-50, 50) for _ in range(4)], 0))
+        await d.drain()
+        checks = 0
+        for _ in range(300):
+            req = None
+            if rng.random() < 0.8:
+                vals = [rng.randrange(-1000, 1000) for _ in range(4)]
+                req = (rng.randrange(6), vals, rng.random() < 0.6)
+            read = rng.randrange(6) if rng.random() < 0.15 else None
+            want = dict(d.model)  # before this clock's request
+            if await d.clock(req, read):
+                # Taken: nothing pending on the row, so its value is the model's
+                # before this clock's request (which can't be to this row)
+                expect = want.get(read, [0] * 4)
+                for _ in range(latency + 2):
+                    if ctx.get(dut.read_valid):
+                        assert unpack(ctx.get(dut.read_data)) == expect
+                        checks += 1
+                        break
+                    await d.clock()
+                else:
+                    raise AssertionError(f"a read of row {read} was taken but returned no data")
+        await d.drain()
+        for row in range(6):
+            assert await d.read(row) == d.model.get(row, [0] * 4)
+        assert checks > 5
+
+    run_sim(dut, tb, max_cycles=50_000)
+
+
+def test_verilog():
+    from amaranth.back import verilog
+
+    skip_without_yosys()
+    output = verilog.convert(Combiner(config()), name="Combiner")
+    assert "module Combiner" in output and "bank_1" in output

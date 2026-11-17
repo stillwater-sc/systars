@@ -424,9 +424,9 @@ class SystolicTop(Component):
             combiner.read_addr.eq(bm_out.combiner_read_addr),
             bm_out.combiner_read_data.eq(combiner.read_data),
             bm_out.combiner_read_valid.eq(combiner.read_valid),
-            # Activation is applied during store
-            # BlockMoverOut applies its latched activation per element
-            combiner.read_activation.eq(0),
+            # The merge has the read port first: STORE waits for read_ready
+            bm_out.combiner_read_ready.eq(combiner.read_ready),
+            # The activation is the BlockMoverOut's, per element
         ]
 
         # =====================================================================
