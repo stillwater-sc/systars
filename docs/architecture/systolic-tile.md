@@ -34,12 +34,12 @@ SYSTARS uses KPU names for its memories, never cache names:
 
 ## The processes
 
-The **BlockMover** has two legs: LOAD (L3 to L2 or the Combiner; `controller/load.py`,
-`blockmover/reader.py`) and STORE (Combiner to L3; `controller/store.py`, `blockmover/writer.py`). It moves
+The **BlockMover** has two legs: LOAD (L3 to L2 or the Combiner; `controller/blockmover_in.py`,
+`blockmover/reader.py`) and STORE (Combiner to L3; `controller/blockmover_out.py`, `blockmover/writer.py`). It moves
 a whole tile per command: `len` rows, `stride` bytes apart, `row_bytes` each, from any byte
 address, with no AXI burst crossing a 4 KB boundary.
 
-The **Streamer** (`controller/execute.py`) turns L2 tiles into element streams through L1 and
+The **Streamer** (`controller/streamer.py`) turns L2 tiles into element streams through L1 and
 writes the results into the Combiner.
 
 Every command carries `cmd_sync`: the slots it reads and fills, and the ACQUIRE, SIGNAL, WAIT

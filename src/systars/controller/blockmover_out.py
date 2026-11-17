@@ -1,5 +1,5 @@
 """
-StoreController - moves a result tile from the Combiner to L3 (the BlockMover's
+BlockMoverOut - moves a result tile from the Combiner to L3 (the BlockMover's
 L2 -> L3 leg).
 
 In the KPU's CSP model (kpu-sim) the tile's AXI port is its link to L3. A STORE
@@ -36,7 +36,7 @@ State Machine:
          -> (NEXT | DONE)
 
 Data Flow:
-    Combiner --> StoreController --> StreamWriter --> L3
+    Combiner --> BlockMoverOut --> StreamWriter --> L3
 """
 
 from amaranth import Cat, Const, Module, Mux, Signal, signed
@@ -48,9 +48,9 @@ from ..memory.activation import activate_row
 from ..util.commands import BlockMoverOpcode
 
 
-class StoreController(Component):
+class BlockMoverOut(Component):
     """
-    Store controller for Combiner -> DRAM transfers.
+    The BlockMover's outbound leg: a STORE, the Combiner -> L3.
 
     Coordinates data movement from the Combiner through the StreamWriter
     BlockMover engine to external memory.
@@ -102,7 +102,7 @@ class StoreController(Component):
             # One Combiner row is sent per BlockMover beat; a wider row would be
             # silently truncated to its low blockmover_buswidth bits
             raise ValueError(
-                f"StoreController: Combiner row ({combiner_width} bits = {config.grid_cols * config.tile_cols}"
+                f"BlockMoverOut: Combiner row ({combiner_width} bits = {config.grid_cols * config.tile_cols}"
                 f" x {config.acc_bits}) is wider than blockmover_buswidth ({buswidth}); "
                 f"set blockmover_buswidth >= {combiner_width}"
             )
@@ -111,10 +111,10 @@ class StoreController(Component):
         beat = buswidth // 8
         if beat < 2 or beat & (beat - 1):
             raise ValueError(
-                f"StoreController: blockmover_buswidth must be a power-of-two bytes, got {buswidth}"
+                f"BlockMoverOut: blockmover_buswidth must be a power-of-two bytes, got {buswidth}"
             )
         if beat > AXI_4KB:
-            raise ValueError(f"StoreController: a {beat}-byte beat is wider than a 4 KB page")
+            raise ValueError(f"BlockMoverOut: a {beat}-byte beat is wider than a 4 KB page")
 
         super().__init__(
             {

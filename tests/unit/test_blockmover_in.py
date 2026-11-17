@@ -1,8 +1,8 @@
 """
-Unit tests for the LoadController.
+Unit tests for the BlockMoverIn.
 
 These tests verify:
-1. LoadController instantiation
+1. BlockMoverIn instantiation
 2. MEMCPY command acceptance (for load operations)
 3. BlockMover request generation
 4. Data reception and scratchpad write
@@ -14,12 +14,12 @@ import pytest
 from amaranth.sim import Simulator, Tick
 
 from systars.config import SystolicConfig
-from systars.controller.load import LoadController
+from systars.controller.blockmover_in import BlockMoverIn
 from systars.util.commands import BlockMoverOpcode
 
 
-class TestLoadController:
-    """Test suite for LoadController."""
+class TestBlockMoverIn:
+    """Test suite for BlockMoverIn."""
 
     @pytest.fixture
     def config(self):
@@ -34,16 +34,16 @@ class TestLoadController:
 
     @pytest.fixture
     def controller(self, config):
-        """Create a LoadController instance."""
-        return LoadController(config)
+        """Create a BlockMoverIn instance."""
+        return BlockMoverIn(config)
 
     def test_instantiation(self, controller, config):
-        """Test that LoadController can be instantiated."""
+        """Test that BlockMoverIn can be instantiated."""
         assert controller is not None
         assert controller.config == config
 
     def test_has_correct_ports(self, controller):
-        """Test that LoadController has all required ports."""
+        """Test that BlockMoverIn has all required ports."""
         # Command interface
         assert hasattr(controller, "cmd_valid")
         assert hasattr(controller, "cmd_ready")
@@ -75,8 +75,8 @@ class TestLoadController:
         assert hasattr(controller, "completed_id")
 
     def test_idle_ready(self, config):
-        """Test that LoadController is ready in idle state."""
-        ctrl = LoadController(config)
+        """Test that BlockMoverIn is ready in idle state."""
+        ctrl = BlockMoverIn(config)
         results = []
 
         def testbench():
@@ -94,8 +94,8 @@ class TestLoadController:
         assert results[0]["busy"] == 0, "Should not be busy in idle state"
 
     def test_memcpy_command_acceptance(self, config):
-        """Test that LoadController accepts MEMCPY commands."""
-        ctrl = LoadController(config)
+        """Test that BlockMoverIn accepts MEMCPY commands."""
+        ctrl = BlockMoverIn(config)
         results = {"cmd_accepted": False, "dma_issued": False}
 
         def testbench():
@@ -137,7 +137,7 @@ class TestLoadController:
 
     def test_single_beat_transfer(self, config):
         """Test single-beat MEMCPY transfer."""
-        ctrl = LoadController(config)
+        ctrl = BlockMoverIn(config)
         results = {"sp_write": False, "completed": False}
 
         def testbench():
@@ -200,7 +200,7 @@ class TestLoadController:
 
     def test_multi_beat_transfer(self, config):
         """Test multi-beat MEMCPY transfer."""
-        ctrl = LoadController(config)
+        ctrl = BlockMoverIn(config)
         write_count = [0]
         write_addrs = []
 
@@ -252,7 +252,7 @@ class TestLoadController:
 
     def test_busy_signal(self, config):
         """Test that busy signal is asserted during transfer."""
-        ctrl = LoadController(config)
+        ctrl = BlockMoverIn(config)
         busy_states = []
 
         def testbench():
@@ -302,7 +302,7 @@ class TestLoadController:
         assert busy_states[2] == ("done", 0), "Should not be busy after done"
 
     def test_elaboration(self, controller):
-        """Test that LoadController elaborates without errors."""
+        """Test that BlockMoverIn elaborates without errors."""
 
         def testbench():
             yield Tick()
@@ -313,11 +313,11 @@ class TestLoadController:
         sim.run()
 
 
-class TestLoadControllerVerilogGeneration:
-    """Test Verilog generation for LoadController."""
+class TestBlockMoverInVerilogGeneration:
+    """Test Verilog generation for BlockMoverIn."""
 
     def test_generate_verilog(self, tmp_path):
-        """Test that LoadController can generate valid Verilog."""
+        """Test that BlockMoverIn can generate valid Verilog."""
         from amaranth._toolchain.yosys import find_yosys
         from amaranth.back import verilog
 
@@ -327,10 +327,10 @@ class TestLoadControllerVerilogGeneration:
             pytest.skip("Yosys not found")
 
         config = SystolicConfig(blockmover_buswidth=512)
-        ctrl = LoadController(config)
+        ctrl = BlockMoverIn(config)
 
-        output = verilog.convert(ctrl, name="LoadController")
-        assert "module LoadController" in output
+        output = verilog.convert(ctrl, name="BlockMoverIn")
+        assert "module BlockMoverIn" in output
         assert "cmd_valid" in output
         assert "engine_req_valid" in output
         assert "sp_write_en" in output
@@ -354,7 +354,7 @@ class TestStridedAndTransposeElaboration:
         from amaranth.back import verilog
 
         from systars.blockmover.strided_reader import StridedStreamReader
-        from systars.controller.load_transpose import MatrixLoader
+        from systars.controller.blockmover_in_transpose import MatrixLoader
 
         cls = {"StridedStreamReader": StridedStreamReader, "MatrixLoader": MatrixLoader}[component]
         config = SystolicConfig(grid_rows=4, grid_cols=4, blockmover_buswidth=128)

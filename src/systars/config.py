@@ -140,13 +140,15 @@ class SystolicConfig:
     # Queue Depths
     # =========================================================================
     ld_queue_length: int = 8
-    """Depth of the BlockMover's L3 -> L2 (LOAD) command queue in SystolicTop."""
+    """Depth of the BlockMover's inbound leg's command queue in SystolicTop (its
+    program of LOADs, L3 -> L2)."""
 
     st_queue_length: int = 2
-    """Depth of the BlockMover's Combiner -> L3 (STORE) command queue."""
+    """Depth of the BlockMover's outbound leg's command queue (STOREs, the Combiner ->
+    L3)."""
 
     ex_queue_length: int = 8
-    """Depth of the Streamer's (execute) command queue."""
+    """Depth of the Streamer's command queue (EXECUTEs)."""
 
     # =========================================================================
     # Tile Buffers (credits and tile-ready tokens, controller/sync.py)

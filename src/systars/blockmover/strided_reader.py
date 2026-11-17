@@ -283,7 +283,7 @@ class StridedStreamReader(Component):
 
                 # Pack gathered elements into a scratchpad row: [elem_0, elem_1, ...]
                 # at the scratchpad element width (input_bits), the same layout
-                # ExecuteController unpacks. (accum_buffer holds up to
+                # Streamer unpacks. (accum_buffer holds up to
                 # max_elem_bits per element; only the low input_bits are a
                 # scratchpad element.)
                 packed_data = Signal(cfg.sp_width)

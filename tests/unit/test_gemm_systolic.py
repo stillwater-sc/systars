@@ -8,7 +8,7 @@ scratchpad and Combiner latencies. The commands are untracked (``cmd_sync`` 0):
 the host issues one at a time and waits for each completion.
 
 The host lays each L2 tile out in L3 as the Streamer reads it (one L2 row per
-block, ``controller/execute.py``) and moves it with MEMCPY:
+block, ``controller/streamer.py``) and moves it with MEMCPY:
 
 - OS: per K tile, A row-major (row ``i`` = ``A[i, k0:k0+KB]``) and B column-major
   (row ``j`` = ``B[k0:k0+KB, j]``); the K tiles are one reduction (``cmd_chain``).
@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 from systars.config import SystolicConfig
-from systars.controller.execute import CHAIN_CONTINUES, CHAIN_MORE
+from systars.controller.streamer import CHAIN_CONTINUES, CHAIN_MORE
 from systars.top import SystolicTop
 from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
@@ -66,9 +66,9 @@ class Host:
     """Issues SystolicTop commands and waits for their completions."""
 
     COMPLETED = {
-        SystolicTop.CTRL_LOAD: "load_completed",
-        SystolicTop.CTRL_STORE: "store_completed",
-        SystolicTop.CTRL_EXEC: "exec_completed",
+        SystolicTop.CTRL_LOAD: "bm_in_completed",
+        SystolicTop.CTRL_STORE: "bm_out_completed",
+        SystolicTop.CTRL_EXEC: "streamer_completed",
     }
     FIELDS = ("dram_addr", "local_addr", "len", "rs1", "rs2", "rd", "k_dim", "chain",
               "activation")  # fmt: skip

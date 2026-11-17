@@ -122,7 +122,7 @@ class TestCombinerBank:
             yield bank.write_en.eq(1)
             yield Tick()
 
-            # Drop accumulate together with write_en, as ExecuteController does
+            # Drop accumulate together with write_en, as Streamer does
             yield bank.write_en.eq(0)
             yield bank.accumulate.eq(0)
             yield Tick()

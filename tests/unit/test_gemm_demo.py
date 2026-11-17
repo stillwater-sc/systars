@@ -166,7 +166,7 @@ class TestGemmDemo:
     def test_load_command_dispatch(self, small_config):
         """Test that load commands are dispatched correctly."""
         dut = SystolicTop(small_config)
-        results = {"load_busy": False}
+        results = {"bm_in_busy": False}
 
         def testbench():
             # Issue a load command
@@ -183,21 +183,21 @@ class TestGemmDemo:
             yield Tick()
             yield Tick()
 
-            # Load controller should be busy
-            load_busy = yield dut.load_busy
-            results["load_busy"] = load_busy == 1
+            # BlockMoverIn should be busy
+            bm_in_busy = yield dut.bm_in_busy
+            results["bm_in_busy"] = bm_in_busy == 1
 
         sim = Simulator(dut)
         sim.add_clock(1e-6)
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results["load_busy"], "Load controller should be busy after command"
+        assert results["bm_in_busy"], "BlockMoverIn should be busy after command"
 
     def test_store_command_dispatch(self, small_config):
         """Test that store commands are dispatched correctly."""
         dut = SystolicTop(small_config)
-        results = {"store_busy": False}
+        results = {"bm_out_busy": False}
 
         def testbench():
             # Issue a store command
@@ -214,21 +214,21 @@ class TestGemmDemo:
             yield Tick()
             yield Tick()
 
-            # Store controller should be busy
-            store_busy = yield dut.store_busy
-            results["store_busy"] = store_busy == 1
+            # BlockMoverOut should be busy
+            bm_out_busy = yield dut.bm_out_busy
+            results["bm_out_busy"] = bm_out_busy == 1
 
         sim = Simulator(dut)
         sim.add_clock(1e-6)
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results["store_busy"], "Store controller should be busy after command"
+        assert results["bm_out_busy"], "BlockMoverOut should be busy after command"
 
     def test_execute_config_command(self, small_config):
         """Test that execute CONFIG commands complete."""
         dut = SystolicTop(small_config)
-        results = {"completed": False, "completed_type": None, "exec_busy": False}
+        results = {"completed": False, "completed_type": None, "streamer_busy": False}
 
         def testbench():
             # Wait for system to stabilize
@@ -247,9 +247,9 @@ class TestGemmDemo:
             yield dut.cmd_valid.eq(1)
             yield Tick()
 
-            # Check if exec controller became busy
-            exec_busy = yield dut.exec_busy
-            results["exec_busy"] = exec_busy == 1
+            # Check if the Streamer became busy
+            streamer_busy = yield dut.streamer_busy
+            results["streamer_busy"] = streamer_busy == 1
 
             yield dut.cmd_valid.eq(0)
 
@@ -267,9 +267,9 @@ class TestGemmDemo:
         sim.add_testbench(testbench)
         sim.run()
 
-        # Either completed or exec_busy should be true
-        assert results["exec_busy"] or results["completed"], (
-            "Exec controller should accept CONFIG command"
+        # Either completed or streamer_busy should be true
+        assert results["streamer_busy"] or results["completed"], (
+            "The Streamer should accept CONFIG command"
         )
 
 
@@ -331,9 +331,9 @@ class TestGemmDemoVerilog:
         # Check for submodule instantiations
         assert "stream_reader" in output
         assert "stream_writer" in output
-        assert "load_ctrl" in output
-        assert "store_ctrl" in output
-        assert "exec_ctrl" in output
+        assert "bm_in" in output
+        assert "bm_out" in output
+        assert "streamer" in output
 
 
 class TestDRAMHelper:

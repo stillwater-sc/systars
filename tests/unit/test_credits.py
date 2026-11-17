@@ -5,7 +5,7 @@ Credits and tile-ready tokens (controller/sync.py, SystolicTop's command queues)
   protocol error.
 - Matmul and Conv2d on a real ``SystolicTop``, with a monitor that replays the
   observable events (commands pushed, ``*_started``, ``*_completed``, and the
-  Streamer's ``exec_result``) through an independent slot model, every cycle. The
+  Streamer's ``streamer_result``) through an independent slot model, every cycle. The
   Streamer has several commands in flight: each returns its L2 credit on its
   completion (its last block is in L1) and emits its result token on its result,
   matched by command ID:
@@ -156,7 +156,7 @@ def test_sync_encoding():
 # SystolicTop: an independent replay of the observable events
 # =============================================================================
 
-PROCESSES = {CTRL_LOAD: "load", CTRL_STORE: "store", CTRL_EXEC: "exec"}
+PROCESSES = {CTRL_LOAD: "bm_in", CTRL_STORE: "bm_out", CTRL_EXEC: "streamer"}
 
 
 class Monitor:
@@ -178,7 +178,7 @@ class Monitor:
         for name in PROCESSES.values():
             sigs += [getattr(top, f"{name}_started"), getattr(top, f"{name}_started_id"),
                      getattr(top, f"{name}_completed"), getattr(top, f"{name}_completed_id")]  # fmt: skip
-        sigs += [top.exec_result, top.exec_result_id]
+        sigs += [top.streamer_result, top.streamer_result_id]
         return [*sigs, top.l2_free, top.l2_ready, top.combiner_free, top.combiner_ready, top.sync_error,
                 top.l1_error]  # fmt: skip
 

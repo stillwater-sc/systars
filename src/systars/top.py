@@ -5,11 +5,13 @@ This module wires together all major subsystems:
 - SystolicArray: Compute fabric for matrix multiply
 - Scratchpad: Input/weight storage
 - Combiner: Output/partial sum storage
-- StreamReader: BlockMover for DRAM → local memory
-- StreamWriter: BlockMover for local memory → DRAM
-- LoadController: Orchestrates DRAM → Scratchpad
-- StoreController: Orchestrates Combiner → DRAM
-- ExecuteController: Orchestrates Scratchpad → SystolicArray → Combiner
+- StreamReader, StreamWriter: the BlockMover's engines, L3 → local memory and back
+- BlockMoverIn: the BlockMover's inbound leg, L3 → L2 (or the Combiner), a LOAD
+- BlockMoverOut: the BlockMover's outbound leg, the Combiner → L3, a STORE
+- Streamer: L2 → L1 → fabric, and the results into the Combiner, an EXECUTE
+
+The control processes keep their commands' types: ``cmd_type`` 0 (LOAD) goes to
+BlockMoverIn, 1 (STORE) to BlockMoverOut and 2 (EXECUTE) to the Streamer.
 
 External Interfaces:
 - AXI memory interface (read and write channels): the tile's link to L3
@@ -21,11 +23,11 @@ External Interfaces:
 
 Data Flow for Matrix Multiply C = A × B + D:
 1. Optionally load D (a bias, or an existing C) from L3 → Combiner via
-   LoadController + StreamReader (a LOAD to a Combiner address)
-2. Load A from DRAM → Scratchpad via LoadController + StreamReader
-3. Load B from DRAM → Scratchpad via LoadController + StreamReader
-4. Execute matmul via ExecuteController + SystolicArray (accumulating onto D)
-5. Store C from Combiner → DRAM via StoreController + StreamWriter
+   BlockMoverIn + StreamReader (a LOAD to a Combiner address)
+2. Load A from DRAM → Scratchpad via BlockMoverIn + StreamReader
+3. Load B from DRAM → Scratchpad via BlockMoverIn + StreamReader
+4. Execute matmul via Streamer + SystolicArray (accumulating onto D)
+5. Store C from Combiner → DRAM via BlockMoverOut + StreamWriter
 
 The Combiner's write port is shared: the Streamer writes its results whenever
 they arrive, and a LOAD into the Combiner writes in the clocks it leaves free.
@@ -38,9 +40,9 @@ from amaranth.lib.wiring import Component, In, Out
 from .blockmover.reader import StreamReader
 from .blockmover.writer import StreamWriter
 from .config import SystolicConfig
-from .controller.execute import ExecuteController
-from .controller.load import LoadController
-from .controller.store import StoreController
+from .controller.blockmover_in import BlockMoverIn
+from .controller.blockmover_out import BlockMoverOut
+from .controller.streamer import Streamer
 from .controller.sync import SlotPool, Sync
 from .core.systolic_array import SystolicArray
 from .memory.combiner import Combiner
@@ -75,12 +77,13 @@ class SystolicTop(Component):
 
         Status:
             busy: Any process is busy
-            load_busy, store_busy, exec_busy: A process runs a command or has commands queued
+            bm_in_busy, bm_out_busy, streamer_busy: A process runs a command or has commands queued
             completed: A command completed this cycle (one of possibly several)
-            completed_type: Which controller completed (0=load, 1=store, 2=exec)
-            {load,store,exec}_completed[_id]: Per-controller completions (lossless).
+            completed_type: Which process completed (its command type: 0=load, 1=store,
+                2=exec)
+            {bm_in,bm_out,streamer}_completed[_id]: Per-process completions (lossless).
                 The Streamer's completion means it is done with L2 (its last block
-                is in L1); exec_result[_id] means its results are in the Combiner
+                is in L1); streamer_result[_id] means its results are in the Combiner
             {load,store,exec}_started[_id]: A process started a command
             l2_free, l2_ready, combiner_free, combiner_ready: Slot states (OWNED = neither)
             sync_error: Sticky credit/token protocol error
@@ -118,7 +121,7 @@ class SystolicTop(Component):
             "cmd_k_dim": In(16),  # Inner dimension
             "cmd_activation": In(4),  # Activation function (for store)
             "cmd_sync": In(Sync.BITS),  # Credits and tokens (controller/sync.py); 0 = untracked
-            "cmd_chain": In(2),  # Execute: OS reduction chaining (controller/execute.py)
+            "cmd_chain": In(2),  # Execute: OS reduction chaining (controller/streamer.py)
             # AXI Read Address Channel
             "axi_arvalid": Out(1),
             "axi_arready": In(1),
@@ -151,33 +154,33 @@ class SystolicTop(Component):
             "axi_bresp": In(2),
             # Status
             "busy": Out(1),
-            "load_busy": Out(1),
-            "store_busy": Out(1),
-            "exec_busy": Out(1),
+            "bm_in_busy": Out(1),
+            "bm_out_busy": Out(1),
+            "streamer_busy": Out(1),
             "completed": Out(1),
             "completed_type": Out(2),
             "completed_id": Out(8),
             # Per-controller completions. The controllers run concurrently and
             # can finish in the same cycle; `completed` above reports only one
-            # of them (load > store > exec), these report every completion.
-            "load_completed": Out(1),
-            "load_completed_id": Out(8),
-            "store_completed": Out(1),
-            "store_completed_id": Out(8),
-            "exec_completed": Out(1),
-            "exec_completed_id": Out(8),
+            # of them (bm_in > bm_out > streamer), these report every completion.
+            "bm_in_completed": Out(1),
+            "bm_in_completed_id": Out(8),
+            "bm_out_completed": Out(1),
+            "bm_out_completed_id": Out(8),
+            "streamer_completed": Out(1),
+            "streamer_completed_id": Out(8),
             # The Streamer's results are in the Combiner (its result token)
-            "exec_result": Out(1),
-            "exec_result_id": Out(8),
+            "streamer_result": Out(1),
+            "streamer_result_id": Out(8),
             "interrupt": Out(1),
             # A process started a command (its queue's head was dispatched): the
-            # CSP action's start, matching {load,store,exec}_completed
-            "load_started": Out(1),
-            "load_started_id": Out(8),
-            "store_started": Out(1),
-            "store_started_id": Out(8),
-            "exec_started": Out(1),
-            "exec_started_id": Out(8),
+            # CSP action's start, matching {bm_in,bm_out,streamer}_completed
+            "bm_in_started": Out(1),
+            "bm_in_started_id": Out(8),
+            "bm_out_started": Out(1),
+            "bm_out_started_id": Out(8),
+            "streamer_started": Out(1),
+            "streamer_started_id": Out(8),
             # Tile slots (controller/sync.py): FREE / READY bits per slot (OWNED =
             # neither), and a sticky protocol error
             "l2_free": Out(config.l2_slots),
@@ -185,7 +188,7 @@ class SystolicTop(Component):
             "combiner_free": Out(config.combiner_slots),
             "combiner_ready": Out(config.combiner_slots),
             "sync_error": Out(1),
-            # Sticky L1/fabric schedule error (controller/execute.py)
+            # Sticky L1/fabric schedule error (controller/streamer.py)
             "l1_error": Out(1),
         }
 
@@ -215,9 +218,9 @@ class SystolicTop(Component):
         m.submodules.stream_writer = writer = StreamWriter(cfg)
 
         # Controllers
-        m.submodules.load_ctrl = load_ctrl = LoadController(cfg)
-        m.submodules.store_ctrl = store_ctrl = StoreController(cfg)
-        m.submodules.exec_ctrl = exec_ctrl = ExecuteController(cfg)
+        m.submodules.bm_in = bm_in = BlockMoverIn(cfg)
+        m.submodules.bm_out = bm_out = BlockMoverOut(cfg)
+        m.submodules.streamer = streamer = Streamer(cfg)
 
         # =====================================================================
         # Command Queues, Credits and Tile-Ready Tokens (controller/sync.py)
@@ -235,18 +238,18 @@ class SystolicTop(Component):
         # controller's command ports to SystolicTop's command fields.
         processes = {
             self.CTRL_LOAD: (
-                "load", load_ctrl, cfg.ld_queue_length,
+                "bm_in", bm_in, cfg.ld_queue_length,
                 {"opcode": "opcode", "dram_addr": "dram_addr", "sp_addr": "local_addr",
                  "len": "len", "stride": "stride", "row_bytes": "row_bytes", "id": "id"},
             ),
             self.CTRL_STORE: (
-                "store", store_ctrl, cfg.st_queue_length,
+                "bm_out", bm_out, cfg.st_queue_length,
                 {"opcode": "opcode", "combiner_addr": "local_addr", "dram_addr": "dram_addr",
                  "len": "len", "stride": "stride", "row_bytes": "row_bytes", "id": "id",
                  "activation": "activation"},
             ),
             self.CTRL_EXEC: (
-                "exec", exec_ctrl, cfg.ex_queue_length,
+                "streamer", streamer, cfg.ex_queue_length,
                 {"opcode": "opcode", "rs1": "rs1", "rs2": "rs2", "rd": "rd",
                  "k_dim": "k_dim", "chain": "chain", "sync": "sync", "id": "id"},
             ),
@@ -293,14 +296,14 @@ class SystolicTop(Component):
         # address): takes the destination slot's credit; emits its token when done
         ld_to_combiner = Signal()  # the head LOAD fills a Combiner slot
         ld_combiner_inflight = Signal()  # the running one does
-        m.d.comb += ld_to_combiner.eq(LocalAddr.is_combiner(load_ctrl.cmd_sp_addr))
+        m.d.comb += ld_to_combiner.eq(LocalAddr.is_combiner(bm_in.cmd_sp_addr))
         ld_go, ld_head, ld_done = gate(
             self.CTRL_LOAD,
             lambda h: ~h.acquire | Mux(ld_to_combiner, acc.fill_credit, l2.prod_credit),
         )
         with m.If(ld_go):
             m.d.sync += ld_combiner_inflight.eq(ld_to_combiner)
-        ld_signal = load_ctrl.completed & ld_done.signal
+        ld_signal = bm_in.completed & ld_done.signal
         m.d.comb += [
             l2.prod_slot.eq(ld_head.dst),
             l2.prod_acquire.eq(ld_head.acquire & ~ld_to_combiner),
@@ -324,18 +327,18 @@ class SystolicTop(Component):
             self.CTRL_EXEC,
             lambda h: (~h.wait | l2.cons_ready) & (~h.acquire | acc.prod_credit),
         )
-        ex_released = Sync.fields(exec_ctrl.completed_sync)
-        ex_resulted = Sync.fields(exec_ctrl.result_sync)
+        ex_released = Sync.fields(streamer.completed_sync)
+        ex_resulted = Sync.fields(streamer.result_sync)
         m.d.comb += [
             l2.cons_slot.eq(ex_head.src),
             l2.cons_wait.eq(ex_head.wait),
             l2.cons_take.eq(ex_go & ex_head.wait & ex_head.release),
-            l2.cons_release.eq(exec_ctrl.completed & ex_released.release),
+            l2.cons_release.eq(streamer.completed & ex_released.release),
             l2.cons_release_slot.eq(ex_released.src),
             acc.prod_slot.eq(ex_head.dst),
             acc.prod_acquire.eq(ex_head.acquire),
             acc.prod_take.eq(ex_go & ex_head.acquire),
-            acc.prod_signal.eq(exec_ctrl.result & ex_resulted.signal),
+            acc.prod_signal.eq(streamer.result & ex_resulted.signal),
             acc.prod_signal_slot.eq(ex_resulted.dst),
         ]
 
@@ -346,7 +349,7 @@ class SystolicTop(Component):
             acc.cons_slot.eq(st_head.src),
             acc.cons_wait.eq(st_head.wait),
             acc.cons_take.eq(st_go & st_head.wait & st_head.release),
-            acc.cons_release.eq(store_ctrl.completed & st_done.release),
+            acc.cons_release.eq(bm_out.completed & st_done.release),
             acc.cons_release_slot.eq(st_done.src),
         ]
 
@@ -367,119 +370,119 @@ class SystolicTop(Component):
         ]
 
         # =====================================================================
-        # LoadController <-> StreamReader <-> Scratchpad
+        # BlockMoverIn <-> StreamReader <-> Scratchpad
         # =====================================================================
 
-        # LoadController -> StreamReader
+        # BlockMoverIn -> StreamReader
         m.d.comb += [
-            reader.req_valid.eq(load_ctrl.engine_req_valid),
-            load_ctrl.engine_req_ready.eq(reader.req_ready),
-            reader.req_addr.eq(load_ctrl.engine_req_addr),
-            reader.req_len.eq(load_ctrl.engine_req_len),
+            reader.req_valid.eq(bm_in.engine_req_valid),
+            bm_in.engine_req_ready.eq(reader.req_ready),
+            reader.req_addr.eq(bm_in.engine_req_addr),
+            reader.req_len.eq(bm_in.engine_req_len),
         ]
 
-        # StreamReader -> LoadController
+        # StreamReader -> BlockMoverIn
         m.d.comb += [
-            load_ctrl.engine_resp_valid.eq(reader.resp_valid),
-            reader.resp_ready.eq(load_ctrl.engine_resp_ready),
-            load_ctrl.engine_resp_data.eq(reader.resp_data),
-            load_ctrl.engine_resp_last.eq(reader.resp_last),
+            bm_in.engine_resp_valid.eq(reader.resp_valid),
+            reader.resp_ready.eq(bm_in.engine_resp_ready),
+            bm_in.engine_resp_data.eq(reader.resp_data),
+            bm_in.engine_resp_last.eq(reader.resp_last),
         ]
 
-        # LoadController -> Scratchpad (write)
+        # BlockMoverIn -> Scratchpad (write)
         m.d.comb += [
-            scratchpad.write_req.eq(load_ctrl.sp_write_en),
-            scratchpad.write_addr.eq(load_ctrl.sp_write_addr),
-            scratchpad.write_data.eq(load_ctrl.sp_write_data),
-            scratchpad.write_mask.eq(load_ctrl.sp_write_mask),
+            scratchpad.write_req.eq(bm_in.sp_write_en),
+            scratchpad.write_addr.eq(bm_in.sp_write_addr),
+            scratchpad.write_data.eq(bm_in.sp_write_data),
+            scratchpad.write_mask.eq(bm_in.sp_write_mask),
         ]
 
         # =====================================================================
-        # StoreController <-> StreamWriter <-> Combiner
+        # BlockMoverOut <-> StreamWriter <-> Combiner
         # =====================================================================
 
-        # StoreController -> StreamWriter
+        # BlockMoverOut -> StreamWriter
         m.d.comb += [
-            writer.req_valid.eq(store_ctrl.engine_req_valid),
-            store_ctrl.engine_req_ready.eq(writer.req_ready),
-            writer.req_addr.eq(store_ctrl.engine_req_addr),
-            writer.req_len.eq(store_ctrl.engine_req_len),
-            writer.data_valid.eq(store_ctrl.engine_data_valid),
-            store_ctrl.engine_data_ready.eq(writer.data_ready),
-            writer.data.eq(store_ctrl.engine_data),
-            writer.data_strb.eq(store_ctrl.engine_data_strb),
-            writer.data_last.eq(store_ctrl.engine_data_last),
-            store_ctrl.engine_done.eq(writer.done),
+            writer.req_valid.eq(bm_out.engine_req_valid),
+            bm_out.engine_req_ready.eq(writer.req_ready),
+            writer.req_addr.eq(bm_out.engine_req_addr),
+            writer.req_len.eq(bm_out.engine_req_len),
+            writer.data_valid.eq(bm_out.engine_data_valid),
+            bm_out.engine_data_ready.eq(writer.data_ready),
+            writer.data.eq(bm_out.engine_data),
+            writer.data_strb.eq(bm_out.engine_data_strb),
+            writer.data_last.eq(bm_out.engine_data_last),
+            bm_out.engine_done.eq(writer.done),
         ]
 
-        # Combiner -> StoreController (read)
+        # Combiner -> BlockMoverOut (read)
         m.d.comb += [
-            combiner.read_req.eq(store_ctrl.combiner_read_req),
-            combiner.read_addr.eq(store_ctrl.combiner_read_addr),
-            store_ctrl.combiner_read_data.eq(combiner.read_data),
-            store_ctrl.combiner_read_valid.eq(combiner.read_valid),
+            combiner.read_req.eq(bm_out.combiner_read_req),
+            combiner.read_addr.eq(bm_out.combiner_read_addr),
+            bm_out.combiner_read_data.eq(combiner.read_data),
+            bm_out.combiner_read_valid.eq(combiner.read_valid),
             # Activation is applied during store
-            # StoreController applies its latched activation per element
+            # BlockMoverOut applies its latched activation per element
             combiner.read_activation.eq(0),
         ]
 
         # =====================================================================
-        # ExecuteController <-> Scratchpad <-> SystolicArray <-> Combiner
+        # Streamer <-> Scratchpad <-> SystolicArray <-> Combiner
         # =====================================================================
 
-        # ExecuteController reads A and B on the scratchpad's two read ports
+        # Streamer reads A and B on the scratchpad's two read ports
         # (no other block reads the scratchpad)
         m.d.comb += [
-            scratchpad.read_req.eq(exec_ctrl.sp_a_read_req),
-            scratchpad.read_addr.eq(exec_ctrl.sp_a_read_addr),
-            exec_ctrl.sp_a_read_data.eq(scratchpad.read_data),
-            exec_ctrl.sp_a_read_valid.eq(scratchpad.read_valid),
-            scratchpad.read_b_req.eq(exec_ctrl.sp_b_read_req),
-            scratchpad.read_b_addr.eq(exec_ctrl.sp_b_read_addr),
-            exec_ctrl.sp_b_read_data.eq(scratchpad.read_b_data),
-            exec_ctrl.sp_b_read_valid.eq(scratchpad.read_b_valid),
+            scratchpad.read_req.eq(streamer.sp_a_read_req),
+            scratchpad.read_addr.eq(streamer.sp_a_read_addr),
+            streamer.sp_a_read_data.eq(scratchpad.read_data),
+            streamer.sp_a_read_valid.eq(scratchpad.read_valid),
+            scratchpad.read_b_req.eq(streamer.sp_b_read_req),
+            scratchpad.read_b_addr.eq(streamer.sp_b_read_addr),
+            streamer.sp_b_read_data.eq(scratchpad.read_b_data),
+            streamer.sp_b_read_valid.eq(scratchpad.read_b_valid),
         ]
 
-        # The Combiner's write port: the ExecuteController's result rows, which
-        # never wait, and in the clocks they leave free the LoadController's rows
-        # (a LOAD to a Combiner address). The StoreController only reads it.
-        m.d.comb += load_ctrl.combiner_write_ready.eq(~exec_ctrl.combiner_write_req)
-        with m.If(exec_ctrl.combiner_write_req):
+        # The Combiner's write port: the Streamer's result rows, which
+        # never wait, and in the clocks they leave free the BlockMoverIn's rows
+        # (a LOAD to a Combiner address). The BlockMoverOut only reads it.
+        m.d.comb += bm_in.combiner_write_ready.eq(~streamer.combiner_write_req)
+        with m.If(streamer.combiner_write_req):
             m.d.comb += [
                 combiner.write_req.eq(1),
-                combiner.write_addr.eq(exec_ctrl.combiner_write_addr),
-                combiner.write_data.eq(exec_ctrl.combiner_write_data),
-                combiner.accumulate.eq(exec_ctrl.combiner_accumulate),
+                combiner.write_addr.eq(streamer.combiner_write_addr),
+                combiner.write_data.eq(streamer.combiner_write_data),
+                combiner.accumulate.eq(streamer.combiner_accumulate),
             ]
         with m.Else():
             m.d.comb += [
-                combiner.write_req.eq(load_ctrl.combiner_write_en),
-                combiner.write_addr.eq(load_ctrl.combiner_write_addr),
-                combiner.write_data.eq(load_ctrl.combiner_write_data),
-                combiner.accumulate.eq(load_ctrl.combiner_write_accumulate),
+                combiner.write_req.eq(bm_in.combiner_write_en),
+                combiner.write_addr.eq(bm_in.combiner_write_addr),
+                combiner.write_data.eq(bm_in.combiner_write_data),
+                combiner.accumulate.eq(bm_in.combiner_write_accumulate),
             ]
 
         # =====================================================================
-        # ExecuteController <-> SystolicArray
+        # Streamer <-> SystolicArray
         # =====================================================================
 
         m.d.comb += [
-            array.in_shift.eq(exec_ctrl.array_in_shift),
-            array.in_control_dataflow.eq(exec_ctrl.array_in_dataflow),
-            exec_ctrl.array_out_collision.eq(array.out_collision),
+            array.in_shift.eq(streamer.array_in_shift),
+            array.in_control_dataflow.eq(streamer.array_in_dataflow),
+            streamer.array_out_collision.eq(array.out_collision),
         ]
         for i in range(total_rows):
             for name in ("a", "valid", "first", "last"):
                 m.d.comb += getattr(array, f"in_{name}_{i}").eq(
-                    getattr(exec_ctrl, f"array_in_{name}_{i}")
+                    getattr(streamer, f"array_in_{name}_{i}")
                 )
         for j in range(total_cols):
             m.d.comb += [
-                getattr(array, f"in_b_{j}").eq(getattr(exec_ctrl, f"array_in_b_{j}")),
-                getattr(array, f"in_w_{j}").eq(getattr(exec_ctrl, f"array_in_w_{j}")),
+                getattr(array, f"in_b_{j}").eq(getattr(streamer, f"array_in_b_{j}")),
+                getattr(array, f"in_w_{j}").eq(getattr(streamer, f"array_in_w_{j}")),
             ]
             for name in ("c", "c_valid", "psum", "psum_valid"):
-                m.d.comb += getattr(exec_ctrl, f"array_out_{name}_{j}").eq(
+                m.d.comb += getattr(streamer, f"array_out_{name}_{j}").eq(
                     getattr(array, f"out_{name}_{j}")
                 )
 
@@ -526,44 +529,44 @@ class SystolicTop(Component):
 
         m.d.comb += [
             # A process is busy while it runs a command or has commands queued
-            self.load_busy.eq(load_ctrl.busy | (queues[self.CTRL_LOAD].w_level != 0)),
-            self.store_busy.eq(store_ctrl.busy | (queues[self.CTRL_STORE].w_level != 0)),
-            self.exec_busy.eq(exec_ctrl.busy | (queues[self.CTRL_EXEC].w_level != 0)),
-            self.busy.eq(self.load_busy | self.store_busy | self.exec_busy),
+            self.bm_in_busy.eq(bm_in.busy | (queues[self.CTRL_LOAD].w_level != 0)),
+            self.bm_out_busy.eq(bm_out.busy | (queues[self.CTRL_STORE].w_level != 0)),
+            self.streamer_busy.eq(streamer.busy | (queues[self.CTRL_EXEC].w_level != 0)),
+            self.busy.eq(self.bm_in_busy | self.bm_out_busy | self.streamer_busy),
         ]
 
         # Per-controller completions (lossless)
         m.d.comb += [
-            self.load_completed.eq(load_ctrl.completed),
-            self.load_completed_id.eq(load_ctrl.completed_id),
-            self.store_completed.eq(store_ctrl.completed),
-            self.store_completed_id.eq(store_ctrl.completed_id),
-            self.exec_completed.eq(exec_ctrl.completed),
-            self.exec_completed_id.eq(exec_ctrl.completed_id),
-            self.exec_result.eq(exec_ctrl.result),
-            self.exec_result_id.eq(exec_ctrl.result_id),
-            self.l1_error.eq(exec_ctrl.error),
+            self.bm_in_completed.eq(bm_in.completed),
+            self.bm_in_completed_id.eq(bm_in.completed_id),
+            self.bm_out_completed.eq(bm_out.completed),
+            self.bm_out_completed_id.eq(bm_out.completed_id),
+            self.streamer_completed.eq(streamer.completed),
+            self.streamer_completed_id.eq(streamer.completed_id),
+            self.streamer_result.eq(streamer.result),
+            self.streamer_result_id.eq(streamer.result_id),
+            self.l1_error.eq(streamer.error),
         ]
 
         # Summary completion (priority: load > store > exec). Lossy when two
         # controllers complete in the same cycle; use the per-controller ports.
-        with m.If(load_ctrl.completed):
+        with m.If(bm_in.completed):
             m.d.comb += [
                 self.completed.eq(1),
                 self.completed_type.eq(self.CTRL_LOAD),
-                self.completed_id.eq(load_ctrl.completed_id),
+                self.completed_id.eq(bm_in.completed_id),
             ]
-        with m.Elif(store_ctrl.completed):
+        with m.Elif(bm_out.completed):
             m.d.comb += [
                 self.completed.eq(1),
                 self.completed_type.eq(self.CTRL_STORE),
-                self.completed_id.eq(store_ctrl.completed_id),
+                self.completed_id.eq(bm_out.completed_id),
             ]
-        with m.Elif(exec_ctrl.completed):
+        with m.Elif(streamer.completed):
             m.d.comb += [
                 self.completed.eq(1),
                 self.completed_type.eq(self.CTRL_EXEC),
-                self.completed_id.eq(exec_ctrl.completed_id),
+                self.completed_id.eq(streamer.completed_id),
             ]
         with m.Else():
             m.d.comb += [

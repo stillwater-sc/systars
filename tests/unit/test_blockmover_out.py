@@ -1,8 +1,8 @@
 """
-Unit tests for the StoreController.
+Unit tests for the BlockMoverOut.
 
 These tests verify:
-1. StoreController instantiation
+1. BlockMoverOut instantiation
 2. MEMCPY command acceptance (for store operations)
 3. Combiner read requests
 4. BlockMover write data transmission
@@ -15,12 +15,12 @@ import pytest
 from amaranth.sim import Simulator, Tick
 
 from systars.config import SystolicConfig
-from systars.controller.store import StoreController
+from systars.controller.blockmover_out import BlockMoverOut
 from systars.util.commands import BlockMoverOpcode
 
 
-class TestStoreController:
-    """Test suite for StoreController."""
+class TestBlockMoverOut:
+    """Test suite for BlockMoverOut."""
 
     @pytest.fixture
     def config(self):
@@ -35,16 +35,16 @@ class TestStoreController:
 
     @pytest.fixture
     def controller(self, config):
-        """Create a StoreController instance."""
-        return StoreController(config)
+        """Create a BlockMoverOut instance."""
+        return BlockMoverOut(config)
 
     def test_instantiation(self, controller, config):
-        """Test that StoreController can be instantiated."""
+        """Test that BlockMoverOut can be instantiated."""
         assert controller is not None
         assert controller.config == config
 
     def test_has_correct_ports(self, controller):
-        """Test that StoreController has all required ports."""
+        """Test that BlockMoverOut has all required ports."""
         # Command interface
         assert hasattr(controller, "cmd_valid")
         assert hasattr(controller, "cmd_ready")
@@ -78,8 +78,8 @@ class TestStoreController:
         assert hasattr(controller, "completed_id")
 
     def test_idle_ready(self, config):
-        """Test that StoreController is ready in idle state."""
-        ctrl = StoreController(config)
+        """Test that BlockMoverOut is ready in idle state."""
+        ctrl = BlockMoverOut(config)
         results = []
 
         def testbench():
@@ -97,8 +97,8 @@ class TestStoreController:
         assert results[0]["busy"] == 0, "Should not be busy in idle state"
 
     def test_memcpy_command_acceptance(self, config):
-        """Test that StoreController accepts MEMCPY commands."""
-        ctrl = StoreController(config)
+        """Test that BlockMoverOut accepts MEMCPY commands."""
+        ctrl = BlockMoverOut(config)
         results = {"cmd_accepted": False, "dma_issued": False}
 
         def testbench():
@@ -141,7 +141,7 @@ class TestStoreController:
 
     def test_single_beat_transfer(self, config):
         """Test single-beat MEMCPY transfer."""
-        ctrl = StoreController(config)
+        ctrl = BlockMoverOut(config)
         results = {"combiner_read": False, "engine_data": False, "completed": False}
 
         def testbench():
@@ -220,7 +220,7 @@ class TestStoreController:
 
     def test_multi_beat_transfer(self, config):
         """Test multi-beat MEMCPY transfer."""
-        ctrl = StoreController(config)
+        ctrl = BlockMoverOut(config)
         read_addrs = []
         data_values = []
 
@@ -290,7 +290,7 @@ class TestStoreController:
 
     def test_relu_activation(self, config):
         """Test ReLU activation on negative values."""
-        ctrl = StoreController(config)
+        ctrl = BlockMoverOut(config)
         results = {"positive_passed": False, "negative_zeroed": False}
 
         def testbench():
@@ -362,7 +362,7 @@ class TestStoreController:
 
     def test_busy_signal(self, config):
         """Test that busy signal is asserted during transfer."""
-        ctrl = StoreController(config)
+        ctrl = BlockMoverOut(config)
         busy_states = []
 
         def testbench():
@@ -423,7 +423,7 @@ class TestStoreController:
         assert busy_states[2] == ("done", 0), "Should not be busy after done"
 
     def test_elaboration(self, controller):
-        """Test that StoreController elaborates without errors."""
+        """Test that BlockMoverOut elaborates without errors."""
 
         def testbench():
             yield Tick()
@@ -434,11 +434,11 @@ class TestStoreController:
         sim.run()
 
 
-class TestStoreControllerVerilogGeneration:
-    """Test Verilog generation for StoreController."""
+class TestBlockMoverOutVerilogGeneration:
+    """Test Verilog generation for BlockMoverOut."""
 
     def test_generate_verilog(self, tmp_path):
-        """Test that StoreController can generate valid Verilog."""
+        """Test that BlockMoverOut can generate valid Verilog."""
         from amaranth._toolchain.yosys import find_yosys
         from amaranth.back import verilog
 
@@ -449,10 +449,10 @@ class TestStoreControllerVerilogGeneration:
 
         # 4 x 32-bit Combiner row = 128 bits: one row per 128-bit BlockMover beat
         config = SystolicConfig(grid_rows=4, grid_cols=4, blockmover_buswidth=128)
-        ctrl = StoreController(config)
+        ctrl = BlockMoverOut(config)
 
-        output = verilog.convert(ctrl, name="StoreController")
-        assert "module StoreController" in output
+        output = verilog.convert(ctrl, name="BlockMoverOut")
+        assert "module BlockMoverOut" in output
         assert "cmd_valid" in output
         assert "combiner_read_req" in output
         assert "engine_data_valid" in output
@@ -465,7 +465,7 @@ class TestStoreControllerVerilogGeneration:
 def test_rejects_rows_wider_than_dma_bus():
     """A row wider than the BlockMover bus would be silently truncated: reject the config."""
     with pytest.raises(ValueError, match="wider than blockmover_buswidth"):
-        StoreController(SystolicConfig(grid_rows=16, grid_cols=16, blockmover_buswidth=128))
+        BlockMoverOut(SystolicConfig(grid_rows=16, grid_cols=16, blockmover_buswidth=128))
 
 
 def test_default_config_dma_width_fits_rows():

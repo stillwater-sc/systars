@@ -30,7 +30,7 @@
 <text x="571" y="218" text-anchor="middle" font-size="11.5" class="muted">C tiles in slots; a LOAD can preset a bias or C</text>
 <text x="571" y="234" text-anchor="middle" font-size="11.5" class="muted">STORE applies the activation per element</text>
 <rect class="accent" x="24" y="300" width="712" height="72" rx="8"/>
-<text x="380" y="324" text-anchor="middle" font-weight="600" class="fg">Streamer · controller/execute.py</text>
+<text x="380" y="324" text-anchor="middle" font-weight="600" class="fg">Streamer · controller/streamer.py</text>
 <text x="380" y="342" text-anchor="middle" font-size="11.5" class="fg">starts a command only when the fabric can take it on schedule, then never stalls</text>
 <text x="380" y="358" text-anchor="middle" font-size="11.5" class="muted">events: completed (L2 credit returned) and result (accumulator token emitted)</text>
 <rect class="box" x="24" y="424" width="330" height="72" rx="8"/>

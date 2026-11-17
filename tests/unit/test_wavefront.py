@@ -4,7 +4,7 @@ per-clock behaviour matches the predicted wavefront (one PE per clock, the OS
 results draining north), tiles run back to back on the Streamer's schedule, a
 stagger bug is caught, and the animations the docs embed are correct, small and
 current. (That ``streamer_starts`` is the Streamer's schedule is checked against the
-Streamer in ``test_execute_controller.py``.)
+Streamer in ``test_streamer.py``.)
 """
 
 import xml.etree.ElementTree as ET

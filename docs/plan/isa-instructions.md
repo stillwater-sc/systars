@@ -22,9 +22,9 @@ The user simply issues `Matmul` or `Conv2d` with dimensions and addresses.
 
 | Component | Status |
 |-----------|--------|
-| ExecuteController | Done - handles CONFIG, PRELOAD, COMPUTE |
-| LoadController | Done - handles DRAM → Scratchpad |
-| StoreController | Done - handles Accumulator → DRAM |
+| Streamer | Done - handles CONFIG, PRELOAD, COMPUTE |
+| BlockMoverIn | Done - handles DRAM → Scratchpad |
+| BlockMoverOut | Done - handles Accumulator → DRAM |
 | DMA Engines | Done - StreamReader, StreamWriter, Descriptors |
 | ISA Instructions | **Not Started** |
 
@@ -676,16 +676,16 @@ tests/integration/
 
 ```
 Matmul depends on:
-├── LoadController (emit LOAD commands)
-├── ExecuteController (emit PRELOAD, COMPUTE commands)
-├── StoreController (emit STORE commands)
+├── BlockMoverIn (emit LOAD commands)
+├── Streamer (emit PRELOAD, COMPUTE commands)
+├── BlockMoverOut (emit STORE commands)
 ├── Scratchpad (bank allocation)
 └── Accumulator (double buffering)
 
 Conv2d depends on:
 ├── Matmul (reuse for im2col matrix multiply)
-├── LoadController (im2col transformation)
-├── StoreController (pooling during store)
+├── BlockMoverIn (im2col transformation)
+├── BlockMoverOut (pooling during store)
 └── All Matmul dependencies
 ```
 

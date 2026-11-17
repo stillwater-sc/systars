@@ -118,9 +118,9 @@ print(v)
 | SystolicArray | ✅ Done | Pipelined PEArray grid (grid_rows × grid_cols) |
 | Scratchpad | ✅ Done | Multi-bank local memory |
 | Combiner (storage) | ✅ Done | Result memory with ReLU/ReLU6 on readout (no scaling yet); the [Combiner](docs/architecture/combiner.md)'s function is #38 |
-| ExecuteController | ✅ Done | Execute command handling (CONFIG, PRELOAD, COMPUTE) |
-| LoadController | ✅ Done | DRAM → Scratchpad transfers |
-| StoreController | ✅ Done | Combiner → DRAM transfers |
+| Streamer | ✅ Done | L2 → L1 → fabric: EXECUTE commands (CONFIG, PRELOAD, COMPUTE) |
+| BlockMoverIn | ✅ Done | The BlockMover's inbound leg, L3 → L2 (LOAD) |
+| BlockMoverOut | ✅ Done | The BlockMover's outbound leg, Combiner → L3 (STORE) |
 | StreamReader | ✅ Done | AXI-like burst read engine of the BlockMover |
 | StreamWriter | ✅ Done | AXI-like burst write engine of the BlockMover |
 | DescriptorEngine | ✅ Done | BlockMover descriptor chain execution |

@@ -81,14 +81,19 @@ def idle_commands(dut) -> None:
         getattr(dut, f"cmd_{name}").value = 0
 
 
+# Each command type and the tile process that runs it
+PROCESSES = {"load": "bm_in", "store": "bm_out", "exec": "streamer"}
+
+
 async def completions(dut, counts: dict) -> None:
     """Count every command completion (runs forever): ``counts["load"]``,
-    ``["store"]`` and ``["exec"]``, from the per-controller ``*_completed`` pulses."""
+    ``["store"]`` and ``["exec"]``, from the per-process ``*_completed`` pulses
+    (``bm_in``: LOADs, ``bm_out``: STOREs, ``streamer``: EXECUTEs)."""
     while True:
         await RisingEdge(dut.clk)
         await ReadOnly()
-        for kind in ("load", "store", "exec"):
-            counts[kind] += int(getattr(dut, f"{kind}_completed").value)
+        for kind, process in PROCESSES.items():
+            counts[kind] += int(getattr(dut, f"{process}_completed").value)
 
 
 async def push_commands(dut, commands, *, timeout=200_000) -> None:

@@ -21,7 +21,7 @@
 | R, C | The array's rows and columns in PEs: `grid_rows * tile_rows`, `grid_cols * tile_cols` |
 | Skew | The one-clock stagger between neighbouring streams that makes operands meet; made by L1, not registers |
 | Slot | A whole-tile region of L2 or the Combiner: FREE, OWNED, READY or READING |
-| Streamer | The process (`controller/execute.py`) that streams L2 tiles through L1 into the fabric and writes the results |
+| Streamer | The process (`controller/streamer.py`) that streams L2 tiles through L1 into the fabric and writes the results |
 | Tile-ready token | The signal that a slot's tile is complete and may be consumed |
 | Wavefront | The anti-diagonal of PEs working on the same k (or m), moving one PE per clock |
 | WS | Weight-stationary: B held in the PEs, A streamed, partial sums south |

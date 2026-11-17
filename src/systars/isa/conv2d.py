@@ -110,7 +110,7 @@ class Conv2dError(IntEnum):
     # Combiner could be loaded
 
 
-OS = 0  # ExecuteController CONFIG rs1
+OS = 0  # Streamer CONFIG rs1
 
 # batch (8 bits) * out_h (16) * out_w (16): the widest M, and M-tile count, configurable
 M_BITS = 40
