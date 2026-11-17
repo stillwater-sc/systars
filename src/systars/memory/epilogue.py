@@ -233,7 +233,7 @@ class EpilogueLane(Component):
         m.d.comb += rq.eq(requantize(src, self.mul, self.shift, self.narrow))
         # The SFU after requantizing works on the narrow result, but CLIP's 16-bit bounds
         # may lie outside it: saturate, as the model does, rather than wrap
-        post = Signal(signed(16))
+        post = Signal(signed(max(16, self.narrow)))  # CLIP's bounds, or a wider narrow
         m.d.comb += post.eq(sfu(rq, self.code, self.clip_lo, self.clip_hi))
         lo, hi = -(1 << (self.narrow - 1)), (1 << (self.narrow - 1)) - 1
         post_sat = Mux(post < lo, lo, Mux(post > hi, hi, post))

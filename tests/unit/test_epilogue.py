@@ -20,6 +20,7 @@ from systars.config import Activation
 from systars.memory.combiner import Combiner
 from systars.memory.epilogue import (
     EPILOGUE_FINAL,
+    EpilogueLane,
     Requant,
     epilogue_model,
     requant_model,
@@ -110,6 +111,24 @@ def test_the_sfu_is_the_model(code):
         assert ctx.get(dut.act) == want, c
 
     run_comb(cases, check)
+
+
+def test_a_lane_wider_than_16_bits_keeps_its_result():
+    """A narrow width above CLIP's 16 bits: the SFU result after requantizing is held
+    at the narrow width, not truncated to 16 bits."""
+    lane = EpilogueLane(wide=32, narrow=24)
+
+    async def tb(ctx):
+        for x in (100_000, -100_000, 2**23 - 1, 12_345):
+            ctx.set(lane.x, x)
+            ctx.set(lane.mul, 1)
+            ctx.set(lane.code, Activation.NONE.value)
+            await ctx.delay(1e-9)
+            assert ctx.get(lane.narrow_out) == x, x
+
+    sim = Simulator(lane)
+    sim.add_testbench(tb)
+    sim.run()
 
 
 def narrow(word, lanes=4):
