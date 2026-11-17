@@ -86,7 +86,8 @@ run alone: one starts only when the Streamer is idle, nothing starts while it is
 in flight, and a command with results completes once they are in the Combiner,
 so a host can issue a STORE as soon as it sees the completion.
 
-**Events**, at most one per clock:
+**Events**, at most one of each per clock (a ``completed`` and the result path's
+``result`` can come in the same clock):
 
 - ``completed`` (``completed_id``, ``completed_sync``): the command is done with
   L2: its last block is in L1. ``SystolicTop`` returns the command's L2 credit on it
@@ -94,7 +95,8 @@ so a host can issue a STORE as soon as it sees the completion.
   behind any other completion in the same clock, and may come before that of the
   COMPUTE issued ahead of it (the two paths run side by side).
 - The command's results reach the Combiner later, on the result path's ``result``
-  event (``result_path.py``), in command order.
+  event (``result_path.py``), in command order. With tracked commands overlapping,
+  a later command's ``completed`` can come in the clock of an earlier one's ``result``.
 
 ``error`` (sticky) is a schedule or protocol violation: an L1 stream buffer loaded
 without its credit, or a command with SIGNAL that writes no result (``k_dim = 0``,
