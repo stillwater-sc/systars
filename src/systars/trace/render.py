@@ -380,7 +380,8 @@ def svg_timeline(trace: Trace, *, max_lanes: int = 120) -> str:
         body.append(f'<text x="{left - 8}" y="{y + lane_h - 4}" font-size="10" text-anchor="end" '
                     f'class="t2">{escape(name)}</text>')  # fmt: skip
         for iv in lanes[name]:
-            close = iv["close"] if iv["close"] != -1 else cycles
+            # An unfinished interval ends at the last recorded clock (cycles - 1)
+            close = iv["close"] if iv["close"] != -1 else cycles - 1
             x0, x1 = x(iv["open"]), x(close + 1)
             tip = (f"{name}: {iv['what']} for {iv['client']}, cycles {iv['open']}-{close} "
                    f"({iv['event']})")  # fmt: skip

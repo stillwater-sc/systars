@@ -48,7 +48,9 @@ formed, and that no lane runs overlap. It exits 1 on a problem. `--svg` writes t
 ## The differential harness
 
 `tests/fuzz` (kpu-gen's harness, #83 there) generates random `Matmul` programs and checks
-each against the reference models. A failing seed is shrunk, and its trace is written.
+each against the reference models. A failing seed is shrunk to a smaller program that still
+fails, and the failure prints the command that replays it. Its trace is written only when
+`KPU_FUZZ_RUN` names an existing directory, which `just fuzz` sets up for each run.
 
 ```bash
 just fuzz 200          # 200 random programs, then the coverage report (build/fuzz/)
@@ -56,7 +58,8 @@ just tile-trace 3      # seed 3 with its trace, reported and drawn in build/tile
 python -m tests.fuzz.run --seed 3 --trace build/t.json   # the same, by hand
 ```
 
-`pytest tests/fuzz` runs a smaller default set of seeds as part of the unit tests.
+`pytest tests/fuzz` runs a smaller default set of seeds as part of the unit tests. Run that
+way, a failure reports its shrunk program but writes no trace, unless `KPU_FUZZ_RUN` is set.
 
 ## Not yet
 

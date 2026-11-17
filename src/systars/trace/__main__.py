@@ -60,7 +60,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {problem}")
         status = 1 if problems else 0
     if args.svg is not None:
-        stem = args.bundle.name.split(".")[0]
+        # run.1.json and run.2.json stay apart; seed-0.trace.json -> seed-0
+        stem = args.bundle.name.removesuffix(".json").removesuffix(".trace")
         for path in write_all(trace, args.svg, stem):
             print(f"wrote {path}")
     return status

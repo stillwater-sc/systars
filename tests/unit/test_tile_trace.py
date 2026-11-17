@@ -412,3 +412,87 @@ def test_perf_does_not_combine_with_check_or_svg(traced, tmp_path, capsys):
     for extra in (["--check"], ["--svg", str(tmp_path / "svg")]):
         assert main([str(bundle), "--perf", *extra]) == 1
         assert "does not combine" in capsys.readouterr().err
+
+
+# =============================================================================
+# Review fixes made here ahead of kpu-gen (PR #60)
+# =============================================================================
+
+
+def test_a_load_clock_where_the_last_element_leaves_counts_as_busy():
+    """A block loads in the clock the previous block's last element leaves: the load
+    interval carries ``streaming``, and perf counts that clock as a busy one."""
+    from systars.trace.lanes import FineLanes, LaneRuns
+    from systars.trace.perf import summary
+
+    names = ["collision", "l1_A_load_valid", "l1_A_load_index", "l1_A_load_len",
+             "l1_A0_credit", "l1_A0_valid", "l1_A0_first", "l1_A0_last"]  # fmt: skip
+    runs = LaneRuns()
+    lanes = FineLanes(0, names, runs)
+    base = dict.fromkeys(names, 0)
+    # clock 0: a block of 2 loads; 1, 2: it streams; 2 also loads the next (its last
+    # element leaves then); 3, 4: the next streams
+    steps = [{"l1_A_load_valid": 1, "l1_A_load_len": 2}, {"l1_A0_valid": 1},
+             {"l1_A0_valid": 1, "l1_A0_last": 1, "l1_A_load_valid": 1, "l1_A_load_len": 2},
+             {"l1_A0_valid": 1}, {"l1_A0_valid": 1}]  # fmt: skip
+    for cycle, step in enumerate(steps):
+        lanes.step(cycle, {**base, **step})
+    loads = [r for r in runs.rows if r["what"] == "load"]
+    assert [(r["open"], r["streaming"]) for r in loads] == [(0, False), (2, True)]
+    trace = Trace({"level": "RTL", "scope": "tile", "producer": "t", "cycles": 5,
+                   "geometry": {"tile": {}}})  # fmt: skip
+    trace.tables["intervals"] = [dict(r) for r in runs.rows]
+    fabric = summary(trace)["sites"]["0"]["fabric"]
+    assert fabric == {"busy": 4, "utilization": 1.0}  # clocks 1-4, with no gap at 2
+
+
+def test_a_first_error_with_an_unmapped_command_type_is_still_recorded():
+    """``CMD_TYPE`` is 2 bits: a 3, which names no process, is recorded as itself and
+    names no command, rather than stopping the recording."""
+    from types import SimpleNamespace
+
+    from systars.errors import CMD_ID, CMD_TYPE, CMD_VALID, KIND, SOURCE, ErrorSource
+    from systars.trace.recorder import TileRecorder
+
+    info = (1 | ErrorSource.L1 << SOURCE[0] | 1 << KIND[0] | 1 << CMD_VALID[0]
+            | 3 << CMD_TYPE[0] | 9 << CMD_ID[0])  # fmt: skip
+    rec = SimpleNamespace(cycle=50, commands=[], errors=[], _err_info={})
+    TileRecorder._error_step(rec, 0, {"err_info": info, "err_cycle": 40, "cycle": 45})
+    (err,) = rec.errors
+    assert (err["cmd_type"], err["command"], err["cycle"]) == ("3", None, 45)
+
+
+def test_the_svg_stem_keeps_the_dots_inside_a_bundle_name(traced, tmp_path, capsys):
+    """``run.1.json`` and ``run.2.json`` draw to their own files, not both to ``run``."""
+    from systars.trace.__main__ import main
+
+    _, trace, _ = traced
+    for name in ("run.1.json", "run.2.json"):
+        assert main([str(trace.save(tmp_path / name)), "--svg", str(tmp_path / "svg")]) == 0
+    capsys.readouterr()
+    stems = {p.name.split("_")[0].removesuffix(".txt") for p in (tmp_path / "svg").iterdir()}
+    assert {"run.1", "run.2"} <= stems
+
+
+def test_an_unfinished_interval_ends_at_the_last_recorded_cycle():
+    """A command still open at the end (``close`` -1) is drawn to ``cycles - 1``, the last
+    clock recorded, not one past it."""
+    trace = Trace({"level": "RTL", "scope": "tile", "producer": "t", "cycles": 10,
+                   "geometry": {"tile": {}}})  # fmt: skip
+    trace.tables["commands"] = [{"id": 0, "site": 0, "type": "load", "cmd_id": 3, "opcode": 0,
+                                 "accept": 1, "open": 2, "close": -1}]  # fmt: skip
+    trace.tables["intervals"] = [{"resource": "site 0:load", "client": "cmd 3", "open": 2,
+                                  "close": -1, "event": "command:0", "what": "load",
+                                  "accesses": 0}]  # fmt: skip
+    svg = svg_timeline(trace)
+    assert "cycles 2-9" in svg and "cycles 2-10" not in svg
+
+
+def test_a_program_without_a_decoy_per_profile_slot_is_refused():
+    """``--program`` JSON must carry a decoy for each profile slot (the generator always
+    writes them); without, it is refused, not an ``IndexError`` in the run."""
+    prog = generate(5).to_json()
+    prog["decoys"] = []
+    with pytest.raises(ValueError, match="decoys"):
+        Program.from_json(prog)
+    assert Program.from_json(generate(5).to_json()) == generate(5)

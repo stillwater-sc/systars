@@ -24,11 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     links, SoC DMA, memory cells or annotation-derived residencies, and those tables stay
     empty.
   - **The differential harness** (`tests/fuzz`). It runs random `Matmul` programs against
-    the reference models, shrinks a failure and writes its trace. `just fuzz [SEEDS]` and
-    `just tile-trace [SEED]` run it, and `pytest tests/fuzz` runs a default set.
+    the reference models and shrinks a failure. `just fuzz [SEEDS]` runs it and writes each
+    failure's trace (into `KPU_FUZZ_RUN`), and `just tile-trace [SEED]` traces one seed.
+    `pytest tests/fuzz` runs a default set, and writes a failure's trace only if
+    `KPU_FUZZ_RUN` names a directory.
     `tests/unit/test_tile_trace.py` is kpu-gen's, without its SoC test.
   - **Not yet.** The `.dflow` export for kpu-sim's viewer needs an issuer that annotates
     its commands (the rest of #18). New guide: `docs/guides/tile-trace.md`.
+  - **Review fixes ahead of kpu-gen** (esg#107): perf counts a load clock where the
+    previous block's last element leaves; an unmapped first-error command type is recorded,
+    not a crash; `--svg` keeps the dots in a bundle's name; an unfinished bar ends at the last
+    recorded clock; a fuzz program without its decoys is refused.
 
 - **The tile's queued and forward-hit status outputs** (#52, 2026-11-17; the systolic part
   of branes-ai/embodied-ai-soc-generator#85, kpugen PR #93).

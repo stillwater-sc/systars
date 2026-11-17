@@ -70,7 +70,14 @@ class Program:
 
     @staticmethod
     def from_json(d: dict[str, Any]) -> Program:
-        return Program(**d)
+        """A program from its JSON (``to_json``). It must carry a decoy for each of the
+        ``PROFILES`` slots, as the generator writes them (``ValueError`` otherwise)."""
+        prog = Program(**d)
+        if len(prog.decoys) != PROFILES:
+            raise ValueError(
+                f"a program needs {PROFILES} decoys (one per profile slot), got {len(prog.decoys)}"
+            )
+        return prog
 
     def bins(self) -> set[str]:
         """The coverage bins this program hits. A program that breaks a rule is refused

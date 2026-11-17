@@ -157,7 +157,8 @@ class TileRecorder:
             # event on the trace's clock
             ago = (int(v["cycle"]) - first.cycle) % (1 << 32)
             first = replace(first, cycle=self.cycle - ago)
-            ctype = None if first.cmd_type is None else COMMAND_TYPES[first.cmd_type]
+            ctype = (None if first.cmd_type is None
+                     else COMMAND_TYPES.get(first.cmd_type, str(first.cmd_type)))  # fmt: skip
             named = next(
                 (c["id"] for c in reversed(self.commands)
                  if c["site"] == site and c["type"] == ctype and c["cmd_id"] == first.cmd_id),

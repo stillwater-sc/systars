@@ -187,7 +187,10 @@ class FirstError:
     def __str__(self) -> str:
         text = f"{self.source.name} {self.kind_name} at cycle {self.cycle}"
         if self.cmd_type is not None:
-            text += f", {_COMMAND_TYPES[self.cmd_type]} command {self.cmd_id}"
+            # CMD_TYPE is 2 bits: a 3 names no process, but the capture still reports it
+            name = (_COMMAND_TYPES[self.cmd_type] if self.cmd_type < len(_COMMAND_TYPES)
+                    else f"type {self.cmd_type}")  # fmt: skip
+            text += f", {name} command {self.cmd_id}"
         if self.multi:
             text += " (another source in the same clock)"
         return text

@@ -139,7 +139,9 @@ def _site(site: int, cmds: list[dict[str, Any]], ln: dict[str, list[dict[str, An
 
     a_lanes = [ivs for kind, ivs in ln.items() if kind.startswith("l1 A")]
     if a_lanes:  # the fine lanes were recorded
-        busy = _clocks([iv for ivs in a_lanes for iv in ivs], _STREAMING)
+        ivs = [iv for lane in a_lanes for iv in lane]
+        # A load clock where the previous block's last element also left streamed too
+        busy = _clocks(ivs, _STREAMING) | _clocks([iv for iv in ivs if iv.get("streaming")])
         span = (max(busy) - min(busy) + 1) if busy else 0
         result["fabric"] = {"busy": len(busy),
                             "utilization": round(len(busy) / span, 4) if span else 0.0}  # fmt: skip

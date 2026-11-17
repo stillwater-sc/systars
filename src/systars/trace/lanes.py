@@ -141,8 +141,8 @@ class FineLanes:
 
     ``site N:l1 A<i>`` (``B<j>``, ``W<j>``)
         one L1 stream buffer: ``load`` (a block arrives, with its ``len``; its clock
-        shows the load even
-        when the previous block's last element leaves then), ``stream`` as its elements
+        shows the load even when the previous block's last element leaves then, with
+        ``streaming`` set), ``stream`` as its elements
         go into the fabric, one a clock, marked ``first`` / ``last`` at an OS reduction's
         ends (``first+last``: both), and ``held`` should a loaded block not stream
     ``site N:res N<j>`` (``S<j>``)
@@ -175,7 +175,9 @@ class FineLanes:
         for s in self.streams:
             p = f"l1_{s}_"
             if s in loads:
-                runs.step(cycle, lane(f"l1 {s}"), "load", merge=False, len=loads[s])
+                # The previous block's last element may leave in this clock: ``streaming``
+                runs.step(cycle, lane(f"l1 {s}"), "load", merge=False, len=loads[s],
+                          streaming=bool(v[p + "valid"]))  # fmt: skip
                 continue
             if v[p + "valid"]:
                 first, last = v[p + "first"], v[p + "last"]
