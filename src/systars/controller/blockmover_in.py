@@ -21,6 +21,17 @@ address ``dram_addr + n * stride`` into local row ``sp_addr + n``.
   boundary and the next one starts there, and a row that spills from the last beat
   of a 4 KB page into the next page is read as two 1-beat bursts.
 
+**The process** (the BlockMover's inbound leg, ``controller/blockmover.py``):
+
+- *Inputs:* its program (LOAD commands, in order); the destination slot's credit; the
+  L3 tile, taken as there (the issuer orders a LOAD after the DMA that fills L3).
+- *Fires when* the head LOAD's destination slot is free (``ACQUIRE``: an L2 slot, or a
+  Combiner slot for a LOAD to a Combiner address) and the leg is idle. It takes the
+  credit as it starts.
+- *Outputs:* the tile's rows in L2 or the Combiner; on completion, the slot's tile-ready
+  token (``SIGNAL``) to the Streamer (L2) or the outbound leg (the Combiner).
+- *Credits returned:* none (it reads L3, which holds no tile credits yet).
+
 Opcodes:
 
 - ``MEMCPY``: as above.

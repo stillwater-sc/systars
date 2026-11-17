@@ -25,6 +25,15 @@ buffered row: Combiner row ``n`` becomes element ``n`` of each L3 row. The
 rows go out exactly as a MEMCPY's, and the activation applies to each element. A
 TRANSPOSE moves at most one tile: ``len`` is clamped to ``lanes``.
 
+**The process** (the BlockMover's outbound leg, ``controller/blockmover.py``):
+
+- *Inputs:* its program (STORE commands, in order); the result tile's token.
+- *Fires when* the head STORE's Combiner tile is ready (``WAIT``: its token is there)
+  and the leg is idle. It takes the token as it starts (READY -> READING).
+- *Outputs:* the tile's rows in L3.
+- *Credits returned:* the Combiner slot's, on completion (``RELEASE``), to the Streamer
+  or the inbound leg, whichever fills the slot next.
+
 State Machine:
     IDLE [-> GATHER (TRANSPOSE: read the tile into the corner-turn buffer)]
          -> NEXT -> ISSUE_BURST -> (READ_COMBINER -> WAIT_VALID -> SEND_STREAM)* -> WAIT_DONE

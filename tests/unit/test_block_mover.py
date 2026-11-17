@@ -902,3 +902,21 @@ class TestLoadCombiner:
             acc=acc, log=log,
         )  # fmt: skip
         assert (written, acc, log) == ({}, {}, [])
+
+
+def test_the_blockmover_is_one_process_with_both_legs_on_one_l3_port():
+    """#98: one BlockMover (controller/blockmover.py), its two legs and their engines inside
+    it, and the tile's L3 port its only ports."""
+    from systars.controller.blockmover import AXI_CHANNELS
+
+    top = SystolicTop(config())
+    bm = top.blockmover
+    assert top.bm_in is bm.bm_in and top.bm_out is bm.bm_out
+    assert isinstance(bm.stream_reader, StreamReader)
+    assert isinstance(bm.stream_writer, StreamWriter)
+    axi = {f"axi_{name}" for name, _, _ in AXI_CHANNELS}
+    assert set(bm.signature.members) == axi
+    assert axi <= set(top.signature.members)
+    for name in axi:  # the same widths and directions as the tile's L3 port
+        assert bm.signature.members[name].flow == top.signature.members[name].flow
+        assert bm.signature.members[name].shape == top.signature.members[name].shape

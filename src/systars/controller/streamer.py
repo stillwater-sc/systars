@@ -66,6 +66,20 @@ then runs to the end without stopping:
   meet on a north link: with ``K >= 2R - 1`` that costs nothing.
 - ``CONFIG`` waits until the Streamer is idle (every result written).
 
+**The process** (``SystolicTop``'s module docstring has the tile's other hops):
+
+- *Inputs:* its program (EXECUTE commands: CONFIG, PRELOAD, COMPUTE, in order); the L2
+  tile's token; the Combiner slot's credit.
+- *Fires when* the head command's L2 tile is ready (``WAIT``), its Combiner slot is free
+  (``ACQUIRE``), and the fabric can take the stream on schedule (the rules above). It
+  takes the token and the credit as it starts. Several commands are in flight at once.
+- *Outputs:* the L1 streams into the fabric; the result rows into the Combiner (the
+  result path, the L1 -> L2 hop, which #98 moves to a process of its own); on a
+  command's ``result`` event, the Combiner slot's tile-ready token (``SIGNAL``) to the
+  outbound leg.
+- *Credits returned:* the L2 slot's, on ``completed`` (``RELEASE``: its last block is in
+  L1), to the inbound leg.
+
 **Untracked commands** (``cmd_sync = 0``: a host issuing one command at a time)
 run alone: one starts only when the Streamer is idle, nothing starts while it is
 in flight, and a command with results completes once they are in the Combiner,

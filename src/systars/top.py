@@ -1,47 +1,49 @@
 """
-SystolicTop - Top-level integration of the systolic array accelerator.
+SystolicTop - the systolic tile's core: its memories, its fabric and its CSP processes.
 
-This module wires together all major subsystems:
-- SystolicArray: Compute fabric for matrix multiply
-- Scratchpad: Input/weight storage
-- Combiner: Output/partial sum storage
-- StreamReader, StreamWriter: the BlockMover's engines, L3 → local memory and back
-- BlockMoverIn: the BlockMover's inbound leg, L3 → L2 (or the Combiner), a LOAD
-- BlockMoverOut: the BlockMover's outbound leg, the Combiner → L3, a STORE
-- Streamer: L2 → L1 → fabric, and the results into the Combiner, an EXECUTE
+The tile is a pipeline of CSP processes (kpu-sim, ``docs/01-architecture/
+kpu-execution-model.md``; ``docs/architecture/kpu-tile.md``), each owning one hop of a
+tile's flow. Credits flow upstream, data and tile-ready tokens downstream, and a process
+fires when its firing rule holds (``cmd_sync``, ``controller/sync.py``):
 
-The control processes keep their commands' types: ``cmd_type`` 0 (LOAD) goes to
-BlockMoverIn, 1 (STORE) to BlockMoverOut and 2 (EXECUTE) to the Streamer.
+================  =======================  ==============================================
+Hop               Process                  Fires when
+================  =======================  ==============================================
+L3 -> L2          the BlockMover, inbound  its L2 (or Combiner) slot's credit is free;
+                  (``BlockMoverIn``)       emits the slot's token when done
+L2 -> L1          the Streamer             its L2 tile's token is there, its Combiner
+                  (``Streamer``)           slot's credit is free, and the fabric can take
+                                           the stream on schedule; returns the L2 credit
+                                           once the tile's last block is in L1
+L1 -> fabric      the fabric               (push-only: no flow control)
+-> L1
+L1 -> L2          the result path, today   each result row as it leaves the L1 result
+                  in the Streamer          buffers; emits the Combiner slot's token once
+                                           the tile's rows are in (#98: the Combiner's)
+L2 -> L3          the BlockMover, outbound the result tile's token is there; returns the
+                  (``BlockMoverOut``)      Combiner slot's credit when done
+================  =======================  ==============================================
 
-External Interfaces:
-- AXI memory interface (read and write channels): the tile's link to L3
-- Command interface: commands are pushed into one in-order queue per process
-  (BlockMover LOAD, BlockMover STORE, Streamer), and a queue's head starts when its
-  credits and tile-ready tokens are there (``cmd_sync``, controller/sync.py)
-- Status/interrupt signals, per-process start and completion events, and the tile
-  slots' state
+The BlockMover is one component (``controller/blockmover.py``) with both legs and their
+engines on the tile's one L3 port. The Combiner's storage is L2's result group
+(``memory/combiner.py``), written by the result path, and by the inbound leg in the
+clocks that leaves free (a LOAD into the Combiner: a bias, or an existing C).
 
-Data Flow for Matrix Multiply C = A × B + D:
-1. Optionally load D (a bias, or an existing C) from L3 → Combiner via
-   BlockMoverIn + StreamReader (a LOAD to a Combiner address)
-2. Load A from DRAM → Scratchpad via BlockMoverIn + StreamReader
-3. Load B from DRAM → Scratchpad via BlockMoverIn + StreamReader
-4. Execute matmul via Streamer + SystolicArray (accumulating onto D)
-5. Store C from Combiner → DRAM via BlockMoverOut + StreamWriter
-
-The Combiner's write port is shared: the Streamer writes its results whenever
-they arrive, and a LOAD into the Combiner writes in the clocks it leaves free.
+**Commands.** Each process runs its own program: an in-order queue of its commands,
+whose head starts when its firing rule holds and the process is idle. The tile takes
+them as one stream, the tile command stream (#49): the host's CSR window or an ISA
+instruction stages one command, and ``cmd_type`` names the process it is for (0 = the
+BlockMover's inbound leg, a LOAD; 1 = its outbound leg, a STORE; 2 = the Streamer, an
+EXECUTE). The stream is ordered only per process: the credits and tokens order the
+processes against each other.
 """
 
 from amaranth import Cat, Module, Mux, Signal
 from amaranth.lib.fifo import SyncFIFO
 from amaranth.lib.wiring import Component, In, Out
 
-from .blockmover.reader import StreamReader
-from .blockmover.writer import StreamWriter
 from .config import SystolicConfig
-from .controller.blockmover_in import BlockMoverIn
-from .controller.blockmover_out import BlockMoverOut
+from .controller.blockmover import AXI_CHANNELS, BlockMover
 from .controller.streamer import Streamer
 from .controller.sync import SlotPool, Sync
 from .core.systolic_array import SystolicArray
@@ -74,10 +76,11 @@ class SystolicTop(Component):
     a complete accelerator with external AXI memory interface.
 
     Ports:
-        Command Interface (active controller select + parameters):
+        Command interface (the tile command stream: the process, and its command):
             cmd_valid: Command available
             cmd_ready: The target process's queue has room
-            cmd_type: 0=load, 1=store, 2=execute
+            cmd_type: The process: 0 = BlockMover inbound (LOAD), 1 = BlockMover
+                outbound (STORE), 2 = the Streamer (EXECUTE)
             cmd_opcode: Operation code
             cmd_* : Operation parameters
             cmd_sync: Credits and tile-ready tokens (controller/sync.py; 0 = untracked)
@@ -116,7 +119,7 @@ class SystolicTop(Component):
             err_rearm: Strobe: forget the capture, so the next error event is recorded
     """
 
-    # Controller type constants
+    # ``cmd_type``: the process a command is for, named by its command type
     CTRL_LOAD = 0
     CTRL_STORE = 1
     CTRL_EXEC = 2
@@ -244,10 +247,9 @@ class SystolicTop(Component):
         self.systolic_array = SystolicArray(cfg)
         self.scratchpad = make_l2(cfg)  # L2
         self.combiner = Combiner(cfg)
-        self.stream_reader = StreamReader(cfg)
-        self.stream_writer = StreamWriter(cfg)
-        self.bm_in = BlockMoverIn(cfg)
-        self.bm_out = BlockMoverOut(cfg)
+        # The BlockMover (both legs and their engines, one L3 port) and the Streamer
+        self.blockmover = BlockMover(cfg)
+        self.bm_in, self.bm_out = self.blockmover.bm_in, self.blockmover.bm_out
         self.streamer = Streamer(cfg)
         self.l2_slots = SlotPool(cfg.l2_slots)
         self.combiner_slots = SlotPool(cfg.combiner_slots, producers=2)
@@ -270,13 +272,9 @@ class SystolicTop(Component):
         m.submodules.scratchpad = scratchpad = self.scratchpad
         m.submodules.combiner = combiner = self.combiner
 
-        # BlockMover engines
-        m.submodules.stream_reader = reader = self.stream_reader
-        m.submodules.stream_writer = writer = self.stream_writer
-
-        # Controllers
-        m.submodules.bm_in = bm_in = self.bm_in
-        m.submodules.bm_out = bm_out = self.bm_out
+        # The control processes: the BlockMover (its two legs) and the Streamer
+        m.submodules.blockmover = blockmover = self.blockmover
+        bm_in, bm_out = self.bm_in, self.bm_out
         m.submodules.streamer = streamer = self.streamer
 
         # =====================================================================
@@ -289,10 +287,10 @@ class SystolicTop(Component):
         # The Combiner's second producer is the BlockMover's LOAD into it
         m.submodules.combiner_slots = acc = self.combiner_slots
 
-        # One in-order queue per process: the host (or an ISA instruction) pushes
-        # commands ahead, and a queue's head is dispatched when its credits and
-        # tokens are there and its controller is idle. Each entry maps the
-        # controller's command ports to SystolicTop's command fields.
+        # One in-order queue per process, its program: the host (or an ISA instruction)
+        # pushes commands ahead, and a queue's head is dispatched when its firing rule
+        # holds (its credits and tokens are there) and the process is idle. Each entry
+        # maps the process's command ports to the command stream's fields.
         processes = {
             self.CTRL_LOAD: (
                 "bm_in", bm_in, cfg.ld_queue_length,
@@ -429,24 +427,8 @@ class SystolicTop(Component):
         ]
 
         # =====================================================================
-        # BlockMoverIn <-> StreamReader <-> Scratchpad
+        # The BlockMover's local-memory ports (its legs' engines are inside it)
         # =====================================================================
-
-        # BlockMoverIn -> StreamReader
-        m.d.comb += [
-            reader.req_valid.eq(bm_in.engine_req_valid),
-            bm_in.engine_req_ready.eq(reader.req_ready),
-            reader.req_addr.eq(bm_in.engine_req_addr),
-            reader.req_len.eq(bm_in.engine_req_len),
-        ]
-
-        # StreamReader -> BlockMoverIn
-        m.d.comb += [
-            bm_in.engine_resp_valid.eq(reader.resp_valid),
-            reader.resp_ready.eq(bm_in.engine_resp_ready),
-            bm_in.engine_resp_data.eq(reader.resp_data),
-            bm_in.engine_resp_last.eq(reader.resp_last),
-        ]
 
         # BlockMoverIn -> Scratchpad (write)
         m.d.comb += [
@@ -454,24 +436,6 @@ class SystolicTop(Component):
             scratchpad.write_addr.eq(bm_in.sp_write_addr),
             scratchpad.write_data.eq(bm_in.sp_write_data),
             scratchpad.write_mask.eq(bm_in.sp_write_mask),
-        ]
-
-        # =====================================================================
-        # BlockMoverOut <-> StreamWriter <-> Combiner
-        # =====================================================================
-
-        # BlockMoverOut -> StreamWriter
-        m.d.comb += [
-            writer.req_valid.eq(bm_out.engine_req_valid),
-            bm_out.engine_req_ready.eq(writer.req_ready),
-            writer.req_addr.eq(bm_out.engine_req_addr),
-            writer.req_len.eq(bm_out.engine_req_len),
-            writer.data_valid.eq(bm_out.engine_data_valid),
-            bm_out.engine_data_ready.eq(writer.data_ready),
-            writer.data.eq(bm_out.engine_data),
-            writer.data_strb.eq(bm_out.engine_data_strb),
-            writer.data_last.eq(bm_out.engine_data_last),
-            bm_out.engine_done.eq(writer.done),
         ]
 
         # Combiner -> BlockMoverOut (read)
@@ -555,38 +519,10 @@ class SystolicTop(Component):
         # AXI Interface Wiring
         # =====================================================================
 
-        # StreamReader -> AXI Read
-        m.d.comb += [
-            self.axi_arvalid.eq(reader.mem_arvalid),
-            reader.mem_arready.eq(self.axi_arready),
-            self.axi_araddr.eq(reader.mem_araddr),
-            self.axi_arlen.eq(reader.mem_arlen),
-            self.axi_arsize.eq(reader.mem_arsize),
-            self.axi_arburst.eq(reader.mem_arburst),
-            reader.mem_rvalid.eq(self.axi_rvalid),
-            self.axi_rready.eq(reader.mem_rready),
-            reader.mem_rdata.eq(self.axi_rdata),
-            reader.mem_rlast.eq(self.axi_rlast),
-            reader.mem_rresp.eq(self.axi_rresp),
-        ]
-
-        # StreamWriter -> AXI Write
-        m.d.comb += [
-            self.axi_awvalid.eq(writer.mem_awvalid),
-            writer.mem_awready.eq(self.axi_awready),
-            self.axi_awaddr.eq(writer.mem_awaddr),
-            self.axi_awlen.eq(writer.mem_awlen),
-            self.axi_awsize.eq(writer.mem_awsize),
-            self.axi_awburst.eq(writer.mem_awburst),
-            self.axi_wvalid.eq(writer.mem_wvalid),
-            writer.mem_wready.eq(self.axi_wready),
-            self.axi_wdata.eq(writer.mem_wdata),
-            self.axi_wstrb.eq(writer.mem_wstrb),
-            self.axi_wlast.eq(writer.mem_wlast),
-            writer.mem_bvalid.eq(self.axi_bvalid),
-            self.axi_bready.eq(writer.mem_bready),
-            writer.mem_bresp.eq(self.axi_bresp),
-        ]
+        # The BlockMover's L3 port is the tile's
+        for name, _, direction in AXI_CHANNELS:
+            ours, theirs = getattr(self, f"axi_{name}"), getattr(blockmover, f"axi_{name}")
+            m.d.comb += ours.eq(theirs) if direction is Out else theirs.eq(ours)
 
         # =====================================================================
         # Status Outputs
