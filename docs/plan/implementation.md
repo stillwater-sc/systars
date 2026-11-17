@@ -105,13 +105,13 @@ This document provides a comprehensive plan for rewriting the SYSTARS systolic a
 | `tile_rows` | 1 | PEs per tile (height) |
 | `tile_cols` | 1 | PEs per tile (width) |
 | `input_bits` | 8 | Input/weight element width |
-| `acc_bits` | 32 | Accumulator element width |
+| `acc_bits` | 32 | MAC accumulate width (also the Combiner's element width) |
 | `dataflow` | OUTPUT_STATIONARY \| B_STATIONARY | Dataflow modes (Flag: OUTPUT_STATIONARY, A_STATIONARY, B_STATIONARY) |
 | `sp_capacity_kb` | 256 | Scratchpad size |
 | `sp_banks` | 4 | Scratchpad banks |
-| `acc_capacity_kb` | 64 | Accumulator size |
-| `acc_banks` | 2 | Accumulator banks |
-| `dma_buswidth` | 128 | DMA bus width (bits) |
+| `combiner_capacity_kb` | 64 | Combiner storage size |
+| `combiner_banks` | 2 | Combiner banks |
+| `blockmover_buswidth` | 0 (automatic) | BlockMover bus width (bits; 0 = the widest row, at least 128) |
 
 ---
 
@@ -163,7 +163,7 @@ systars/
 ├── tests/unit/                # pytest on the Amaranth simulator
 ├── verif/cocotb/
 │   ├── tb/                    # axi.py (L3 model), isa.py, gemm.py
-│   └── tests/                 # pe, pe_array, systolic_array, scratchpad, accumulator,
+│   └── tests/                 # pe, pe_array, systolic_array, scratchpad, combiner,
 │                              # systolic_top: on Verilator
 ├── examples/                  # gemm/ (01-08), conv/, simt/, simd/, stencil/, common/
 ├── scripts/                   # gen_pe.py, gen_pe_array.py, gen_systolic_array.py,
@@ -231,15 +231,15 @@ class SYSTARSConfig:
     sp_singleported: bool = True
     spad_read_delay: int = 4
 
-    # Accumulator configuration
-    acc_capacity_kb: int = 64
-    acc_banks: int = 2
-    acc_singleported: bool = False
-    acc_latency: int = 2
+    # Combiner configuration
+    combiner_capacity_kb: int = 64
+    combiner_banks: int = 2
+    combiner_singleported: bool = False
+    combiner_latency: int = 2
 
-    # DMA configuration
-    dma_maxbytes: int = 64
-    dma_buswidth: int = 128
+    # BlockMover configuration
+    blockmover_maxbytes: int = 64
+    blockmover_buswidth: int = 0  # 0 = automatic
     max_in_flight_reqs: int = 16
 
     # Queue depths
@@ -279,10 +279,10 @@ class SYSTARSConfig:
         return (self.sp_capacity_kb * 1024 * 8) // (self.sp_banks * self.sp_width)
 
     @property
-    def acc_bank_entries(self) -> int:
-        """Rows per accumulator bank"""
-        acc_row_bits = self.grid_cols * self.tile_cols * self.acc_bits
-        return (self.acc_capacity_kb * 1024 * 8) // (self.acc_banks * acc_row_bits)
+    def combiner_bank_entries(self) -> int:
+        """Rows per Combiner bank"""
+        combiner_row_bits = self.grid_cols * self.tile_cols * self.acc_bits
+        return (self.combiner_capacity_kb * 1024 * 8) // (self.combiner_banks * combiner_row_bits)
 ```
 
 ### 1.3 Processing Element (PE)
@@ -532,7 +532,7 @@ class LocalAddr(StructLayout):
     Unified address format for scratchpad and accumulator.
 
     Bit layout (32 bits):
-    [31]    is_acc_addr    - 1 = accumulator, 0 = scratchpad
+    [31]    is_combiner    - 1 = Combiner, 0 = scratchpad
     [30]    accumulate     - 1 = accumulate mode
     [29]    read_full_row  - 1 = full width read
     [28:0]  address        - Bank + row address
@@ -540,8 +540,8 @@ class LocalAddr(StructLayout):
 
     def __init__(self, config: SYSTARSConfig):
         sp_addr_bits = (config.sp_banks * config.sp_bank_entries - 1).bit_length()
-        acc_addr_bits = (config.acc_banks * config.acc_bank_entries - 1).bit_length()
-        self.addr_bits = max(sp_addr_bits, acc_addr_bits)
+        combiner_addr_bits = (config.combiner_banks * config.combiner_bank_entries - 1).bit_length()
+        self.addr_bits = max(sp_addr_bits, combiner_addr_bits)
 
         super().__init__({
             "data": unsigned(self.addr_bits),
@@ -976,12 +976,12 @@ class SYSTARS(Elaboratable):
         # Memory interface (simplified AXI-like)
         self.mem_read_valid = Signal()
         self.mem_read_addr = Signal(64)
-        self.mem_read_data = Signal(config.dma_buswidth)
+        self.mem_read_data = Signal(config.blockmover_buswidth)
         self.mem_read_ready = Signal()
 
         self.mem_write_valid = Signal()
         self.mem_write_addr = Signal(64)
-        self.mem_write_data = Signal(config.dma_buswidth)
+        self.mem_write_data = Signal(config.blockmover_buswidth)
         self.mem_write_ready = Signal()
 
     def elaborate(self, platform):
@@ -1042,7 +1042,7 @@ def generate_header(config: SystarsConfig, output_path: str):
 #define ADDR_LEN 32
 #define BANK_NUM {config.sp_banks}
 #define BANK_ROWS {config.sp_bank_entries}
-#define ACC_ROWS {config.acc_banks * config.acc_bank_entries}
+#define ACC_ROWS {config.combiner_banks * config.combiner_bank_entries}
 #define MAX_BYTES {config.dma_maxbytes}
 #define MAX_BLOCK_LEN (MAX_BYTES / (DIM * sizeof(elem_t)))
 #define MAX_BLOCK_LEN_ACC (MAX_BYTES / (DIM * sizeof(acc_t)))
