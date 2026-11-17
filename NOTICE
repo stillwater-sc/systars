@@ -12,9 +12,13 @@ Gemmini
 -------------------------------------------------------------------------------
 
 systars began as a Python plan modelled on Gemmini
-(https://github.com/ucb-bar/gemmini), and parts of its design follow Gemmini:
-the execute command set (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE), the
-local address encoding (src/systars/memory/local_addr.py) and the accumulator
+(https://github.com/ucb-bar/gemmini). systars is written from scratch in
+Amaranth and translates no Gemmini code, but parts of its design follow
+Gemmini: the PE / PEArray / SystolicArray hierarchy (Gemmini's PE, Tile and
+Mesh), the SystolicConfig parameter set, the load/execute/store controller
+split and the StreamReader/StreamWriter DMA engines, the execute command set
+(CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE), the local address encoding
+(src/systars/memory/local_addr.py) and the accumulator
 (src/systars/memory/accumulator.py). Gemmini's copyright notice and license
 follow.
 

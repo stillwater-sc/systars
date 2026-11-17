@@ -104,22 +104,29 @@ execute, are the direction that this lineage points in.
 
 systars began as `pygemmini`, a Python plan modelled on Gemmini, the open-source systolic
 generator from UC Berkeley (Genc et al., DAC 2021). Gemmini made a full-stack DNN accelerator,
-from the array to the software, something anyone can generate, run and measure. systars owes
-it the following:
+from the array to the software, something anyone can generate, run and measure. No Gemmini
+code was translated: systars is written from scratch in Amaranth. Its scaffolding, though,
+follows Gemmini's, and systars owes it the following:
 
+- the hierarchy PE, `PEArray`, `SystolicArray`, after Gemmini's PE, Tile and Mesh
+- the parameter set of `SystolicConfig` (scratchpad and accumulator capacity and banks, DMA
+  and queue sizes), after Gemmini's array configuration
 - the execute command set: `CONFIG`, `PRELOAD`, `COMPUTE` and `COMPUTE_ACCUMULATE`
   (`controller/execute.py`)
 - the local address encoding, where bit 31 selects the accumulator, bit 30 accumulates and
   bit 29 reads a full row (`memory/local_addr.py`)
 - the accumulator, a separate result memory with activation on read-out
   (`memory/accumulator.py`)
-- the split into load, execute and store controllers, and the plan for `LoopMatmul` and
-  `LoopConv` unrollers ([implementation plan](../plan/implementation.md))
+- the split into load, execute and store controllers, the DMA engines `StreamReader` and
+  `StreamWriter`, and the plan for `LoopMatmul` and `LoopConv` unrollers
+  ([implementation plan](../plan/implementation.md))
 
-Since then systars has followed the KPU rather than Gemmini. Whole tiles move between memory
-levels on credits and tile-ready tokens (the CSP model of
-[kpu-sim](https://github.com/stillwater-sc/kpu-sim)), and the Streamer stages operands in L1
-stream buffers. The [Combiner](combiner.md) will replace the accumulator. Gemmini's copyright
+Since then systars has followed the KPU rather than Gemmini, and the interior is new. Every
+PE link is registered and the array has no skew or deskew registers. Whole tiles move between
+memory levels on credits and tile-ready tokens (the CSP model of
+[kpu-sim](https://github.com/stillwater-sc/kpu-sim)) instead of through a reservation station,
+and the Streamer stages operands in L1 stream buffers. The BlockMover's opcodes (strided and
+transposing moves, `CLEAR`, `BROADCAST`) are not Gemmini's. The [Combiner](combiner.md) will replace the accumulator. Gemmini's copyright
 notice and license are in the repository's `NOTICE` file.
 
 ## References
