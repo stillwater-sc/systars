@@ -230,6 +230,7 @@ class TopModel:
             raise AssertionError(f"unknown command type {c.type}")
 
     def execute(self, c):
+        """Apply one execute command (CONFIG, PRELOAD, COMPUTE) to the model's state."""
         dim = self.dim
         sp = self.sp
         accumulate = c.opcode == ExecOpcode.COMPUTE_ACCUMULATE
@@ -247,11 +248,11 @@ class TopModel:
         if c.opcode == ExecOpcode.CONFIG:
             self.dataflow = int(c.rs1 != 0)
         elif c.opcode == ExecOpcode.PRELOAD:
-            if self.dataflow:  # the stationary tile, row-major; zero rows below k_dim
+            if self.dataflow:  # the stationary tile, column-major; zero rows below k_dim
                 k = min(c.k_dim, dim)
                 self.weights[:] = 0
-                for r in range(k):
-                    self.weights[r] = row(c.rs1 + r)
+                for j in range(dim):
+                    self.weights[:k, j] = row(c.rs1 + j)[:k]
         elif c.opcode in (ExecOpcode.COMPUTE, ExecOpcode.COMPUTE_ACCUMULATE):
             k = min(c.k_dim, dim)
             if k == 0:

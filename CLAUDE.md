@@ -94,7 +94,7 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 
 - **PE (`core/pe.py`)**: The MAC unit, with an input register on every link, so values move one PE per clock: A east (with `valid`/`first`/`last` markers), B and partial sums south, OS results north. Two modes, selected at run time by `in_control_dataflow`:
   - Output-stationary (0): `c += a * b`; `first` overwrites, so a reduction may span commands. On `last` the PE launches `c + a * b` north into the `c_up` register of the PE above it
-  - Stationary (1; WS and IS): a stationary register `w`, loaded through a registered chain down each column (`in_shift`, `in_w` -> `out_w`); the streamed operand moves east and `out_psum = in_psum + a * w` moves south
+  - Stationary (1; WS and IS): an active weight `w` and a `shadow`, loaded through a registered chain down each column (`in_w`/`in_w_valid` -> `out_w`/`out_w_valid`) and swapped in by a stream's `first` marker; the streamed operand moves east and `out_psum = in_psum + a * w` moves south. The fabric is pure nearest-neighbour (only the static `in_control_dataflow` is broadcast), checked by `tests/unit/test_fabric_structure.py`
 
 - **PEArray (`core/pe_array.py`)**: A structural block of PEs (tile_rows × tile_cols). Every PE link is registered, so PEArray boundaries make no difference to the timing.
 

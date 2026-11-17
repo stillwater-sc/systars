@@ -140,6 +140,7 @@ class TestConstruction:
 class TestCommandStream:
     @pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
     def test_commands_target_controllers_with_their_own_opcodes(self, dataflow):
+        """Each dataflow loads A and B with its own BlockMover opcode (WS/IS weights column-major)."""
         cfg = config()
         result = run_isa(Matmul(cfg), setup(6, 4, 3, 3, 4, 16, dataflow=dataflow), MatmulCmd.START)
         assert result.done
@@ -150,9 +151,11 @@ class TestCommandStream:
         loads = [c for c in cmds if c.type == CTRL_LOAD]
         stores = [c for c in cmds if c.type == CTRL_STORE]
         execs = [c.opcode for c in cmds[1:] if c.type == CTRL_EXEC]
-        # The corner turns lay the tiles out as the Streamer streams them
+        # The corner turns lay the tiles out as the Streamer streams them: OS A
+        # row-major and B column-major; the stationary tile column-major, so WS turns
+        # both (A streams column-major) and IS neither (Aᵀ by column is A by row)
         T, M_ = BlockMoverOpcode.TRANSPOSE, BlockMoverOpcode.MEMCPY
-        a_op, b_op = (M_, T) if dataflow == OS else (T, M_)
+        a_op, b_op = {OS: (M_, T), WS: (T, T), IS: (M_, M_)}[dataflow]
         assert [c.opcode for c in loads] == [a_op, b_op] * 2
         assert {c.opcode for c in stores} == {T if dataflow == IS else M_}
         # Two M tiles (4 + 2 rows), one N and one K tile: one LOAD per A and B tile,

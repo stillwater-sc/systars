@@ -12,8 +12,8 @@ that `isa.command.connect_to_top` wires to `SystolicTop`:
 - Matmul runs OS, WS or IS (`CONFIG_DATAFLOW`; OS by default when the array has it, else WS,
   else IS), and the LOADs' corner turns lay each tile out as the Streamer streams it. OS: per
   K tile, LOAD A (row-major) and B (TRANSPOSE: column-major), one COMPUTE, the K tiles chained
-  into one reduction in the PEs. WS: LOAD A (TRANSPOSE) and B, PRELOAD B, COMPUTE A (later K
-  tiles accumulate). IS: the same loads, PRELOAD A, COMPUTE B, and the STORE's corner turn
+  into one reduction in the PEs. WS: LOAD A and B (both TRANSPOSE), PRELOAD B, COMPUTE A (later K
+  tiles accumulate). IS: LOAD A and B (both MEMCPY), PRELOAD A, COMPUTE B, and the STORE's corner turn
   writes C from the Cᵀ the Combiner holds. Then STORE the C tile;
 - Conv2d runs OS: its per-position LOADs write the A tile row-major, which only OS streams
   (WS and IS stream A column-major), and the filter tile is corner-turned. An array without
@@ -116,7 +116,7 @@ scratchpad's two read ports into L1:
 | Command (`ExecOpcode`) | OS | Stationary (WS, IS) |
 |---|---|---|
 | `CONFIG` | `rs1` = 0 selects OS; 1 (WS) or 2 (IS) selects the stationary mode | |
-| `PRELOAD` | does nothing | the stationary tile, row-major, from `rs1`: `k_dim` rows (at most `R`), zero below |
+| `PRELOAD` | does nothing | the stationary tile, column-major (row `j` = `W[:, j]`), from `rs1`: `k_dim` rows of W (at most `R`), zero below |
 | `COMPUTE` | an A tile row-major at `rs1` (`R` rows), a B tile column-major at `rs2` (`C` rows), `K = k_dim <= KB`; `cmd_chain` chains K tiles into one reduction | a streamed tile column-major at `rs1` (`R` rows), `M = k_dim <= KB`; `M` result rows |
 | `COMPUTE_ACCUMULATE` | as `COMPUTE`, adding the result rows to the Combiner | |
 
@@ -130,7 +130,9 @@ when the fabric can take it on schedule and never stalls:
 - **the OS drain**: a command that ends a reduction starts so that its results leave `2R - 1`
   clocks after the previous reduction's, so results never meet on a north link (a collision
   flag checks it). With `K >= 2R - 1` (chained K tiles count) this is free;
-- `PRELOAD` waits until the previous stationary stream has left the array.
+- `PRELOAD` runs beside the streams, on its own issue path on L2's B port: it never waits
+  for the stream ahead of it, and a stationary `COMPUTE` starts at least `R - 1` clocks after
+  the last `PRELOAD`. So with `M >= max(R, C)`, tiles with new weights stream back to back.
 
 Two in-order events carry each command's `cmd_sync`: **completed** when its last block is in
 L1 (`SystolicTop` returns the L2 credit, so the BlockMover can refill the slot early) and

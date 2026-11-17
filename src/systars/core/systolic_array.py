@@ -14,8 +14,8 @@ the results back into rows.
 Edges (``i`` is a PE row, ``j`` a PE column):
 
 - West, per row: ``in_a_i`` with ``in_valid_i``, ``in_first_i``, ``in_last_i``.
-- North, per column: ``in_b_j`` (OS), ``in_w_j`` (the stationary chain), and the
-  OS results ``out_c_j`` with ``out_c_valid_j``.
+- North, per column: ``in_b_j`` (OS), ``in_w_j`` with ``in_w_valid_j`` (the weight
+  chain), and the OS results ``out_c_j`` with ``out_c_valid_j``.
 - South, per column: the partial sums ``out_psum_j`` (stationary), valid with
   ``out_psum_valid_j`` (the ``valid`` marker of the bottom row's PE).
 
@@ -32,12 +32,19 @@ Timing (all from the clock a value is on an input edge):
 - Stationary: with row ``k`` streaming element ``m`` in clock ``s + k + m``, the
   partial sum over all ``R`` rows for element ``m`` is on ``out_psum_j`` in clock
   ``s + R + j + m``.
-- The stationary chain: while ``in_shift`` is high every PE's ``w`` loads the
-  ``w`` of the PE to the north, and the top row loads ``in_w_j``. ``R`` shifts load
-  ``R`` rows, last row first.
+- The weight chain: with column ``j`` streaming ``W[R-1-e, j]`` (bottom row first)
+  with ``in_w_valid_j`` in clock ``p + j + e``, ``e < R``, PE(i, j)'s shadow
+  register holds ``W[i, j]`` from clock ``p + R + 1 + i + j``
+  (``weight_ready_clock``). A stationary stream whose first element is marked
+  ``first`` swaps it in at PE(i, j) in clock ``s + 1 + i + j``, so a stream may
+  start at ``s >= p + R``; the next weights may start loading at ``p' >= s``
+  (their first write lands after the swap), while the stream runs.
+- ``in_control_dataflow`` is static configuration: each PEArray registers it, so
+  it reaches the PEs one clock after the edge (as A does).
 
-``out_collision`` is high in a clock where any PE launches a result while a
-result from the south is passing it: never, in a valid schedule.
+``out_collision`` is high (two clocks late: the OR tree is registered) when a PE
+launched a result while a result from the south was passing it: never, in a valid
+schedule.
 """
 
 from amaranth import Module
@@ -73,6 +80,11 @@ class SystolicArray(Component):
         """Clock element ``m``'s partial sum is on ``out_psum_j``."""
         return s + self.rows + j + m
 
+    @staticmethod
+    def weight_ready_clock(p: int, i: int, j: int, rows: int) -> int:
+        """First clock PE(i, j)'s shadow holds its weight (chain streamed from ``p``)."""
+        return p + rows + 1 + i + j
+
     def elaborate(self, _platform):
         m = Module()
         cfg = self.config
@@ -81,5 +93,8 @@ class SystolicArray(Component):
         for tr in range(cfg.grid_rows):
             for tc in range(cfg.grid_cols):
                 m.submodules[f"pe_array_{tr}_{tc}"] = tiles[tr][tc]
-        wire_mesh(m, self, tiles, pe_array_port, cfg.tile_rows, cfg.tile_cols)
+        wire_mesh(
+            m, self, tiles, pe_array_port, cfg.tile_rows, cfg.tile_cols,
+            dataflow=self.in_control_dataflow,
+        )  # fmt: skip
         return m

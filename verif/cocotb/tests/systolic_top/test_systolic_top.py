@@ -142,13 +142,14 @@ async def test_top_gemm_across_4kb(dut):
     )
     assert bursts == [("r", a_addr, 2), ("r", 0x1000, 2)]
 
-    # B row-major, rows 4 bytes at byte 14 of a beat: row 1 spills over 0x2000
+    # B column-major (the stationary tile: L2 row j = B[:, j]), rows 4 bytes at
+    # byte 14 of a beat: row 1 spills over 0x2000
     bursts.clear()
     b_addr = 0x2000 - 2 - BEAT
-    for k in range(ROWS):
-        put(memory, b_addr + k * BEAT, pack(B[k], 8), COLS)
+    for j in range(COLS):
+        put(memory, b_addr + j * BEAT, pack([B[k][j] for k in range(ROWS)], 8), ROWS)
     await run_command(dut, LOAD, BlockMoverOpcode.MEMCPY, 2, dram_addr=b_addr, local_addr=sp_b,
-                      len=ROWS, stride=BEAT, row_bytes=COLS)  # fmt: skip
+                      len=COLS, stride=BEAT, row_bytes=ROWS)  # fmt: skip
     p = 0x2000
     assert bursts == [("r", p - 2 * BEAT, 2), ("r", p - BEAT, 1), ("r", p, 1), ("r", p, 2),
                       ("r", p + BEAT, 2)]  # fmt: skip
@@ -195,9 +196,9 @@ async def test_top_gemm(dut, dataflow):
 
     # L2 rows as the Streamer streams them (one row per stream-buffer block)
     a_addr, b_addr, c_addr = 16 * BEAT, 64 * BEAT, 128 * BEAT
-    if ws:  # A column-major (row k = A[:, k]), B row-major (the stationary tile)
+    if ws:  # A column-major (row k = A[:, k]), and B, the stationary tile, too
         a_rows = [list(col) for col in zip(*A, strict=True)]
-        b_rows = B
+        b_rows = [list(col) for col in zip(*B, strict=True)]
         k_tiles = []
     else:  # per K tile: A row-major (row i = A[i, k0:]), B column-major (row j = B[k0:, j])
         k_tiles = [(k0, min(ROWS, inner - k0)) for k0 in range(0, inner, ROWS)]

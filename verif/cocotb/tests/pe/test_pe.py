@@ -47,16 +47,20 @@ async def test_pe_output_stationary_reduction(dut):
 
 @cocotb.test()
 async def test_pe_stationary(dut):
-    """The chain loads w; out_psum = psum + a * w while a is valid."""
+    """The chain loads the shadow; ``first`` swaps it in; out_psum = psum + a * w."""
     await start(dut)
-    await cycle(dut, in_control_dataflow=STATIONARY, in_valid=0, in_shift=1, in_w=-77)
+    await cycle(dut, in_control_dataflow=STATIONARY, in_valid=0, in_w_valid=1, in_w=-77)
+    await tick(dut)
+    await cycle(dut, in_w_valid=0, in_w=0)
+    assert int(dut.out_w_valid.value) == 1  # the old shadow passes on
     await tick(dut)
     rng = random.Random(2)
-    for _ in range(8):
+    for n in range(8):
         a, psum = rng.randint(-128, 127), rng.randint(-100_000, 100_000)
-        await cycle(dut, in_shift=0, in_a=a, in_psum=psum, in_valid=1, in_b=rng.randint(-128, 127))
+        await cycle(dut, in_a=a, in_psum=psum, in_valid=1, in_first=n == 0,
+                    in_b=rng.randint(-128, 127))  # fmt: skip
         await tick(dut)
-        await cycle(dut, in_valid=0)
+        await cycle(dut, in_valid=0, in_first=0)
         assert signed(dut, "out_w") == -77
         assert signed(dut, "out_psum") == psum + a * -77
         assert int(dut.out_c_valid.value) == 0

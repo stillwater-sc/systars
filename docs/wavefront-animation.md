@@ -46,8 +46,10 @@ as the RTL computed it.
 
 ![Output-stationary reduction, 2x2](wavefront/os-1-reduction.svg)
 
-In the stationary mode the weights shift into the array first (preload, one row per
-clock), and each PE holds its weight `w`. Element `m` of the stream (a row of A) moves
+In the stationary mode the weights come down each column's chain first, bottom row first,
+one PE per clock and with no broadcast shift (`wN`), and the stream's first element swaps
+them in, so loading and swapping sweep the array as one wavefront. Each PE then holds its
+weight `w`. Element `m` of the stream (a row of A) moves
 east, and the partial sum `Σ = A[m, :r+1] @ W[:r+1, j]` moves south. It leaves the south
 edge as `C[m, j]`.
 

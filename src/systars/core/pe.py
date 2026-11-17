@@ -27,10 +27,21 @@ Two modes, selected at run time by ``in_control_dataflow``:
   B; IS: an element of Aᵀ). The streamed operand flows east in ``a``, and the
   partial sum flows south: ``out_psum = psum + a * w`` while ``a`` is valid.
 
-The stationary register is loaded through a chain down each column: while
-``in_shift`` is high, ``w`` loads ``in_w`` (the ``w`` of the PE to the north, or
-the column's input at the north edge). The chain is registered PE to PE; only the
-shift enable is broadcast.
+**The weight chain.** The stationary operand reaches the PE through a chain down
+each column, with no broadcast: a weight travels with a ``w_valid`` marker, one PE
+per clock, through the PE's chain register. A PE has two weight registers: the
+active ``w`` it multiplies by, and a ``shadow`` the chain loads behind it. When a
+weight arrives, the PE takes it into ``shadow`` and passes its old ``shadow`` on to
+the PE to the south. So the column is a shift register whose enable travels with
+the data: a column streamed bottom row first, ``R`` weights, leaves each PE holding
+its own row's weight (PE ``i`` gets it ``i`` clocks after PE 0), and the old
+weights fall off the south edge.
+
+**The swap.** In stationary mode the ``first`` marker on A is the swap: the PE
+multiplies the element marked ``first`` by ``shadow`` and makes it the active
+``w``. The marker travels with the first element of a stream, so the change of
+weights sweeps across the array with the wavefront, and the next weights can load
+into the shadows while the current ones are in use.
 """
 
 from amaranth import Module, Mux, Signal, signed
@@ -55,9 +66,9 @@ class PE(Component):
         out_psum_valid: ``out_psum`` includes a valid product (the A marker)
         in_c, in_c_valid: C result from the PE to the south (OS)
         out_c, out_c_valid: C result to the PE to the north (OS)
-        in_w, out_w: Stationary-register chain (``out_w`` is ``w``)
-        in_shift: Load ``w`` from ``in_w`` this cycle
-        in_control_dataflow: 0 = output-stationary, 1 = stationary
+        in_w, in_w_valid: Weight chain from the north (a weight arrives with ``w_valid``)
+        out_w, out_w_valid: Weight chain to the south (the old ``shadow``, passed on)
+        in_control_dataflow: 0 = output-stationary, 1 = stationary (static configuration)
         out_collision: A launch met a result passing north (OS; never in a valid schedule)
     """
 
@@ -75,7 +86,7 @@ class PE(Component):
                 "in_c": In(acc),
                 "in_c_valid": In(1),
                 "in_w": In(signed(config.weight_bits)),
-                "in_shift": In(1),
+                "in_w_valid": In(1),
                 "in_control_dataflow": In(1),
                 "out_a": Out(signed(config.input_bits)),
                 "out_valid": Out(1),
@@ -87,6 +98,7 @@ class PE(Component):
                 "out_c": Out(acc),
                 "out_c_valid": Out(1),
                 "out_w": Out(signed(config.weight_bits)),
+                "out_w_valid": Out(1),
                 "out_collision": Out(1),
             }
         )
@@ -105,6 +117,8 @@ class PE(Component):
         psum = Signal(acc, name="psum")
         c_up = Signal(acc, name="c_up")
         c_up_valid = Signal(name="c_up_valid")
+        w_link = Signal(signed(cfg.weight_bits), name="w_link")
+        w_link_valid = Signal(name="w_link_valid")
         m.d.sync += [
             a.eq(self.in_a),
             valid.eq(self.in_valid),
@@ -114,14 +128,24 @@ class PE(Component):
             psum.eq(self.in_psum),
             c_up.eq(self.in_c),
             c_up_valid.eq(self.in_c_valid),
+            w_link.eq(self.in_w),
+            w_link_valid.eq(self.in_w_valid),
         ]
 
         c = Signal(acc, name="c")  # OS accumulator
-        w = Signal(signed(cfg.weight_bits), name="w")  # stationary operand
+        w = Signal(signed(cfg.weight_bits), name="w")  # active stationary operand
+        shadow = Signal(signed(cfg.weight_bits), name="shadow")  # the next one
         stationary = self.in_control_dataflow
 
+        swap = Signal(name="swap")  # the first element of a stream: shadow becomes w
+        m.d.comb += swap.eq(stationary & valid & first)
+        weight = Signal(signed(cfg.weight_bits), name="weight")  # used this clock
+        m.d.comb += weight.eq(Mux(swap, shadow, w))
+        # Read by ``wavefront`` tracing
+        self.w, self.shadow, self.weight, self.w_link = w, shadow, weight, w_link
+
         product = Signal(signed(cfg.input_bits + cfg.weight_bits), name="product")
-        m.d.comb += product.eq(a * Mux(stationary, w, b))
+        m.d.comb += product.eq(a * Mux(stationary, weight, b))
         total = Signal(acc, name="total")  # c after this product
         m.d.comb += total.eq(Mux(first, product, c + product))
 
@@ -138,13 +162,16 @@ class PE(Component):
             self.out_psum_valid.eq(valid),
             self.out_c.eq(Mux(launch, total, c_up)),
             self.out_c_valid.eq(launch | c_up_valid),
-            self.out_w.eq(w),
+            self.out_w.eq(shadow),
+            self.out_w_valid.eq(w_link_valid),
             self.out_collision.eq(launch & c_up_valid),
         ]
 
         with m.If(~stationary & valid & ~last):
             m.d.sync += c.eq(total)
-        with m.If(self.in_shift):
-            m.d.sync += w.eq(self.in_w)
+        with m.If(w_link_valid):
+            m.d.sync += shadow.eq(w_link)
+        with m.If(swap):
+            m.d.sync += w.eq(shadow)
 
         return m
