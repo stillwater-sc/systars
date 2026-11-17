@@ -34,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Review fixes ahead of kpu-gen** (esg#107): perf counts a load clock where the
     previous block's last element leaves; an unmapped first-error command type is recorded,
     not a crash; `--svg` keeps the dots in a bundle's name; an unfinished bar ends at the last
-    recorded clock; a fuzz program without its decoys is refused.
+    recorded clock; a fuzz program without its decoys is refused; the stream check uses the
+    `streaming` flag to catch a block replaced before its last element left.
 
 - **The tile's queued and forward-hit status outputs** (#52, 2026-11-17; the systolic part
   of branes-ai/embodied-ai-soc-generator#85, kpugen PR #93).

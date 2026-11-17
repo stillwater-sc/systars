@@ -496,3 +496,23 @@ def test_a_program_without_a_decoy_per_profile_slot_is_refused():
     with pytest.raises(ValueError, match="decoys"):
         Program.from_json(prog)
     assert Program.from_json(generate(5).to_json()) == generate(5)
+
+
+def test_a_load_that_replaces_an_unfinished_block_is_caught_by_its_streaming_flag():
+    """A block of 2 loads at 0 and streams at 1; another loads at 2. With ``streaming`` set
+    its last element left at 2 (fine); without it, that element is missing. A bundle
+    without the field keeps the old rule (one element left may share the clock)."""
+    from systars.trace.check import _check_stream
+
+    def lane(streaming):
+        load2 = {"open": 2, "close": 2, "what": "load", "len": 2}
+        if streaming is not None:
+            load2["streaming"] = streaming
+        return [{"open": 0, "close": 0, "what": "load", "len": 2},
+                {"open": 1, "close": 1, "what": "stream"}, load2,
+                {"open": 3, "close": 4, "what": "stream"}]  # fmt: skip
+
+    assert _check_stream("l1 A0", lane(True)) == []
+    assert _check_stream("l1 A0", lane(None)) == []
+    problems = _check_stream("l1 A0", lane(False))
+    assert problems == ["l1 A0: the 2-element block loaded at cycle 0 has no element 2 at cycle 2"]

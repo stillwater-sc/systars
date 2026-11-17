@@ -327,7 +327,10 @@ def _check_stream(name: str, ivs: list[dict[str, Any]]) -> list[str]:
         here = at[c]
         what = here["what"]
         if what == "load":
-            if remaining > 1:  # cut short (its last element may share this clock)
+            # Cut short: its last element may share this clock, which ``streaming`` (when
+            # recorded) says it did; without the field, one left is taken as shared
+            streaming = here.get("streaming")
+            if remaining > (1 if streaming is None or streaming else 0):
                 missing(c)
             length = int(here.get("len") or 0)
             remaining, start = length, c
