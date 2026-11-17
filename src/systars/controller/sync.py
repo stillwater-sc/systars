@@ -7,7 +7,7 @@ pushes a tile downstream only when the downstream buffer has a free slot (a
 credit), and a consumer starts only when the tile it needs has arrived (a
 tile-ready token). Nobody polls and nobody requests data.
 
-L2 (the scratchpad) and the accumulator hold whole tiles. Each tile slot has one
+L2 (the scratchpad) and the Combiner hold whole tiles. Each tile slot has one
 credit; there are no row or burst credits, since the BlockMover sequences its own
 bursts inside a tile. A slot is a tag: commands still carry the slot's address
 explicitly, and the issuer of the commands (an ISA instruction, or the host) is the
@@ -47,16 +47,16 @@ Pools, and who uses which side:
 
 - L2 slots: the BlockMover's LOAD produces (dst), the Streamer's PRELOAD and
   COMPUTE consume (src).
-- Accumulator slots: the Streamer's COMPUTE produces (dst; ACQUIRE on the first
+- Combiner slots: the Streamer's COMPUTE produces (dst; ACQUIRE on the first
   reduction step of a C tile, SIGNAL on the last), the BlockMover's STORE
   consumes (src). The token is emitted on the Streamer's result event, so SIGNAL
   belongs on a command that writes the tile's results; the Streamer flags one
   that writes none.
-- The BlockMover's LOAD into the accumulator (a bias, or an existing C) is a
-  second producer of accumulator slots (the pool's ``fill`` port): it takes the
+- The BlockMover's LOAD into the Combiner (a bias, or an existing C) is a
+  second producer of Combiner slots (the pool's ``fill`` port): it takes the
   slot's credit (ACQUIRE), and the COMPUTEs that accumulate onto it take none and
   SIGNAL on the last. The LOAD queue is in order, so the COMPUTE's L2 tile, loaded
-  after the accumulator tile, is ready only once the accumulator tile is in.
+  after the Combiner tile, is ready only once the Combiner tile is in.
 
 A WAIT without RELEASE only checks the token (the slot stays READY for another
 reader), and a RELEASE without WAIT returns a READY slot's credit directly.

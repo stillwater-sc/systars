@@ -1,25 +1,25 @@
 """
-Accumulator Memory.
+The Combiner, in its first form: a result memory.
 
-The accumulator is a multi-bank memory for storing computation results.
-It provides:
+In the KPU model the Combiner merges partials and fuses bias, activation, scaling and
+block-format conversion on the way into L2 (#68, ``docs/architecture/kpu-tile.md``).
+Today it is a multi-bank memory that holds the results (ported from SYSTARS's
+accumulator). It provides:
 - Multiple banks for parallel access
 - Accumulate mode (add to existing value)
 - Activation functions (RELU, etc.)
-- Output scaling
 
 Architecture:
     ┌─────────────────────────────────────────────┐
-    │             Accumulator Controller          │
+    │             Combiner Controller             │
     │  ┌─────────┐ ┌─────────┐     ┌─────────┐   │
     │  │ Bank 0  │ │ Bank 1  │ ... │ Bank N  │   │
-    │  │ + Scale │ │ + Scale │     │ + Scale │   │
     │  │ + Activ │ │ + Activ │     │ + Activ │   │
     │  └─────────┘ └─────────┘     └─────────┘   │
     └─────────────────────────────────────────────┘
 
-The accumulator follows Gemmini's (ucb-bar/gemmini; see NOTICE). The KPU tile has
-none: the Combiner replaces it (docs/architecture/combiner.md).
+This storage follows Gemmini's accumulator (ucb-bar/gemmini; see NOTICE). #38 gives
+the Combiner the KPU model's function (docs/architecture/combiner.md).
 """
 
 from amaranth import Cat, Module, Mux, Signal, signed, unsigned
@@ -31,9 +31,9 @@ from .activation import activate_row
 from .local_addr import LocalAddr
 
 
-class AccumulatorBank(Component):
+class CombinerBank(Component):
     """
-    Single accumulator bank with read/write ports and activation.
+    Single Combiner bank with read/write ports and activation.
 
     Features:
     - Read port with optional activation function
@@ -57,8 +57,8 @@ class AccumulatorBank(Component):
         self.config = config
         self.bank_id = bank_id
 
-        width = config.acc_width
-        row_bits = max(1, (config.acc_bank_entries - 1).bit_length())
+        width = config.combiner_width
+        row_bits = max(1, (config.combiner_bank_entries - 1).bit_length())
 
         super().__init__(
             {
@@ -79,10 +79,10 @@ class AccumulatorBank(Component):
     def elaborate(self, _platform):
         m = Module()
         cfg = self.config
-        width = cfg.acc_width
+        width = cfg.combiner_width
 
         # Create memory (signed values stored as unsigned)
-        mem = Memory(shape=unsigned(width), depth=cfg.acc_bank_entries, init=[])
+        mem = Memory(shape=unsigned(width), depth=cfg.combiner_bank_entries, init=[])
         m.submodules.mem = mem
         self.mem = mem  # for testbenches (no hardware)
 
@@ -106,9 +106,9 @@ class AccumulatorBank(Component):
 
         # Pipeline through read latency
         # Memory read port has inherent 1-cycle latency (synchronous read)
-        # acc_latency is TOTAL latency from read_en to valid output
-        # So we need (acc_latency - 1) additional pipeline stages
-        latency = max(1, cfg.acc_latency)
+        # combiner_latency is TOTAL latency from read_en to valid output
+        # So we need (combiner_latency - 1) additional pipeline stages
+        latency = max(1, cfg.combiner_latency)
         extra_stages = latency - 1  # Memory provides 1 cycle
 
         if extra_stages == 0:
@@ -151,16 +151,16 @@ class AccumulatorBank(Component):
 
         # Read port for read-modify-write, transparent to the write port so that
         # back-to-back accumulates to the same row see each other's result.
-        acc_rd_port = mem.read_port(transparent_for=(wr_port,))
+        combiner_rd_port = mem.read_port(transparent_for=(wr_port,))
         existing_value = Signal(signed(width))
         m.d.comb += [
-            acc_rd_port.addr.eq(self.write_addr),
-            acc_rd_port.en.eq(self.write_en & self.accumulate),
-            existing_value.eq(acc_rd_port.data.as_signed()),
+            combiner_rd_port.addr.eq(self.write_addr),
+            combiner_rd_port.en.eq(self.write_en & self.accumulate),
+            existing_value.eq(combiner_rd_port.data.as_signed()),
         ]
 
         write_en_d = Signal()
-        write_addr_d = Signal(unsigned(max(1, (cfg.acc_bank_entries - 1).bit_length())))
+        write_addr_d = Signal(unsigned(max(1, (cfg.combiner_bank_entries - 1).bit_length())))
         write_data_d = Signal(signed(width))
         accumulate_d = Signal()
 
@@ -173,7 +173,7 @@ class AccumulatorBank(Component):
 
         # Element-wise add for accumulate (no carries between packed elements)
         accumulated = Signal(signed(width))
-        n_acc = width // cfg.acc_bits
+        n_combiner = width // cfg.acc_bits
         m.d.comb += accumulated.eq(
             Cat(
                 *[
@@ -181,7 +181,7 @@ class AccumulatorBank(Component):
                         existing_value[i * cfg.acc_bits : (i + 1) * cfg.acc_bits].as_signed()
                         + write_data_d[i * cfg.acc_bits : (i + 1) * cfg.acc_bits].as_signed()
                     )[: cfg.acc_bits]
-                    for i in range(n_acc)
+                    for i in range(n_combiner)
                 ]
             )
         )
@@ -195,11 +195,11 @@ class AccumulatorBank(Component):
         return m
 
 
-class Accumulator(Component):
+class Combiner(Component):
     """
-    Multi-bank accumulator memory with address decoding.
+    Multi-bank Combiner memory with address decoding.
 
-    The accumulator contains multiple banks for storing computation results.
+    The Combiner contains multiple banks for storing computation results.
     It supports accumulate mode (add to existing) and activation functions.
 
     Ports:
@@ -218,7 +218,7 @@ class Accumulator(Component):
     def __init__(self, config: SystolicConfig):
         self.config = config
 
-        width = config.acc_width
+        width = config.combiner_width
 
         super().__init__(
             {
@@ -241,7 +241,7 @@ class Accumulator(Component):
         cfg = self.config
 
         # Instantiate banks
-        banks = [AccumulatorBank(cfg, i) for i in range(cfg.acc_banks)]
+        banks = [CombinerBank(cfg, i) for i in range(cfg.combiner_banks)]
         self.banks = banks  # for testbenches (no hardware)
         for i, bank in enumerate(banks):
             m.submodules[f"bank_{i}"] = bank
@@ -250,18 +250,18 @@ class Accumulator(Component):
         addr_util = LocalAddr(cfg)
 
         # Read path
-        read_bank_sel = Signal(unsigned(addr_util.acc_bank_bits))
-        read_row_addr = Signal(unsigned(addr_util.acc_row_bits))
+        read_bank_sel = Signal(unsigned(addr_util.combiner_bank_bits))
+        read_row_addr = Signal(unsigned(addr_util.combiner_row_bits))
 
         m.d.comb += [
-            read_bank_sel.eq(addr_util.acc_bank(self.read_addr)),
-            read_row_addr.eq(addr_util.acc_row(self.read_addr)),
+            read_bank_sel.eq(addr_util.combiner_bank(self.read_addr)),
+            read_row_addr.eq(addr_util.combiner_row(self.read_addr)),
         ]
 
         # Pipeline the bank selection to match read latency
-        latency = max(1, cfg.acc_latency)
+        latency = max(1, cfg.combiner_latency)
         bank_sel_pipe = [
-            Signal(unsigned(addr_util.acc_bank_bits), name=f"abs_{i}") for i in range(latency)
+            Signal(unsigned(addr_util.combiner_bank_bits), name=f"abs_{i}") for i in range(latency)
         ]
         m.d.sync += bank_sel_pipe[0].eq(read_bank_sel)
         for i in range(1, latency):
@@ -284,12 +284,12 @@ class Accumulator(Component):
                 ]
 
         # Write path
-        write_bank_sel = Signal(unsigned(addr_util.acc_bank_bits))
-        write_row_addr = Signal(unsigned(addr_util.acc_row_bits))
+        write_bank_sel = Signal(unsigned(addr_util.combiner_bank_bits))
+        write_row_addr = Signal(unsigned(addr_util.combiner_row_bits))
 
         m.d.comb += [
-            write_bank_sel.eq(addr_util.acc_bank(self.write_addr)),
-            write_row_addr.eq(addr_util.acc_row(self.write_addr)),
+            write_bank_sel.eq(addr_util.combiner_bank(self.write_addr)),
+            write_row_addr.eq(addr_util.combiner_row(self.write_addr)),
         ]
 
         # Route write request to appropriate bank

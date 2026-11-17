@@ -4,24 +4,24 @@ Memory Streaming Tests.
 This test verifies the memory streaming data paths:
 1. LoadController -> StreamReader -> Scratchpad data path
 2. StoreController -> StreamWriter -> DRAM data path
-3. DMA engine roundtrip data integrity
+3. BlockMover engine roundtrip data integrity
 
 The test simulates simplified data flows without actual memory:
-- Mock DMA responses for LoadController
+- Mock BlockMover responses for LoadController
 - Verify LoadController writes to scratchpad interface
-- Mock accumulator data for StoreController
-- Verify StoreController sends data through DMA interface
+- Mock Combiner data for StoreController
+- Verify StoreController sends data through BlockMover interface
 """
 
 import pytest
 from amaranth.sim import Simulator, Tick
 
+from systars.blockmover.reader import StreamReader
+from systars.blockmover.writer import StreamWriter
 from systars.config import SystolicConfig
 from systars.controller.load import LoadController
 from systars.controller.store import StoreController
-from systars.dma.reader import StreamReader
-from systars.dma.writer import StreamWriter
-from systars.util.commands import DmaOpcode
+from systars.util.commands import BlockMoverOpcode
 
 
 class TestMemoryStreaming:
@@ -31,8 +31,8 @@ class TestMemoryStreaming:
     def config(self):
         """Configuration for tests."""
         return SystolicConfig(
-            dma_buswidth=128,
-            dma_maxbytes=64,
+            blockmover_buswidth=128,
+            blockmover_maxbytes=64,
             grid_rows=2,
             grid_cols=2,
             tile_rows=1,
@@ -43,12 +43,12 @@ class TestMemoryStreaming:
         """Test LoadController issuing commands to StreamReader."""
         load_ctrl = LoadController(config)
         # StreamReader would be connected in full integration
-        results = {"dma_req": False, "transfer_complete": False}
+        results = {"engine_req": False, "transfer_complete": False}
 
         def testbench():
             # Issue MEMCPY command to LoadController
             yield load_ctrl.cmd_valid.eq(1)
-            yield load_ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield load_ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield load_ctrl.cmd_dram_addr.eq(0x1000)
             yield load_ctrl.cmd_sp_addr.eq(0x10)
             yield load_ctrl.cmd_len.eq(2)
@@ -57,24 +57,24 @@ class TestMemoryStreaming:
             yield load_ctrl.cmd_valid.eq(0)
             yield Tick()
 
-            # LoadController should issue DMA request
-            dma_valid = yield load_ctrl.dma_req_valid
-            dma_addr = yield load_ctrl.dma_req_addr
+            # LoadController should issue BlockMover request
+            dma_valid = yield load_ctrl.engine_req_valid
+            engine_addr = yield load_ctrl.engine_req_addr
             if dma_valid:
-                results["dma_req"] = True
-                assert dma_addr == 0x1000
+                results["engine_req"] = True
+                assert engine_addr == 0x1000
 
-            # Simulate DMA request acceptance
-            yield load_ctrl.dma_req_ready.eq(1)
+            # Simulate BlockMover request acceptance
+            yield load_ctrl.engine_req_ready.eq(1)
             yield Tick()
-            yield load_ctrl.dma_req_ready.eq(0)
+            yield load_ctrl.engine_req_ready.eq(0)
             yield Tick()
 
-            # Simulate DMA response with 2 beats of data
+            # Simulate BlockMover response with 2 beats of data
             for i in range(2):
-                yield load_ctrl.dma_resp_valid.eq(1)
-                yield load_ctrl.dma_resp_data.eq(0xABCD0000 + i)
-                yield load_ctrl.dma_resp_last.eq(1 if i == 1 else 0)
+                yield load_ctrl.engine_resp_valid.eq(1)
+                yield load_ctrl.engine_resp_data.eq(0xABCD0000 + i)
+                yield load_ctrl.engine_resp_last.eq(1 if i == 1 else 0)
 
                 # Check scratchpad write
                 sp_write_en = yield load_ctrl.sp_write_en
@@ -84,7 +84,7 @@ class TestMemoryStreaming:
 
                 yield Tick()
 
-            yield load_ctrl.dma_resp_valid.eq(0)
+            yield load_ctrl.engine_resp_valid.eq(0)
 
             # Check completion
             completed = yield load_ctrl.completed
@@ -99,20 +99,20 @@ class TestMemoryStreaming:
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results["dma_req"], "LoadController should issue DMA request"
+        assert results["engine_req"], "LoadController should issue BlockMover request"
         assert results["transfer_complete"], "Transfer should complete"
 
     def test_store_controller_with_stream_writer(self, config):
         """Test StoreController issuing commands to StreamWriter."""
         store_ctrl = StoreController(config)
         # StreamWriter would be connected in full integration
-        results = {"dma_req": False, "data_sent": False, "transfer_complete": False}
+        results = {"engine_req": False, "data_sent": False, "transfer_complete": False}
 
         def testbench():
             # Issue MEMCPY command to StoreController
             yield store_ctrl.cmd_valid.eq(1)
-            yield store_ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
-            yield store_ctrl.cmd_acc_addr.eq(0x20)
+            yield store_ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
+            yield store_ctrl.cmd_combiner_addr.eq(0x20)
             yield store_ctrl.cmd_dram_addr.eq(0x2000)
             yield store_ctrl.cmd_len.eq(2)
             yield store_ctrl.cmd_id.eq(2)
@@ -121,51 +121,51 @@ class TestMemoryStreaming:
             yield store_ctrl.cmd_valid.eq(0)
             yield Tick()
 
-            # StoreController should issue DMA request
-            dma_valid = yield store_ctrl.dma_req_valid
-            dma_addr = yield store_ctrl.dma_req_addr
+            # StoreController should issue BlockMover request
+            dma_valid = yield store_ctrl.engine_req_valid
+            engine_addr = yield store_ctrl.engine_req_addr
             if dma_valid:
-                results["dma_req"] = True
-                assert dma_addr == 0x2000
+                results["engine_req"] = True
+                assert engine_addr == 0x2000
 
-            # Accept DMA request
-            yield store_ctrl.dma_req_ready.eq(1)
+            # Accept BlockMover request
+            yield store_ctrl.engine_req_ready.eq(1)
             yield Tick()
-            yield store_ctrl.dma_req_ready.eq(0)
+            yield store_ctrl.engine_req_ready.eq(0)
 
-            # Process 2 beats: read from acc, send to DMA
+            # Process 2 beats: read from acc, send to BlockMover
             for i in range(2):
-                # Check accumulator read request
-                acc_read_req = yield store_ctrl.acc_read_req
-                if acc_read_req:
+                # Check Combiner read request
+                combiner_read_req = yield store_ctrl.combiner_read_req
+                if combiner_read_req:
                     pass  # Request issued
                 yield Tick()
 
-                # Provide accumulator data
-                yield store_ctrl.acc_read_valid.eq(1)
-                yield store_ctrl.acc_read_data.eq(0x5000 + i)
+                # Provide Combiner data
+                yield store_ctrl.combiner_read_valid.eq(1)
+                yield store_ctrl.combiner_read_data.eq(0x5000 + i)
                 yield Tick()
-                yield store_ctrl.acc_read_valid.eq(0)
+                yield store_ctrl.combiner_read_valid.eq(0)
                 yield Tick()
 
-                # Check DMA data output
-                dma_data_valid = yield store_ctrl.dma_data_valid
-                dma_data = yield store_ctrl.dma_data
-                if dma_data_valid:
+                # Check BlockMover data output
+                engine_data_valid = yield store_ctrl.engine_data_valid
+                engine_data = yield store_ctrl.engine_data
+                if engine_data_valid:
                     results["data_sent"] = True
-                    assert dma_data == 0x5000 + i
+                    assert engine_data == 0x5000 + i
 
-                # Accept DMA data
-                yield store_ctrl.dma_data_ready.eq(1)
+                # Accept BlockMover data
+                yield store_ctrl.engine_data_ready.eq(1)
                 yield Tick()
-                yield store_ctrl.dma_data_ready.eq(0)
+                yield store_ctrl.engine_data_ready.eq(0)
 
             yield Tick()
 
-            # Signal DMA done
-            yield store_ctrl.dma_done.eq(1)
+            # Signal BlockMover done
+            yield store_ctrl.engine_done.eq(1)
             yield Tick()
-            yield store_ctrl.dma_done.eq(0)
+            yield store_ctrl.engine_done.eq(0)
 
             # Check completion
             completed = yield store_ctrl.completed
@@ -179,12 +179,12 @@ class TestMemoryStreaming:
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results["dma_req"], "StoreController should issue DMA request"
-        assert results["data_sent"], "Data should be sent to DMA"
+        assert results["engine_req"], "StoreController should issue BlockMover request"
+        assert results["data_sent"], "Data should be sent to BlockMover"
         assert results["transfer_complete"], "Transfer should complete"
 
     def test_dma_engines_roundtrip(self, config):
-        """Test data flowing through both DMA engines."""
+        """Test data flowing through both BlockMover engines."""
         reader = StreamReader(config)
         writer = StreamWriter(config)
         test_data = [0x1111, 0x2222, 0x3333, 0x4444]
@@ -280,7 +280,7 @@ class TestMemoryStreaming:
 
     def test_component_instantiation(self, config):
         """Test that all streaming components can be instantiated together."""
-        # DMA engines
+        # BlockMover engines
         reader = StreamReader(config)
         writer = StreamWriter(config)
 
@@ -309,8 +309,8 @@ class TestMemoryStreamingVerilogGeneration:
             pytest.skip("Yosys not found")
 
         config = SystolicConfig(
-            dma_buswidth=128,
-            dma_maxbytes=64,
+            blockmover_buswidth=128,
+            blockmover_maxbytes=64,
             grid_rows=2,
             grid_cols=2,
         )

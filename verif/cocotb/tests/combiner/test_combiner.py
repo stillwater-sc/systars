@@ -1,7 +1,7 @@
 """
-Cocotb tests for the Accumulator memory.
+Cocotb tests for the Combiner memory.
 
-These tests verify the Accumulator module behavior using cycle-accurate RTL simulation.
+These tests verify the Combiner module behavior using cycle-accurate RTL simulation.
 """
 
 import cocotb
@@ -24,8 +24,8 @@ async def reset_dut(dut):
 
 
 @cocotb.test()
-async def test_accumulator_reset(dut):
-    """Test Accumulator initial state after reset."""
+async def test_combiner_reset(dut):
+    """Test Combiner initial state after reset."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -33,11 +33,11 @@ async def test_accumulator_reset(dut):
 
     # After reset, read_valid should be low
     assert dut.read_valid.value == 0, "read_valid should be 0 after reset"
-    dut._log.info("Accumulator reset complete")
+    dut._log.info("Combiner reset complete")
 
 
 @cocotb.test()
-async def test_accumulator_write_read(dut):
+async def test_combiner_write_read(dut):
     """Test basic write and read operations (overwrite mode)."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
@@ -83,7 +83,7 @@ async def test_accumulator_write_read(dut):
 
 
 @cocotb.test()
-async def test_accumulator_accumulate_mode(dut):
+async def test_combiner_accumulate_mode(dut):
     """Test accumulate mode (add to existing value)."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
@@ -138,7 +138,7 @@ async def test_accumulator_accumulate_mode(dut):
 
 
 @cocotb.test()
-async def test_accumulator_relu_activation(dut):
+async def test_combiner_relu_activation(dut):
     """Test ReLU activation function on read."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
@@ -198,7 +198,7 @@ async def test_accumulator_relu_activation(dut):
 
 
 @cocotb.test()
-async def test_accumulator_relu_positive(dut):
+async def test_combiner_relu_positive(dut):
     """Test that ReLU passes positive values unchanged."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
@@ -240,7 +240,7 @@ async def test_accumulator_relu_positive(dut):
 
 
 @cocotb.test()
-async def test_accumulator_bank_selection(dut):
+async def test_combiner_bank_selection(dut):
     """Test that different banks can be accessed independently."""
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())

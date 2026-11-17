@@ -52,7 +52,7 @@ def run_matmul_demo(M, N, K, array_dim, verbose=True):
     print("=" * 70)
 
     config = SystolicConfig(
-        grid_rows=array_dim, grid_cols=array_dim, sp_capacity_kb=4, acc_capacity_kb=4
+        grid_rows=array_dim, grid_cols=array_dim, sp_capacity_kb=4, combiner_capacity_kb=4
     )
     strides = (K, N, 4 * N)  # dense row-major int8 A and B, int32 C
     print(f"   strides (bytes): A={strides[0]} B={strides[1]} C={strides[2]}")

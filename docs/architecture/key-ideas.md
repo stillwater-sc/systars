@@ -40,7 +40,7 @@ hold, the fabric stays fully busy across tile boundaries: the 16x16 animation (K
 
 ## 5. CSP flow control from the KPU
 
-L2 and the accumulator hold whole tiles in slots, one credit each, and a slot is always in
+L2 and the Combiner hold whole tiles in slots, one credit each, and a slot is always in
 exactly one of four states: FREE, OWNED, READY or READING. Every command carries `cmd_sync`
 flags (ACQUIRE, SIGNAL, WAIT, RELEASE). Commands are pushed ahead with no completion round
 trip. The streams the ISA instructions issue cannot deadlock, since every credit a command
@@ -50,15 +50,15 @@ queue stalls that queue. With two buffers, an 8x8x16 Matmul on a 4x4 array
 takes 744 cycles instead of 907, with bit-identical results. (`controller/sync.py`,
 `isa/command.py`, `tests/unit/test_credits.py`)
 
-## 6. Layout is the DMA's job
+## 6. Layout is the BlockMover's job
 
 The BlockMover does the corner turns (`TRANSPOSE`), so the Streamer always reads one L2 row
 per L1 buffer. It also handles any byte address, strides, partial rows, byte strobes and the
 AXI 4 KB rule. The fabric and the Streamer never see a layout problem.
 
-## 7. The accumulator has two producers
+## 7. The Combiner has two producers
 
-A LOAD into the accumulator presets a bias or an existing C (`BROADCAST`, `TRANSPOSE` or a
+A LOAD into the Combiner presets a bias or an existing C (`BROADCAST`, `TRANSPOSE` or a
 plain MEMCPY), or writes zero rows with no L3 read (`CLEAR`), in the write-port clocks the
 Streamer leaves free. That gives `C = A @ B + D`, `C += A @ B` and Conv2d's padding without
 special compute modes. (`SlotPool(producers=2)` in `controller/sync.py`)

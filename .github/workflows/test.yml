@@ -69,7 +69,7 @@ jobs:
       matrix:
         simulator: [verilator]
         # The suites `just test-cocotb` runs
-        component: [pe, pe_array, systolic_array, scratchpad, accumulator, systolic_top]
+        component: [pe, pe_array, systolic_array, scratchpad, combiner, systolic_top]
     steps:
       - uses: actions/checkout@v4
 

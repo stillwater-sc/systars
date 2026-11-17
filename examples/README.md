@@ -81,7 +81,7 @@ A_back = dram.load_matrix("A", base_addr=0x1000, shape=(2, 2), dtype=np.int8)
 
 ### Tensor Utilities
 
-Pack matrices for DMA transfers and tile for large workloads:
+Pack matrices for BlockMover transfers and tile for large workloads:
 
 ```python
 from examples.common import tile_matrix, pack_matrix_int8
@@ -171,8 +171,8 @@ The systolic array supports two dataflow modes:
 ```
 X: [batch, in_features]   -> Load as input activations
 W: [in_features, out_features] -> Load as weights
-b: [out_features]         -> Preload to accumulator
-Y: [batch, out_features]  -> Store from accumulator
+b: [out_features]         -> Preload to Combiner
+Y: [batch, out_features]  -> Store from Combiner
 ```
 
 ### Conv2D via im2col
@@ -217,5 +217,5 @@ This will be implemented through:
 1. Tensor shape analysis for tiling decisions
 2. Memory layout optimization
 3. Command sequence generation
-4. DMA scheduling for data movement
+4. BlockMover scheduling for data movement
 5. Result retrieval and unpacking

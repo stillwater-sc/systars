@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import random
 
-from systars.dma.axi import AXI_4KB
+from systars.blockmover.axi import AXI_4KB
 
 
 def check_burst(kind: str, addr: int, beats: int, beat: int) -> None:

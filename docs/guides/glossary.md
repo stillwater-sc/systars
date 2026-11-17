@@ -2,7 +2,7 @@
 
 | Term | Meaning in SYSTARS |
 |---|---|
-| Accumulator | The tile's result memory, addressed with `LocalAddr` bit 31 (bit 30: add on write) |
+| Combiner | The unit on the result path between L1 and L2. Today it is the tile's result memory (`memory/combiner.py`), addressed with `LocalAddr` bit 31 (bit 30: add on write); #38 gives it the KPU model's function |
 | Block | One L2 row: what one L1 stream buffer holds and streams, up to KB elements |
 | BlockMover | The process that moves whole tiles between L3 and the tile: LOAD and STORE |
 | `cmd_chain` | OS flag bits that join several COMPUTEs into one reduction, with C held in the PEs |
@@ -20,7 +20,7 @@
 | PE, PEArray | One MAC with registered links; a structural block of PEs |
 | R, C | The array's rows and columns in PEs: `grid_rows * tile_rows`, `grid_cols * tile_cols` |
 | Skew | The one-clock stagger between neighbouring streams that makes operands meet; made by L1, not registers |
-| Slot | A whole-tile region of L2 or the accumulator: FREE, OWNED, READY or READING |
+| Slot | A whole-tile region of L2 or the Combiner: FREE, OWNED, READY or READING |
 | Streamer | The process (`controller/execute.py`) that streams L2 tiles through L1 into the fabric and writes the results |
 | Tile-ready token | The signal that a slot's tile is complete and may be consumed |
 | Wavefront | The anti-diagonal of PEs working on the same k (or m), moving one PE per clock |

@@ -1,5 +1,5 @@
 """
-StreamReader - DMA engine for external memory to local memory transfers.
+StreamReader - BlockMover engine for external memory to local memory transfers.
 
 The StreamReader handles AXI-like burst read transactions from external memory,
 providing data to the LoadController for writing to the Scratchpad.
@@ -19,7 +19,7 @@ from ..config import SystolicConfig
 
 class StreamReader(Component):
     """
-    DMA read engine for external memory -> local memory transfers.
+    BlockMover read engine for external memory -> local memory transfers.
 
     Accepts read requests from the LoadController and issues AXI-like
     burst read transactions to external memory.
@@ -33,7 +33,7 @@ class StreamReader(Component):
     Response Interface (to LoadController):
         resp_valid: Response data valid
         resp_ready: LoadController ready to accept
-        resp_data: Read data (dma_buswidth bits)
+        resp_data: Read data (blockmover_buswidth bits)
         resp_last: Last beat of burst
 
     AXI Read Address Channel:
@@ -47,17 +47,17 @@ class StreamReader(Component):
     AXI Read Data Channel:
         mem_rvalid: Data valid from slave
         mem_rready: Master ready to accept
-        mem_rdata: Read data (dma_buswidth bits)
+        mem_rdata: Read data (blockmover_buswidth bits)
         mem_rlast: Last beat of burst
         mem_rresp: Response status (2-bit, 00=OKAY)
 
     Parameters:
-        config: SystolicConfig with DMA parameters
+        config: SystolicConfig with BlockMover parameters
     """
 
     def __init__(self, config: SystolicConfig):
         self.config = config
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
 
         super().__init__(
             {
@@ -92,7 +92,7 @@ class StreamReader(Component):
         cfg = self.config
 
         # Calculate arsize from bus width (log2 of bytes per beat)
-        bytes_per_beat = cfg.dma_buswidth // 8
+        bytes_per_beat = cfg.blockmover_buswidth // 8
         arsize_value = (bytes_per_beat - 1).bit_length()  # log2
 
         # State machine

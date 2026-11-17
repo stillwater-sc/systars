@@ -18,7 +18,7 @@ from systars.controller.sync import Sync
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.conv2d import Conv2d, Conv2dCmd, Conv2dError
 from systars.top import SystolicTop
-from systars.util.commands import DmaOpcode, ExecOpcode
+from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
 from ._axi import axi_memory
 from ._isa import TopModel, from_bytes, run_isa, to_unsigned_bytes
@@ -29,17 +29,17 @@ DIM = 4
 
 
 def config(**overrides):
-    fields = {"grid_rows": DIM, "grid_cols": DIM, "sp_capacity_kb": 4, "acc_capacity_kb": 4}
+    fields = {"grid_rows": DIM, "grid_cols": DIM, "sp_capacity_kb": 4, "combiner_capacity_kb": 4}
     fields.update(overrides)
     return SystolicConfig(**fields)
 
 
 def x_and_f_loads(cmds):
     """The X row LOADs (one row each: MEMCPY, or CLEAR in the padding) and the filter
-    LOADs (corner-turned). LOADs into the accumulator (bias, Y) are neither."""
+    LOADs (corner-turned). LOADs into the Combiner (bias, Y) are neither."""
     loads = [c for c in cmds if c.type == CTRL_LOAD and not c.local_addr >> 31]
-    x = [c for c in loads if c.opcode in (DmaOpcode.MEMCPY, DmaOpcode.CLEAR)]
-    return x, [c for c in loads if c.opcode == DmaOpcode.TRANSPOSE]
+    x = [c for c in loads if c.opcode in (BlockMoverOpcode.MEMCPY, BlockMoverOpcode.CLEAR)]
+    return x, [c for c in loads if c.opcode == BlockMoverOpcode.TRANSPOSE]
 
 
 def out_size(size, kernel, stride, pad, dilation):
@@ -210,11 +210,11 @@ class TestCommandStream:
         # The filter tile is corner-turned into L2 (column-major, as OS streams it)
         x_loads, f_loads = x_and_f_loads(cmds)
         assert {(c.opcode, c.len, c.row_bytes) for c in x_loads} == {
-            (DmaOpcode.MEMCPY, 1, 2),
-            (DmaOpcode.CLEAR, 1, 2),  # CLEAR: in the padding
+            (BlockMoverOpcode.MEMCPY, 1, 2),
+            (BlockMoverOpcode.CLEAR, 1, 2),  # CLEAR: in the padding
         }
         assert {(c.opcode, c.len, c.stride, c.row_bytes) for c in f_loads} == {
-            (DmaOpcode.TRANSPOSE, 2, 3, 3)
+            (BlockMoverOpcode.TRANSPOSE, 2, 3, 3)
         }
         assert len(f_loads) == 9 * 4
 
@@ -235,25 +235,25 @@ class TestCommandStream:
         """A position in the padding is a CLEAR: a zero L2 row with no L3 read."""
         cmds = self.commands()
         x_loads, _ = x_and_f_loads(cmds)
-        cleared = [c for c in x_loads if c.opcode == DmaOpcode.CLEAR]
+        cleared = [c for c in x_loads if c.opcode == BlockMoverOpcode.CLEAR]
         # Kernel offset (0, 0) of the first M tile (positions (0,0)..(0,3)) is all padding
-        assert all(c.opcode == DmaOpcode.CLEAR for c in x_loads[:4])
+        assert all(c.opcode == BlockMoverOpcode.CLEAR for c in x_loads[:4])
         assert cleared and len(cleared) < len(x_loads)
         assert {(c.len, c.local_addr >> 31) for c in cleared} == {(1, 0)}
 
     def test_bias_and_y_loads(self):
-        """Each output tile first broadcasts its bias channels into the accumulator slot
+        """Each output tile first broadcasts its bias channels into the Combiner slot
         (taking its credit), then adds the existing Y tile; every COMPUTE accumulates and
-        none takes the accumulator credit."""
+        none takes the Combiner credit."""
         cmds = self.commands(bias=B_ADDR, options=1)
-        acc_loads = [c for c in cmds if c.type == CTRL_LOAD and c.local_addr >> 31]
-        acc_flag, add = 1 << 31, 1 << 30
+        combiner_loads = [c for c in cmds if c.type == CTRL_LOAD and c.local_addr >> 31]
+        combiner_flag, add = 1 << 31, 1 << 30
         assert [(c.opcode, c.dram_addr, c.local_addr, c.len, c.row_bytes, c.sync)
-                for c in acc_loads[:4]] == [
-            (DmaOpcode.BROADCAST, B_ADDR, acc_flag, 4, 12, Sync.ACQUIRE),
-            (DmaOpcode.MEMCPY, Y_ADDR, acc_flag | add, 4, 12, 0),
-            (DmaOpcode.BROADCAST, B_ADDR, acc_flag | DIM, 4, 12, 1 << Sync.DST | Sync.ACQUIRE),
-            (DmaOpcode.MEMCPY, Y_ADDR + 48, acc_flag | add | DIM, 4, 12, 1 << Sync.DST),
+                for c in combiner_loads[:4]] == [
+            (BlockMoverOpcode.BROADCAST, B_ADDR, combiner_flag, 4, 12, Sync.ACQUIRE),
+            (BlockMoverOpcode.MEMCPY, Y_ADDR, combiner_flag | add, 4, 12, 0),
+            (BlockMoverOpcode.BROADCAST, B_ADDR, combiner_flag | DIM, 4, 12, 1 << Sync.DST | Sync.ACQUIRE),
+            (BlockMoverOpcode.MEMCPY, Y_ADDR + 48, combiner_flag | add | DIM, 4, 12, 1 << Sync.DST),
         ]  # fmt: skip
         computes = [c for c in cmds if c.type == CTRL_EXEC][1:]
         assert {c.opcode for c in computes} == {ExecOpcode.COMPUTE_ACCUMULATE}
@@ -367,7 +367,7 @@ def test_conv2d_drives_systolic_top(X_shape, F_shape, stride, pad, dilation, bia
     from ._sim import run_sim
 
     cfg = config()
-    beat = cfg.dma_buswidth // 8
+    beat = cfg.blockmover_buswidth // 8
     rng = np.random.default_rng(sum(X_shape) + sum(F_shape))
     X, F, b, Y0, expected = operands(
         rng, X_shape, F_shape, stride, pad, dilation, bias=bias, accumulate=accumulate
@@ -411,7 +411,7 @@ def test_conv2d_drives_systolic_top(X_shape, F_shape, stride, pad, dilation, bia
         while True:
             valid, ready, ctype, opcode, local = (await ctx.tick().sample(*ports))[2:]
             if valid and ready and ctype == CTRL_LOAD and not local >> 31:
-                in_bounds += opcode == DmaOpcode.MEMCPY
+                in_bounds += opcode == BlockMoverOpcode.MEMCPY
 
     bursts: list = []
     run_sim(

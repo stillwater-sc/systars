@@ -1,8 +1,8 @@
 """
-StridedStreamReader - DMA engine with strided access for transpose operations.
+StridedStreamReader - BlockMover engine with strided access for transpose operations.
 
-The StridedStreamReader extends basic DMA functionality to support:
-- Contiguous burst reads (standard DMA)
+The StridedStreamReader extends basic BlockMover functionality to support:
+- Contiguous burst reads (standard BlockMover)
 - Strided reads for gathering non-contiguous data (e.g., matrix columns)
 
 For matrix transpose during load:
@@ -41,7 +41,7 @@ from ..config import SystolicConfig
 
 class StridedStreamReader(Component):
     """
-    DMA read engine with strided access support.
+    BlockMover read engine with strided access support.
 
     Supports two modes:
     1. Contiguous: Standard burst read (stride=1, efficient)
@@ -63,12 +63,12 @@ class StridedStreamReader(Component):
     AXI Interface: Standard AR/R channels
 
     Parameters:
-        config: SystolicConfig with DMA and array parameters
+        config: SystolicConfig with BlockMover and array parameters
     """
 
     def __init__(self, config: SystolicConfig):
         self.config = config
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
         sp_width = config.sp_width
 
         # Max elements we can gather (one row of the array)
@@ -194,7 +194,7 @@ class StridedStreamReader(Component):
 
                 # Calculate burst parameters
                 # arsize based on bus width
-                arsize = (cfg.dma_buswidth // 8 - 1).bit_length()
+                arsize = (cfg.blockmover_buswidth // 8 - 1).bit_length()
 
                 # For simplicity, read as single elements (could optimize with wider bursts)
                 m.d.comb += [

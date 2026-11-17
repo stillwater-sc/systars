@@ -19,7 +19,7 @@ ReadOnly.
 from __future__ import annotations
 
 from cocotb.triggers import ReadOnly, RisingEdge
-from systars.dma.axi import AXI_4KB
+from systars.blockmover.axi import AXI_4KB
 
 
 class _Port:

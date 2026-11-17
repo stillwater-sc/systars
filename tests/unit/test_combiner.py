@@ -1,12 +1,12 @@
 """
-Unit tests for the Accumulator module.
+Unit tests for the Combiner module.
 
 These tests verify:
-1. AccumulatorBank instantiation
+1. CombinerBank instantiation
 2. Basic write/read operations
 3. Accumulate mode (add to existing)
 4. Activation functions (RELU)
-5. Multi-bank Accumulator routing
+5. Multi-bank Combiner routing
 6. Verilog generation
 """
 
@@ -14,19 +14,19 @@ import pytest
 from amaranth.sim import Simulator, Tick
 
 from systars.config import Activation, SystolicConfig
-from systars.memory.accumulator import Accumulator, AccumulatorBank
+from systars.memory.combiner import Combiner, CombinerBank
 
 
-class TestAccumulatorBank:
-    """Test suite for AccumulatorBank."""
+class TestCombinerBank:
+    """Test suite for CombinerBank."""
 
     @pytest.fixture
     def config(self):
         """Configuration for tests with shorter latency."""
         return SystolicConfig(
-            acc_banks=2,
-            acc_capacity_kb=8,  # Smaller for faster tests
-            acc_latency=2,  # Short latency
+            combiner_banks=2,
+            combiner_capacity_kb=8,  # Smaller for faster tests
+            combiner_latency=2,  # Short latency
             grid_rows=4,
             grid_cols=4,
             tile_rows=1,
@@ -35,11 +35,11 @@ class TestAccumulatorBank:
 
     @pytest.fixture
     def bank(self, config):
-        """Create an AccumulatorBank instance."""
-        return AccumulatorBank(config, bank_id=0)
+        """Create an CombinerBank instance."""
+        return CombinerBank(config, bank_id=0)
 
     def test_bank_instantiation(self, bank, config):
-        """Test that AccumulatorBank can be instantiated."""
+        """Test that CombinerBank can be instantiated."""
         assert bank is not None
         assert bank.config == config
         assert bank.bank_id == 0
@@ -61,7 +61,7 @@ class TestAccumulatorBank:
 
     def test_bank_write_overwrite(self, config):
         """Test basic write (overwrite mode)."""
-        bank = AccumulatorBank(config, bank_id=0)
+        bank = CombinerBank(config, bank_id=0)
         results = []
 
         def testbench():
@@ -83,7 +83,7 @@ class TestAccumulatorBank:
 
             yield bank.read_en.eq(0)
             # Wait for latency-1 more ticks (valid is high for only one cycle)
-            for _ in range(config.acc_latency - 1):
+            for _ in range(config.combiner_latency - 1):
                 yield Tick()
 
             valid = yield bank.read_valid
@@ -100,7 +100,7 @@ class TestAccumulatorBank:
 
     def test_bank_write_accumulate(self, config):
         """Test accumulate mode (add to existing)."""
-        bank = AccumulatorBank(config, bank_id=0)
+        bank = CombinerBank(config, bank_id=0)
         results = []
 
         def testbench():
@@ -135,7 +135,7 @@ class TestAccumulatorBank:
             yield Tick()
 
             yield bank.read_en.eq(0)
-            for _ in range(config.acc_latency - 1):
+            for _ in range(config.combiner_latency - 1):
                 yield Tick()
 
             valid = yield bank.read_valid
@@ -153,14 +153,14 @@ class TestAccumulatorBank:
 
     def test_bank_relu_activation(self, config):
         """Test RELU activation function."""
-        bank = AccumulatorBank(config, bank_id=0)
+        bank = CombinerBank(config, bank_id=0)
         results = []
 
         def testbench():
             # Write negative value to address 0
             yield bank.write_addr.eq(0)
             # Use signed representation for -50
-            yield bank.write_data.eq((-50) & ((1 << config.acc_width) - 1))
+            yield bank.write_data.eq((-50) & ((1 << config.combiner_width) - 1))
             yield bank.accumulate.eq(0)
             yield bank.write_en.eq(1)
             yield Tick()
@@ -180,7 +180,7 @@ class TestAccumulatorBank:
             yield Tick()
 
             yield bank.read_en.eq(0)
-            for _ in range(config.acc_latency - 1):
+            for _ in range(config.combiner_latency - 1):
                 yield Tick()
 
             valid = yield bank.read_valid
@@ -196,7 +196,7 @@ class TestAccumulatorBank:
             yield Tick()
 
             yield bank.read_en.eq(0)
-            for _ in range(config.acc_latency - 1):
+            for _ in range(config.combiner_latency - 1):
                 yield Tick()
 
             valid = yield bank.read_valid
@@ -217,7 +217,7 @@ class TestAccumulatorBank:
         assert results[1]["data"] == 100
 
     def test_bank_elaboration(self, bank):
-        """Test that AccumulatorBank elaborates without errors."""
+        """Test that CombinerBank elaborates without errors."""
 
         def testbench():
             yield Tick()
@@ -228,16 +228,16 @@ class TestAccumulatorBank:
         sim.run()
 
 
-class TestAccumulator:
-    """Test suite for multi-bank Accumulator."""
+class TestCombiner:
+    """Test suite for multi-bank Combiner."""
 
     @pytest.fixture
     def config(self):
         """Configuration for tests."""
         return SystolicConfig(
-            acc_banks=2,
-            acc_capacity_kb=8,
-            acc_latency=2,
+            combiner_banks=2,
+            combiner_capacity_kb=8,
+            combiner_latency=2,
             grid_rows=4,
             grid_cols=4,
             tile_rows=1,
@@ -245,33 +245,33 @@ class TestAccumulator:
         )
 
     @pytest.fixture
-    def accumulator(self, config):
-        """Create an Accumulator instance."""
-        return Accumulator(config)
+    def combiner(self, config):
+        """Create an Combiner instance."""
+        return Combiner(config)
 
-    def test_accumulator_instantiation(self, accumulator, config):
-        """Test that Accumulator can be instantiated."""
-        assert accumulator is not None
-        assert accumulator.config == config
+    def test_combiner_instantiation(self, combiner, config):
+        """Test that Combiner can be instantiated."""
+        assert combiner is not None
+        assert combiner.config == config
 
-    def test_accumulator_has_correct_ports(self, accumulator):
-        """Test that Accumulator has all required ports."""
+    def test_combiner_has_correct_ports(self, combiner):
+        """Test that Combiner has all required ports."""
         # Read interface
-        assert hasattr(accumulator, "read_req")
-        assert hasattr(accumulator, "read_addr")
-        assert hasattr(accumulator, "read_data")
-        assert hasattr(accumulator, "read_valid")
-        assert hasattr(accumulator, "read_activation")
+        assert hasattr(combiner, "read_req")
+        assert hasattr(combiner, "read_addr")
+        assert hasattr(combiner, "read_data")
+        assert hasattr(combiner, "read_valid")
+        assert hasattr(combiner, "read_activation")
 
         # Write interface
-        assert hasattr(accumulator, "write_req")
-        assert hasattr(accumulator, "write_addr")
-        assert hasattr(accumulator, "write_data")
-        assert hasattr(accumulator, "accumulate")
+        assert hasattr(combiner, "write_req")
+        assert hasattr(combiner, "write_addr")
+        assert hasattr(combiner, "write_data")
+        assert hasattr(combiner, "accumulate")
 
-    def test_accumulator_bank_routing(self, config):
+    def test_combiner_bank_routing(self, config):
         """Test that addresses are routed to correct banks."""
-        acc = Accumulator(config)
+        acc = Combiner(config)
         results = []
 
         def testbench():
@@ -297,7 +297,7 @@ class TestAccumulator:
             yield Tick()
             yield acc.read_req.eq(0)
 
-            for _ in range(config.acc_latency - 1):
+            for _ in range(config.combiner_latency - 1):
                 yield Tick()
 
             valid = yield acc.read_valid
@@ -313,7 +313,7 @@ class TestAccumulator:
             yield Tick()
             yield acc.read_req.eq(0)
 
-            for _ in range(config.acc_latency - 1):
+            for _ in range(config.combiner_latency - 1):
                 yield Tick()
 
             valid = yield acc.read_valid
@@ -331,23 +331,23 @@ class TestAccumulator:
         assert results[1]["valid"] == 1
         assert results[1]["data"] == 222
 
-    def test_accumulator_elaboration(self, accumulator):
-        """Test that Accumulator elaborates without errors."""
+    def test_combiner_elaboration(self, combiner):
+        """Test that Combiner elaborates without errors."""
 
         def testbench():
             yield Tick()
 
-        sim = Simulator(accumulator)
+        sim = Simulator(combiner)
         sim.add_clock(1e-6)
         sim.add_testbench(testbench)
         sim.run()
 
 
-class TestAccumulatorVerilogGeneration:
-    """Test Verilog generation for Accumulator modules."""
+class TestCombinerVerilogGeneration:
+    """Test Verilog generation for Combiner modules."""
 
     def test_generate_bank_verilog(self, tmp_path):
-        """Test that AccumulatorBank can generate valid Verilog."""
+        """Test that CombinerBank can generate valid Verilog."""
         from amaranth._toolchain.yosys import find_yosys
         from amaranth.back import verilog
 
@@ -356,21 +356,21 @@ class TestAccumulatorVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        config = SystolicConfig(acc_banks=2, acc_capacity_kb=8, acc_latency=2)
-        bank = AccumulatorBank(config, bank_id=0)
+        config = SystolicConfig(combiner_banks=2, combiner_capacity_kb=8, combiner_latency=2)
+        bank = CombinerBank(config, bank_id=0)
 
-        output = verilog.convert(bank, name="AccumulatorBank")
-        assert "module AccumulatorBank" in output
+        output = verilog.convert(bank, name="CombinerBank")
+        assert "module CombinerBank" in output
         assert "read_addr" in output
         assert "write_data" in output
         assert "accumulate" in output
 
-        verilog_file = tmp_path / "accumulator_bank.v"
+        verilog_file = tmp_path / "combiner_bank.v"
         verilog_file.write_text(output)
         assert verilog_file.exists()
 
     def test_generate_accumulator_verilog(self, tmp_path):
-        """Test that Accumulator can generate valid Verilog."""
+        """Test that Combiner can generate valid Verilog."""
         from amaranth._toolchain.yosys import find_yosys
         from amaranth.back import verilog
 
@@ -379,17 +379,17 @@ class TestAccumulatorVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        config = SystolicConfig(acc_banks=2, acc_capacity_kb=8, acc_latency=2)
-        acc = Accumulator(config)
+        config = SystolicConfig(combiner_banks=2, combiner_capacity_kb=8, combiner_latency=2)
+        acc = Combiner(config)
 
-        output = verilog.convert(acc, name="Accumulator")
-        assert "module Accumulator" in output
+        output = verilog.convert(acc, name="Combiner")
+        assert "module Combiner" in output
 
         # Should have bank submodules
         assert "bank_0" in output
         assert "bank_1" in output
 
-        verilog_file = tmp_path / "accumulator.v"
+        verilog_file = tmp_path / "combiner.v"
         verilog_file.write_text(output)
         assert verilog_file.exists()
 
@@ -398,14 +398,14 @@ if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
 
-class TestAccumulatorBankRowSemantics:
+class TestCombinerBankRowSemantics:
     """Accumulate and activation operate on each acc_bits element of a packed row."""
 
     @pytest.fixture
     def cfg(self):
         # 2 elements of 32 bits per row
         return SystolicConfig(
-            grid_rows=2, grid_cols=2, acc_banks=2, acc_capacity_kb=1, acc_latency=1
+            grid_rows=2, grid_cols=2, combiner_banks=2, combiner_capacity_kb=1, combiner_latency=1
         )
 
     @staticmethod
@@ -448,16 +448,16 @@ class TestAccumulatorBankRowSemantics:
         sim.add_testbench(testbench)
         sim.run()
         assert out["valid"] == 1
-        return out["data"] % (1 << bank.config.acc_width)
+        return out["data"] % (1 << bank.config.combiner_width)
 
     def test_back_to_back_accumulates_same_row(self, cfg):
-        bank = AccumulatorBank(cfg, bank_id=0)
+        bank = CombinerBank(cfg, bank_id=0)
         p = self.pack
         data = self._run(bank, [(p([100, 1]), 0), (p([50, 2]), 1), (p([25, 3]), 1)])
         assert self.unpack(data, 2) == [175, 6]
 
     def test_accumulate_does_not_carry_between_elements(self, cfg):
-        bank = AccumulatorBank(cfg, bank_id=0)
+        bank = CombinerBank(cfg, bank_id=0)
         p = self.pack
         data = self._run(bank, [(p([-1, 10]), 0), (p([1, 0]), 1)])
         assert self.unpack(data, 2) == [0, 10]
@@ -471,6 +471,6 @@ class TestAccumulatorBankRowSemantics:
         ],
     )
     def test_activation_is_per_element(self, cfg, activation, expected):
-        bank = AccumulatorBank(cfg, bank_id=0)
+        bank = CombinerBank(cfg, bank_id=0)
         data = self._run(bank, [(self.pack([-5, 9]), 0)], activation=activation)
         assert self.unpack(data, 2) == expected

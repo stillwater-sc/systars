@@ -117,13 +117,13 @@ print(v)
 | PEArray | ✅ Done | Combinational PE grid (tile_rows × tile_cols) |
 | SystolicArray | ✅ Done | Pipelined PEArray grid (grid_rows × grid_cols) |
 | Scratchpad | ✅ Done | Multi-bank local memory |
-| Accumulator | ✅ Done | Result memory with ReLU/ReLU6 on readout (no scaling yet). To be replaced by the [Combiner](docs/architecture/combiner.md) (#38) |
+| Combiner (storage) | ✅ Done | Result memory with ReLU/ReLU6 on readout (no scaling yet); the [Combiner](docs/architecture/combiner.md)'s function is #38 |
 | ExecuteController | ✅ Done | Execute command handling (CONFIG, PRELOAD, COMPUTE) |
 | LoadController | ✅ Done | DRAM → Scratchpad transfers |
-| StoreController | ✅ Done | Accumulator → DRAM transfers |
-| StreamReader | ✅ Done | AXI-like burst read DMA engine |
-| StreamWriter | ✅ Done | AXI-like burst write DMA engine |
-| DescriptorEngine | ✅ Done | DMA descriptor chain execution |
+| StoreController | ✅ Done | Combiner → DRAM transfers |
+| StreamReader | ✅ Done | AXI-like burst read engine of the BlockMover |
+| StreamWriter | ✅ Done | AXI-like burst write engine of the BlockMover |
+| DescriptorEngine | ✅ Done | BlockMover descriptor chain execution |
 | LoopMatmul | 🔲 TODO | High-level matmul loop unroller |
 | LoopConv | 🔲 TODO | Convolution loop unroller |
 
@@ -138,10 +138,10 @@ Key parameters in `SystolicConfig`:
 | `tile_rows` | 1 | PEArray height (PEs per tile) |
 | `tile_cols` | 1 | PEArray width (PEs per tile) |
 | `input_bits` | 8 | Input element width |
-| `acc_bits` | 32 | Accumulator width |
+| `acc_bits` | 32 | MAC accumulate width |
 | `dataflow` | OUTPUT_STATIONARY \| B_STATIONARY | Supported dataflow modes (OS and WS; IS needs `A_STATIONARY`) |
 | `sp_capacity_kb` | 256 | Scratchpad size |
-| `acc_capacity_kb` | 64 | Accumulator size |
+| `combiner_capacity_kb` | 64 | Combiner storage size |
 
 ## Testing
 
@@ -201,7 +201,7 @@ The complete system architecture showing data flow through the memory subsystem:
                     │ Load                           │ Store
                     ↓                                ↑
 ┌──────────────────────────────────┐  ┌─────────────────────────────────┐
-│         SCRATCHPAD MEMORY        │  │       ACCUMULATOR MEMORY        │
+│         SCRATCHPAD MEMORY        │  │         COMBINER MEMORY         │
 │  ┌──────┐ ┌──────┐ ┌──────┐      │  │  ┌──────┐ ┌──────┐ ┌──────┐     │
 │  │Bank 0│ │Bank 1│ │Bank 2│ ...  │  │  │Bank 0│ │Bank 1│ │Bank 2│ ... │
 │  │ (A)  │ │ (B)  │ │      │      │  │  │ (C)  │ │      │ │      │     │
@@ -234,9 +234,9 @@ systars/
 │   ├── targets.py         # The RTL targets that just gen / just synth / CI read
 │   ├── top.py             # SystolicTop, the compute tile
 │   ├── core/              # PE, PEArray, SystolicArray
-│   ├── memory/            # Scratchpad (L2), Accumulator, L1 stream/result buffers
+│   ├── memory/            # Scratchpad (L2), Combiner storage, L1 stream/result buffers
 │   ├── controller/        # Streamer (execute), BlockMover (load, store), credits (sync)
-│   ├── dma/               # AXI StreamReader/StreamWriter
+│   ├── blockmover/        # The BlockMover's AXI engines (StreamReader/StreamWriter)
 │   ├── isa/               # Matmul and Conv2d instructions, the command port
 │   ├── wavefront.py       # RTL wavefront tracing, checking and animations
 │   ├── util/              # Opcodes and command helpers

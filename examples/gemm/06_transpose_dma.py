@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Transpose DMA Visualization.
+Transpose BlockMover Visualization.
 
-Demonstrates how matrix A is transposed during DMA load from DRAM to scratchpad.
+Demonstrates how matrix A is transposed during BlockMover load from DRAM to scratchpad.
 
 For systolic array matmul C = A @ B:
 - A (M×K) must be stored column-major in scratchpad (transposed from DRAM)
 - B (K×N) stored row-major in scratchpad (direct copy from DRAM)
 
-The transpose DMA uses strided memory access:
+The transpose BlockMover uses strided memory access:
 - To read column c of A: base_addr + c, stride = K (row width)
 - Each gathered column becomes a contiguous row in scratchpad
 
@@ -51,7 +51,7 @@ def clear_screen():
 
 
 # =============================================================================
-# DMA Models
+# BlockMover Models
 # =============================================================================
 
 
@@ -114,7 +114,7 @@ class Scratchpad:
 
 @dataclass
 class TransposeDMA:
-    """DMA engine with transpose support."""
+    """BlockMover engine with transpose support."""
 
     dram: DRAM
     scratchpad: Scratchpad
@@ -188,13 +188,13 @@ def visualize_transpose(
     n: int = 4,
     use_color: bool = True,
 ):
-    """Visualize the transpose DMA operation."""
+    """Visualize the transpose BlockMover operation."""
     if not use_color:
         Colors.disable()
     c = Colors
 
     print(f"\n{c.BOLD}╔══════════════════════════════════════════════════════════════════════════╗")
-    print("║                    TRANSPOSE DMA VISUALIZATION                           ║")
+    print("║                 TRANSPOSE BLOCKMOVER VISUALIZATION                       ║")
     print(
         f"╚══════════════════════════════════════════════════════════════════════════╝{c.RESET}\n"
     )
@@ -232,7 +232,7 @@ def visualize_transpose(
         print(row_str)
     print()
 
-    # Initialize DMA system
+    # Initialize BlockMover system
     dram = DRAM()
     scratchpad = Scratchpad()
     dma = TransposeDMA(dram=dram, scratchpad=scratchpad)
@@ -242,7 +242,7 @@ def visualize_transpose(
     dram.store_matrix("B", B, b_base)
 
     # Show transpose operation
-    print(f"{c.BOLD}Step 2: DMA Transfer with Transpose for A{c.RESET}")
+    print(f"{c.BOLD}Step 2: BlockMover Transfer with Transpose for A{c.RESET}")
     print()
     print(f"  {c.YELLOW}Reading columns of A with strided access:{c.RESET}")
     print()
@@ -314,7 +314,7 @@ def animate_transpose(
     delay_ms: int = 500,
     use_color: bool = True,
 ):
-    """Animate the transpose DMA operation step by step."""
+    """Animate the transpose BlockMover operation step by step."""
     if not use_color:
         Colors.disable()
     c = Colors
@@ -327,7 +327,7 @@ def animate_transpose(
     scratchpad = Scratchpad()
     dram.store_matrix("A", A, 0)
 
-    print(f"\n{c.BOLD}Animating Transpose DMA for {m}×{k} matrix{c.RESET}")
+    print(f"\n{c.BOLD}Animating Transpose BlockMover for {m}×{k} matrix{c.RESET}")
     print(f"\n{c.DIM}Press Enter to start...{c.RESET}")
     input()
 
@@ -335,7 +335,7 @@ def animate_transpose(
         clear_screen()
 
         print(f"{c.BOLD}╔════════════════════════════════════════════════════╗")
-        print(f"║  TRANSPOSE DMA - Reading Column {col}                   ║")
+        print(f"║  TRANSPOSE BlockMover - Reading Column {col}            ║")
         print(f"╚════════════════════════════════════════════════════╝{c.RESET}\n")
 
         # Show DRAM with current column highlighted
@@ -391,7 +391,7 @@ def animate_transpose(
     # Final state
     clear_screen()
     print(f"{c.BOLD}╔════════════════════════════════════════════════════╗")
-    print("║  TRANSPOSE DMA - Complete                          ║")
+    print("║  TRANSPOSE BlockMover - Complete                   ║")
     print(f"╚════════════════════════════════════════════════════╝{c.RESET}\n")
 
     print(f"{c.BOLD}Original A (row-major):{c.RESET}")
@@ -419,7 +419,7 @@ def show_architecture_diagram(use_color: bool = True):
 
     diagram = f"""
 {c.BOLD}╔══════════════════════════════════════════════════════════════════════════════╗
-║                COMPLETE MATMUL DATA FLOW WITH TRANSPOSE DMA                   ║
+║             COMPLETE MATMUL DATA FLOW WITH TRANSPOSE BLOCKMOVER               ║
 ╚══════════════════════════════════════════════════════════════════════════════╝{c.RESET}
 
 {c.DIM}DRAM (External Memory){c.RESET}
@@ -433,7 +433,7 @@ def show_architecture_diagram(use_color: bool = True):
 │  └─────────────────────┘                                                        │
 └─────────────┬───────────────────────────────────┬───────────────────────────────┘
               │                                   │
-              │ {c.YELLOW}Strided DMA{c.RESET}                        │ {c.CYAN}Contiguous DMA{c.RESET}
+              │ {c.YELLOW}Strided BlockMover{c.RESET}                 │ {c.CYAN}Contiguous BlockMover{c.RESET}
               │ (transpose)                       │ (direct copy)
               │                                   │
               │  Read col 0: addr 0,3,6,9        │  Read row 0: addr 0,1,2
@@ -475,17 +475,17 @@ def show_architecture_diagram(use_color: bool = True):
                     └─────────────────────────────────┘
 
 {c.BOLD}Key Insight:{c.RESET}
-  - Transpose happens at DMA time, not compute time
+  - Transpose happens at BlockMover time, not compute time
   - One strided read gathers entire column → written as row
   - At compute time, single-cycle row reads feed the array
-  - This trades DMA bandwidth for compute efficiency
+  - This trades BlockMover bandwidth for compute efficiency
 """
     print(diagram)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Transpose DMA Visualization",
+        description="Transpose BlockMover Visualization",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--m", type=int, default=4, help="M dimension (default: 4)")

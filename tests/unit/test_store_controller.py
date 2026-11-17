@@ -4,8 +4,8 @@ Unit tests for the StoreController.
 These tests verify:
 1. StoreController instantiation
 2. MEMCPY command acceptance (for store operations)
-3. Accumulator read requests
-4. DMA write data transmission
+3. Combiner read requests
+4. BlockMover write data transmission
 5. Activation function (ReLU)
 6. Completion signaling
 7. Verilog generation
@@ -16,7 +16,7 @@ from amaranth.sim import Simulator, Tick
 
 from systars.config import SystolicConfig
 from systars.controller.store import StoreController
-from systars.util.commands import DmaOpcode
+from systars.util.commands import BlockMoverOpcode
 
 
 class TestStoreController:
@@ -26,8 +26,8 @@ class TestStoreController:
     def config(self):
         """Configuration for tests."""
         return SystolicConfig(
-            dma_buswidth=128,
-            dma_maxbytes=64,
+            blockmover_buswidth=128,
+            blockmover_maxbytes=64,
             grid_rows=4,
             grid_cols=4,
             tile_rows=1,
@@ -50,28 +50,28 @@ class TestStoreController:
         assert hasattr(controller, "cmd_valid")
         assert hasattr(controller, "cmd_ready")
         assert hasattr(controller, "cmd_opcode")
-        assert hasattr(controller, "cmd_acc_addr")
+        assert hasattr(controller, "cmd_combiner_addr")
         assert hasattr(controller, "cmd_dram_addr")
         assert hasattr(controller, "cmd_len")
         assert hasattr(controller, "cmd_id")
         assert hasattr(controller, "cmd_activation")
 
-        # Accumulator interface
-        assert hasattr(controller, "acc_read_req")
-        assert hasattr(controller, "acc_read_addr")
-        assert hasattr(controller, "acc_read_data")
-        assert hasattr(controller, "acc_read_valid")
+        # Combiner interface
+        assert hasattr(controller, "combiner_read_req")
+        assert hasattr(controller, "combiner_read_addr")
+        assert hasattr(controller, "combiner_read_data")
+        assert hasattr(controller, "combiner_read_valid")
 
-        # DMA interface
-        assert hasattr(controller, "dma_req_valid")
-        assert hasattr(controller, "dma_req_ready")
-        assert hasattr(controller, "dma_req_addr")
-        assert hasattr(controller, "dma_req_len")
-        assert hasattr(controller, "dma_data_valid")
-        assert hasattr(controller, "dma_data_ready")
-        assert hasattr(controller, "dma_data")
-        assert hasattr(controller, "dma_data_last")
-        assert hasattr(controller, "dma_done")
+        # BlockMover interface
+        assert hasattr(controller, "engine_req_valid")
+        assert hasattr(controller, "engine_req_ready")
+        assert hasattr(controller, "engine_req_addr")
+        assert hasattr(controller, "engine_req_len")
+        assert hasattr(controller, "engine_data_valid")
+        assert hasattr(controller, "engine_data_ready")
+        assert hasattr(controller, "engine_data")
+        assert hasattr(controller, "engine_data_last")
+        assert hasattr(controller, "engine_done")
 
         # Status
         assert hasattr(controller, "busy")
@@ -105,8 +105,8 @@ class TestStoreController:
         def testbench():
             # Issue MEMCPY command for store
             yield ctrl.cmd_valid.eq(1)
-            yield ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
-            yield ctrl.cmd_acc_addr.eq(0x100)
+            yield ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
+            yield ctrl.cmd_combiner_addr.eq(0x100)
             yield ctrl.cmd_dram_addr.eq(0x80000000)
             yield ctrl.cmd_len.eq(2)  # 2 beats
             yield ctrl.cmd_id.eq(1)
@@ -121,13 +121,13 @@ class TestStoreController:
             yield ctrl.cmd_valid.eq(0)
             yield Tick()
 
-            # Should see DMA request
-            dma_valid = yield ctrl.dma_req_valid
-            dma_addr = yield ctrl.dma_req_addr
-            dma_len = yield ctrl.dma_req_len
+            # Should see BlockMover request
+            dma_valid = yield ctrl.engine_req_valid
+            engine_addr = yield ctrl.engine_req_addr
+            dma_len = yield ctrl.engine_req_len
             if dma_valid:
                 results["dma_issued"] = True
-                assert dma_addr == 0x80000000
+                assert engine_addr == 0x80000000
                 assert dma_len == 1  # AXI4 style: 2 beats = len 1
 
             yield Tick()
@@ -138,18 +138,18 @@ class TestStoreController:
         sim.run()
 
         assert results["cmd_accepted"], "Command should be accepted"
-        assert results["dma_issued"], "DMA request should be issued"
+        assert results["dma_issued"], "BlockMover request should be issued"
 
     def test_single_beat_transfer(self, config):
         """Test single-beat MEMCPY transfer."""
         ctrl = StoreController(config)
-        results = {"acc_read": False, "dma_data": False, "completed": False}
+        results = {"combiner_read": False, "engine_data": False, "completed": False}
 
         def testbench():
             # Issue MEMCPY command for single beat store
             yield ctrl.cmd_valid.eq(1)
-            yield ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
-            yield ctrl.cmd_acc_addr.eq(0x10)
+            yield ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
+            yield ctrl.cmd_combiner_addr.eq(0x10)
             yield ctrl.cmd_dram_addr.eq(0x1000)
             yield ctrl.cmd_len.eq(1)
             yield ctrl.cmd_id.eq(5)
@@ -159,47 +159,47 @@ class TestStoreController:
             yield ctrl.cmd_valid.eq(0)
             yield Tick()
 
-            # Accept DMA request
-            yield ctrl.dma_req_ready.eq(1)
-            yield Tick()  # State transitions to READ_ACC
-            yield ctrl.dma_req_ready.eq(0)
+            # Accept BlockMover request
+            yield ctrl.engine_req_ready.eq(1)
+            yield Tick()  # State transitions to READ_COMBINER
+            yield ctrl.engine_req_ready.eq(0)
 
-            # Check accumulator read request BEFORE Tick (in READ_ACC state)
+            # Check Combiner read request BEFORE Tick (in READ_COMBINER state)
             # The state immediately transitions to WAIT_VALID on next Tick
-            acc_read_req = yield ctrl.acc_read_req
-            acc_read_addr = yield ctrl.acc_read_addr
-            if acc_read_req:
-                results["acc_read"] = True
-                assert acc_read_addr == 0x10
+            combiner_read_req = yield ctrl.combiner_read_req
+            combiner_read_addr = yield ctrl.combiner_read_addr
+            if combiner_read_req:
+                results["combiner_read"] = True
+                assert combiner_read_addr == 0x10
 
             yield Tick()  # State transitions to WAIT_VALID
 
-            # Provide accumulator read data
-            yield ctrl.acc_read_valid.eq(1)
-            yield ctrl.acc_read_data.eq(0xDEADBEEF)
+            # Provide Combiner read data
+            yield ctrl.combiner_read_valid.eq(1)
+            yield ctrl.combiner_read_data.eq(0xDEADBEEF)
             yield Tick()  # State transitions to SEND_DATA with buffered data
-            yield ctrl.acc_read_valid.eq(0)
+            yield ctrl.combiner_read_valid.eq(0)
             yield Tick()
 
-            # Check DMA data BEFORE Tick
-            dma_valid = yield ctrl.dma_data_valid
-            dma_data = yield ctrl.dma_data
-            dma_last = yield ctrl.dma_data_last
+            # Check BlockMover data BEFORE Tick
+            dma_valid = yield ctrl.engine_data_valid
+            engine_data = yield ctrl.engine_data
+            dma_last = yield ctrl.engine_data_last
             if dma_valid:
-                results["dma_data"] = True
-                assert dma_data == 0xDEADBEEF
+                results["engine_data"] = True
+                assert engine_data == 0xDEADBEEF
                 assert dma_last == 1
 
-            # Accept DMA data
-            yield ctrl.dma_data_ready.eq(1)
+            # Accept BlockMover data
+            yield ctrl.engine_data_ready.eq(1)
             yield Tick()  # State transitions to WAIT_DONE
-            yield ctrl.dma_data_ready.eq(0)
+            yield ctrl.engine_data_ready.eq(0)
             yield Tick()
 
-            # Signal DMA done
-            yield ctrl.dma_done.eq(1)
+            # Signal BlockMover done
+            yield ctrl.engine_done.eq(1)
             yield Tick()  # State transitions to DONE
-            yield ctrl.dma_done.eq(0)
+            yield ctrl.engine_done.eq(0)
 
             # Check completion (combinational in DONE state)
             completed = yield ctrl.completed
@@ -215,8 +215,8 @@ class TestStoreController:
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results["acc_read"], "Should read from accumulator"
-        assert results["dma_data"], "Should send data to DMA"
+        assert results["combiner_read"], "Should read from Combiner"
+        assert results["engine_data"], "Should send data to BlockMover"
         assert results["completed"], "Should signal completion"
 
     def test_multi_beat_transfer(self, config):
@@ -228,8 +228,8 @@ class TestStoreController:
         def testbench():
             # Issue MEMCPY command for 3 beats store
             yield ctrl.cmd_valid.eq(1)
-            yield ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
-            yield ctrl.cmd_acc_addr.eq(0x20)
+            yield ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
+            yield ctrl.cmd_combiner_addr.eq(0x20)
             yield ctrl.cmd_dram_addr.eq(0x2000)
             yield ctrl.cmd_len.eq(3)
             yield ctrl.cmd_id.eq(2)
@@ -239,45 +239,45 @@ class TestStoreController:
             yield ctrl.cmd_valid.eq(0)
             yield Tick()
 
-            # Accept DMA request
-            yield ctrl.dma_req_ready.eq(1)
-            yield Tick()  # State transitions to READ_ACC
-            yield ctrl.dma_req_ready.eq(0)
+            # Accept BlockMover request
+            yield ctrl.engine_req_ready.eq(1)
+            yield Tick()  # State transitions to READ_COMBINER
+            yield ctrl.engine_req_ready.eq(0)
 
             # Transfer 3 beats
             for i in range(3):
-                # Check accumulator read BEFORE Tick (in READ_ACC state)
-                acc_read_req = yield ctrl.acc_read_req
-                acc_read_addr = yield ctrl.acc_read_addr
-                if acc_read_req:
-                    read_addrs.append(acc_read_addr)
+                # Check Combiner read BEFORE Tick (in READ_COMBINER state)
+                combiner_read_req = yield ctrl.combiner_read_req
+                combiner_read_addr = yield ctrl.combiner_read_addr
+                if combiner_read_req:
+                    read_addrs.append(combiner_read_addr)
 
                 yield Tick()  # State transitions to WAIT_VALID
 
-                # Provide accumulator data
-                yield ctrl.acc_read_valid.eq(1)
-                yield ctrl.acc_read_data.eq(0x1000 + i)
+                # Provide Combiner data
+                yield ctrl.combiner_read_valid.eq(1)
+                yield ctrl.combiner_read_data.eq(0x1000 + i)
                 yield Tick()  # State transitions to SEND_DATA
-                yield ctrl.acc_read_valid.eq(0)
+                yield ctrl.combiner_read_valid.eq(0)
                 yield Tick()
 
-                # Check DMA data BEFORE accepting
-                dma_valid = yield ctrl.dma_data_valid
-                dma_data = yield ctrl.dma_data
+                # Check BlockMover data BEFORE accepting
+                dma_valid = yield ctrl.engine_data_valid
+                engine_data = yield ctrl.engine_data
                 if dma_valid:
-                    data_values.append(dma_data)
+                    data_values.append(engine_data)
 
-                # Accept DMA data
-                yield ctrl.dma_data_ready.eq(1)
-                yield Tick()  # State transitions to READ_ACC or WAIT_DONE
-                yield ctrl.dma_data_ready.eq(0)
+                # Accept BlockMover data
+                yield ctrl.engine_data_ready.eq(1)
+                yield Tick()  # State transitions to READ_COMBINER or WAIT_DONE
+                yield ctrl.engine_data_ready.eq(0)
 
             yield Tick()
 
-            # Signal DMA done
-            yield ctrl.dma_done.eq(1)
+            # Signal BlockMover done
+            yield ctrl.engine_done.eq(1)
             yield Tick()
-            yield ctrl.dma_done.eq(0)
+            yield ctrl.engine_done.eq(0)
             yield Tick()
             yield Tick()
 
@@ -297,8 +297,8 @@ class TestStoreController:
         def testbench():
             # Issue MEMCPY command with ReLU activation
             yield ctrl.cmd_valid.eq(1)
-            yield ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
-            yield ctrl.cmd_acc_addr.eq(0x40)
+            yield ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
+            yield ctrl.cmd_combiner_addr.eq(0x40)
             yield ctrl.cmd_dram_addr.eq(0x4000)
             yield ctrl.cmd_len.eq(2)
             yield ctrl.cmd_id.eq(3)
@@ -308,49 +308,49 @@ class TestStoreController:
             yield ctrl.cmd_valid.eq(0)
             yield Tick()
 
-            # Accept DMA request
-            yield ctrl.dma_req_ready.eq(1)
+            # Accept BlockMover request
+            yield ctrl.engine_req_ready.eq(1)
             yield Tick()
-            yield ctrl.dma_req_ready.eq(0)
+            yield ctrl.engine_req_ready.eq(0)
             yield Tick()
 
             # First beat: positive value
             yield Tick()  # Read request
-            yield ctrl.acc_read_valid.eq(1)
-            yield ctrl.acc_read_data.eq(100)  # Positive
+            yield ctrl.combiner_read_valid.eq(1)
+            yield ctrl.combiner_read_data.eq(100)  # Positive
             yield Tick()
-            yield ctrl.acc_read_valid.eq(0)
+            yield ctrl.combiner_read_valid.eq(0)
             yield Tick()
 
-            dma_data = yield ctrl.dma_data
-            if dma_data == 100:
+            engine_data = yield ctrl.engine_data
+            if engine_data == 100:
                 results["positive_passed"] = True
 
-            yield ctrl.dma_data_ready.eq(1)
+            yield ctrl.engine_data_ready.eq(1)
             yield Tick()
-            yield ctrl.dma_data_ready.eq(0)
+            yield ctrl.engine_data_ready.eq(0)
             yield Tick()
 
             # Second beat: negative value
             yield Tick()  # Read request
-            yield ctrl.acc_read_valid.eq(1)
+            yield ctrl.combiner_read_valid.eq(1)
             # Set negative value (signed representation)
-            yield ctrl.acc_read_data.eq(-50 & ((1 << config.acc_width) - 1))
+            yield ctrl.combiner_read_data.eq(-50 & ((1 << config.combiner_width) - 1))
             yield Tick()
-            yield ctrl.acc_read_valid.eq(0)
+            yield ctrl.combiner_read_valid.eq(0)
             yield Tick()
 
-            dma_data = yield ctrl.dma_data
-            if dma_data == 0:
+            engine_data = yield ctrl.engine_data
+            if engine_data == 0:
                 results["negative_zeroed"] = True
 
-            yield ctrl.dma_data_ready.eq(1)
+            yield ctrl.engine_data_ready.eq(1)
             yield Tick()
-            yield ctrl.dma_data_ready.eq(0)
+            yield ctrl.engine_data_ready.eq(0)
             yield Tick()
 
-            # Signal DMA done
-            yield ctrl.dma_done.eq(1)
+            # Signal BlockMover done
+            yield ctrl.engine_done.eq(1)
             yield Tick()
 
         sim = Simulator(ctrl)
@@ -374,8 +374,8 @@ class TestStoreController:
 
             # Issue command
             yield ctrl.cmd_valid.eq(1)
-            yield ctrl.cmd_opcode.eq(DmaOpcode.MEMCPY)
-            yield ctrl.cmd_acc_addr.eq(0x50)
+            yield ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
+            yield ctrl.cmd_combiner_addr.eq(0x50)
             yield ctrl.cmd_dram_addr.eq(0x5000)
             yield ctrl.cmd_len.eq(1)
             yield ctrl.cmd_activation.eq(0)
@@ -388,25 +388,25 @@ class TestStoreController:
             busy_states.append(("transfer", busy))
 
             # Complete transfer
-            yield ctrl.dma_req_ready.eq(1)
+            yield ctrl.engine_req_ready.eq(1)
             yield Tick()
-            yield ctrl.dma_req_ready.eq(0)
+            yield ctrl.engine_req_ready.eq(0)
             yield Tick()
-            yield Tick()
-
-            yield ctrl.acc_read_valid.eq(1)
-            yield Tick()
-            yield ctrl.acc_read_valid.eq(0)
             yield Tick()
 
-            yield ctrl.dma_data_ready.eq(1)
+            yield ctrl.combiner_read_valid.eq(1)
             yield Tick()
-            yield ctrl.dma_data_ready.eq(0)
+            yield ctrl.combiner_read_valid.eq(0)
             yield Tick()
 
-            yield ctrl.dma_done.eq(1)
+            yield ctrl.engine_data_ready.eq(1)
             yield Tick()
-            yield ctrl.dma_done.eq(0)
+            yield ctrl.engine_data_ready.eq(0)
+            yield Tick()
+
+            yield ctrl.engine_done.eq(1)
+            yield Tick()
+            yield ctrl.engine_done.eq(0)
             yield Tick()
             yield Tick()
 
@@ -448,15 +448,17 @@ class TestStoreControllerVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        # 4 x 32-bit accumulator row = 128 bits: one row per 128-bit DMA beat
-        config = SystolicConfig(grid_rows=4, grid_cols=4, dma_buswidth=128, dma_maxbytes=64)
+        # 4 x 32-bit Combiner row = 128 bits: one row per 128-bit BlockMover beat
+        config = SystolicConfig(
+            grid_rows=4, grid_cols=4, blockmover_buswidth=128, blockmover_maxbytes=64
+        )
         ctrl = StoreController(config)
 
         output = verilog.convert(ctrl, name="StoreController")
         assert "module StoreController" in output
         assert "cmd_valid" in output
-        assert "acc_read_req" in output
-        assert "dma_data_valid" in output
+        assert "combiner_read_req" in output
+        assert "engine_data_valid" in output
 
         verilog_file = tmp_path / "store_controller.v"
         verilog_file.write_text(output)
@@ -464,17 +466,19 @@ class TestStoreControllerVerilogGeneration:
 
 
 def test_rejects_rows_wider_than_dma_bus():
-    """A row wider than the DMA bus would be silently truncated: reject the config."""
-    with pytest.raises(ValueError, match="wider than dma_buswidth"):
-        StoreController(SystolicConfig(grid_rows=16, grid_cols=16, dma_buswidth=128))
+    """A row wider than the BlockMover bus would be silently truncated: reject the config."""
+    with pytest.raises(ValueError, match="wider than blockmover_buswidth"):
+        StoreController(SystolicConfig(grid_rows=16, grid_cols=16, blockmover_buswidth=128))
 
 
 def test_default_config_dma_width_fits_rows():
     """The default config picks a power-of-two DMA width that fits a row."""
     config = SystolicConfig()
-    assert config.dma_buswidth >= max(config.sp_width, config.acc_width)
-    assert config.dma_buswidth & (config.dma_buswidth - 1) == 0
-    assert SystolicConfig(dma_buswidth=128, grid_rows=4, grid_cols=4).dma_buswidth == 128
+    assert config.blockmover_buswidth >= max(config.sp_width, config.combiner_width)
+    assert config.blockmover_buswidth & (config.blockmover_buswidth - 1) == 0
+    assert (
+        SystolicConfig(blockmover_buswidth=128, grid_rows=4, grid_cols=4).blockmover_buswidth == 128
+    )
 
 
 def test_default_config_systolic_top_converts():

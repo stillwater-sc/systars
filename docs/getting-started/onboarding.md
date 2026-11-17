@@ -46,9 +46,9 @@ Example 07 prints three output tiles of the same shape:
 CONFIG   rs1=0x0                       # select OS
 LOAD     dram=0x10000000 local=0x00000000 rows=4 stride=4 row_bytes=4   # A rows 0-3
 LOAD     dram=0x20000000 local=0x00000008 rows=4 stride=4 row_bytes=4   # B, corner-turned
-COMPUTE  rs1=0x0 rd=0x80000000 k_dim=4 # bit 31 of rd: the accumulator
+COMPUTE  rs1=0x0 rd=0x80000000 k_dim=4 # bit 31 of rd: the Combiner
 STORE    dram=0x30000000 local=0x80000000 rows=4 stride=16 row_bytes=16 # int32 rows of C
-... the same for A rows 4-7 (L2 slot 0x4, accumulator 0x80000004)
+... the same for A rows 4-7 (L2 slot 0x4, Combiner 0x80000004)
 ... and for rows 8-9 (rows=2), back in slot 0x0
 ```
 
@@ -98,7 +98,7 @@ When you add tests:
 - **Check every other byte.** End-to-end tests verify the result and that every byte of L3
   outside it is untouched.
 - **Start from random memory.** `test_no_read_before_write` fills the scratchpad and the
-  accumulator with random data, since memories on hardware have no reset value.
+  Combiner with random data, since memories on hardware have no reset value.
 - **Assert the error flags.** A valid schedule never raises `l1_error` or `sync_error`.
 
 A new cocotb suite goes in both `just test-cocotb` and the `rtl-tests` matrix in
@@ -114,15 +114,15 @@ registered fabric and the CSP rework, and three packages model other architectur
 |---|---|---|
 | `config.py`, `targets.py`, `top.py` | Current | Configuration, the RTL target list, the compute tile |
 | `core/` | Current | `PE`, `PEArray`, `SystolicArray` |
-| `memory/scratchpad.py`, `accumulator.py`, `stream_buffer.py`, `local_addr.py` | Current | L2, the accumulator, L1, local address encoding |
+| `memory/scratchpad.py`, `combiner.py`, `stream_buffer.py`, `local_addr.py` | Current | L2, the Combiner, L1, local address encoding |
 | `controller/execute.py`, `load.py`, `store.py`, `sync.py` | Current | The Streamer, the BlockMover's legs, credits and tokens |
-| `dma/reader.py`, `writer.py`, `axi.py` | Current | The AXI burst engines behind the BlockMover |
+| `blockmover/reader.py`, `writer.py`, `axi.py` | Current | The AXI burst engines behind the BlockMover |
 | `isa/` | Current | `Matmul`, `Conv2d`, the command port |
 | `wavefront.py` | Current | RTL tracing, checking and SVG rendering |
-| `util/commands.py` | Current | `DmaOpcode`, `ExecOpcode` and command helpers |
+| `util/commands.py` | Current | `BlockMoverOpcode`, `ExecOpcode` and command helpers |
 | `memory/skew_buffer.py` | Legacy | The skew-register approach; used only by `test_sram_read_scheduler.py` and example 05 |
-| `controller/load_transpose.py`, `dma/strided_reader.py` | Legacy | An earlier transposing load; `SystolicTop` turns corners in the BlockMover |
-| `dma/descriptor_engine.py` | Not integrated | DMA descriptor chains ([design](../architecture/dma-descriptors.md)); tested, not wired into `SystolicTop` |
+| `controller/load_transpose.py`, `blockmover/strided_reader.py` | Legacy | An earlier transposing load; `SystolicTop` turns corners in the BlockMover |
+| `blockmover/descriptor_engine.py` | Not integrated | BlockMover descriptor chains ([design](../architecture/blockmover-descriptors.md)); tested, not wired into `SystolicTop` |
 | `loop/`, `arithmetic/` | Empty | Placeholders for planned components |
 | `stencil/` | Side package | A line-buffer stencil machine for 2D convolution |
 | `simt/`, `simd/maspar/` | Side package | Models of an NVIDIA-style SM and a MasPar SIMD array, with animations and energy estimates |

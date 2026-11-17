@@ -6,7 +6,7 @@ full accelerator stack:
 1. Load matrix A from DRAM → Scratchpad
 2. Load matrix B from DRAM → Scratchpad
 3. Execute C = A × B on the systolic array
-4. Store matrix C from Accumulator → DRAM
+4. Store matrix C from Combiner → DRAM
 5. Verify results against numpy reference
 
 The test uses a simulated AXI DRAM model that responds to read/write requests.
@@ -18,7 +18,7 @@ from amaranth.sim import Simulator, Tick
 
 from systars.config import SystolicConfig
 from systars.top import SystolicTop
-from systars.util.commands import DmaOpcode, OpCode
+from systars.util.commands import BlockMoverOpcode, OpCode
 
 
 class SimulatedAXIDRAM:
@@ -233,16 +233,16 @@ class TestGemmEndToEnd:
             acc_bits=32,
             sp_banks=4,
             sp_capacity_kb=4,
-            acc_banks=4,
-            acc_capacity_kb=4,
-            dma_buswidth=128,
+            combiner_banks=4,
+            combiner_capacity_kb=4,
+            blockmover_buswidth=128,
             spad_read_delay=1,
-            acc_latency=1,
+            combiner_latency=1,
         )
 
     def test_load_matrix_from_dram(self, small_config):
         """Test loading a matrix from DRAM to scratchpad."""
-        dram = SimulatedAXIDRAM(size_bytes=4096, buswidth=small_config.dma_buswidth)
+        dram = SimulatedAXIDRAM(size_bytes=4096, buswidth=small_config.blockmover_buswidth)
         dut = SystolicTop(small_config)
 
         # Prepare test matrix A (2x2 int8)
@@ -261,7 +261,7 @@ class TestGemmEndToEnd:
 
             # Issue load command: DRAM -> Scratchpad
             yield dut.cmd_type.eq(SystolicTop.CTRL_LOAD)
-            yield dut.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield dut.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield dut.cmd_dram_addr.eq(A_addr)
             yield dut.cmd_local_addr.eq(0)  # SP address 0
             yield dut.cmd_len.eq(1)  # 1 beat (16 bytes covers 2x2 int8)
@@ -328,8 +328,8 @@ class TestGemmEndToEnd:
         assert results["axi_reads"] >= 1, "Should issue at least one AXI read"
 
     def test_store_matrix_to_dram(self, small_config):
-        """Test storing results from accumulator to DRAM."""
-        dram = SimulatedAXIDRAM(size_bytes=4096, buswidth=small_config.dma_buswidth)
+        """Test storing results from Combiner to DRAM."""
+        dram = SimulatedAXIDRAM(size_bytes=4096, buswidth=small_config.blockmover_buswidth)
         dut = SystolicTop(small_config)
 
         # Destination address for results
@@ -343,11 +343,11 @@ class TestGemmEndToEnd:
             yield Tick()
             yield Tick()
 
-            # Issue store command: Accumulator -> DRAM
+            # Issue store command: Combiner -> DRAM
             yield dut.cmd_type.eq(SystolicTop.CTRL_STORE)
-            yield dut.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield dut.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield dut.cmd_dram_addr.eq(C_addr)
-            yield dut.cmd_local_addr.eq(0)  # ACC address 0
+            yield dut.cmd_local_addr.eq(0)  # CMB address 0
             yield dut.cmd_len.eq(1)  # 1 beat
             yield dut.cmd_id.eq(2)
             yield dut.cmd_valid.eq(1)
@@ -459,7 +459,7 @@ class TestGemmEndToEnd:
 
         This tests the complete data flow through the accelerator.
         """
-        dram = SimulatedAXIDRAM(size_bytes=0x4000, buswidth=small_config.dma_buswidth)
+        dram = SimulatedAXIDRAM(size_bytes=0x4000, buswidth=small_config.blockmover_buswidth)
         dut = SystolicTop(small_config)
 
         # Memory layout
@@ -470,7 +470,7 @@ class TestGemmEndToEnd:
         # Scratchpad layout (local addresses)
         SP_A_addr = 0x00  # A in scratchpad
         SP_B_addr = 0x10  # B in scratchpad
-        # ACC_C_addr = 0x00  # C in accumulator (for future compute/store phase)
+        # ACC_C_addr = 0x00  # C in Combiner (for future compute/store phase)
 
         # Test matrices (2x2)
         A = np.array([[1, 2], [3, 4]], dtype=np.int8)
@@ -581,7 +581,7 @@ class TestGemmEndToEnd:
             yield Tick()
 
             yield dut.cmd_type.eq(SystolicTop.CTRL_LOAD)
-            yield dut.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield dut.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield dut.cmd_dram_addr.eq(A_addr)
             yield dut.cmd_local_addr.eq(SP_A_addr)
             yield dut.cmd_len.eq(1)
@@ -610,7 +610,7 @@ class TestGemmEndToEnd:
 
             # ========== Phase 2: Load Matrix B ==========
             yield dut.cmd_type.eq(SystolicTop.CTRL_LOAD)
-            yield dut.cmd_opcode.eq(DmaOpcode.MEMCPY)
+            yield dut.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
             yield dut.cmd_dram_addr.eq(B_addr)
             yield dut.cmd_local_addr.eq(SP_B_addr)
             yield dut.cmd_len.eq(1)
@@ -675,7 +675,7 @@ class TestGemmEndToEndVerilog:
             tile_rows=2,
             tile_cols=2,
             sp_capacity_kb=4,
-            acc_capacity_kb=4,
+            combiner_capacity_kb=4,
         )
 
         dut = SystolicTop(config)

@@ -64,14 +64,14 @@ systars/
 ├── src/systars/           # Amaranth RTL source code
 │   ├── config.py          # Central configuration
 │   ├── core/              # PE, PEArray, SystolicArray components
-│   └── memory/            # Scratchpad, Accumulator
+│   └── memory/            # Scratchpad, Combiner
 ├── tests/unit/            # Python unit tests (pytest)
 ├── verif/cocotb/tests/    # RTL simulation tests (cocotb)
 │   ├── pe/
 │   ├── pe_array/
 │   ├── systolic_array/
 │   ├── scratchpad/
-│   └── accumulator/
+│   └── combiner/
 ├── gen/                   # Generated Verilog (gitignored)
 ├── scripts/               # RTL generation scripts
 ├── docs/                  # Documentation pages (Markdown)
@@ -458,7 +458,7 @@ values Amaranth writes:
 
 - **Registers** (`attrmap -remove init`). Every register also has a synchronous reset, so
   this is safe as long as the design is reset before use.
-- **Memories** (`delete t:$meminit_v2`). The targets' memories (scratchpad, accumulator)
+- **Memories** (`delete t:$meminit_v2`). The targets' memories (scratchpad, Combiner)
   start at zero only in simulation. On hardware a word nobody has written reads back
   unspecified, and so do the bytes a masked write leaves out. Today's targets map their
   memories to block RAM without this step, but `SystolicTop` would need it, as kpugen's
@@ -466,15 +466,15 @@ values Amaranth writes:
 
 What that means:
 
-- **The design** never reads a scratchpad or accumulator word it hasn't written: the
-  Streamer reads the L2 rows a LOAD (or a `CLEAR`) wrote, and Matmul writes an accumulator
+- **The design** never reads a scratchpad or Combiner word it hasn't written: the
+  Streamer reads the L2 rows a LOAD (or a `CLEAR`) wrote, and Matmul writes a Combiner
   row with `COMPUTE` on its first k-slice and accumulates only after that, or onto the
-  values an accumulator LOAD wrote first (a bias, or the C being accumulated onto).
+  values a Combiner LOAD wrote first (a bias, or the C being accumulated onto).
   `test_no_read_before_write` (`tests/unit/test_gemm_systolic.py`) runs OS, WS and IS
-  GEMMs, with `COMPUTE_ACCUMULATE` and partial rows, from random scratchpad and accumulator
+  GEMMs, with `COMPUTE_ACCUMULATE` and partial rows, from random scratchpad and Combiner
   contents, and checks that C is still exact.
-- **The host** must write what it reads. A `COMPUTE_ACCUMULATE` onto an accumulator row
-  that neither a `COMPUTE` nor an accumulator LOAD wrote, an accumulator LOAD with the add
+- **The host** must write what it reads. A `COMPUTE_ACCUMULATE` onto a Combiner row
+  that neither a `COMPUTE` nor a Combiner LOAD wrote, a Combiner LOAD with the add
   flag (`LocalAddr` bit 30) onto such a row, a `COMPUTE` on a scratchpad slot
   that no LOAD filled, or a STORE of unwritten rows returns unspecified data on hardware
   where the simulation returns zero.

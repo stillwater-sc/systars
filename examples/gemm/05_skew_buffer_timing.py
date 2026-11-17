@@ -7,14 +7,14 @@ This example demonstrates the timing relationship between:
 2. Skew buffers that stagger data for systolic wavefront injection
 3. The resulting wavefront pattern in the systolic array
 
-Memory Layout (after DMA preparation):
+Memory Layout (after BlockMover preparation):
     Scratchpad A (column-major / transposed):
         Address k contains: [A[0,k], A[1,k], ..., A[N-1,k]] (column k of A)
 
     Scratchpad B (row-major):
         Address k contains: [B[k,0], B[k,1], ..., B[k,M-1]] (row k of B)
 
-    Note: DMA must transpose A when loading from DRAM (row-major) to scratchpad
+    Note: BlockMover must transpose A when loading from DRAM (row-major) to scratchpad
 
 Timing (250MHz, 4-cycle SRAM latency):
 
@@ -648,7 +648,7 @@ def draw_timing_diagram(
 
 
 def draw_memory_layout(size: int, use_color: bool = True):
-    """Show the expected memory layout after DMA preparation."""
+    """Show the expected memory layout after BlockMover preparation."""
     if not use_color:
         Colors.disable()
     c = Colors
@@ -665,7 +665,7 @@ def draw_memory_layout(size: int, use_color: bool = True):
     print(f"  B in DRAM: B[k,j] at address k*{size} + j")
     print()
 
-    print(f"{c.BOLD}Scratchpad Layout (after DMA transpose):{c.RESET}")
+    print(f"{c.BOLD}Scratchpad Layout (after BlockMover transpose):{c.RESET}")
     print()
     print(f"  {c.YELLOW}Scratchpad A Bank (column-major / transposed):{c.RESET}")
     print("  ┌────────────────────────────────────────────┐")
@@ -690,11 +690,11 @@ def draw_memory_layout(size: int, use_color: bool = True):
     print("    Addr 2: [B[2,0], B[2,1], B[2,2], B[2,3]]  ← row 2")
     print()
 
-    print(f"{c.BOLD}DMA Operations:{c.RESET}")
+    print(f"{c.BOLD}BlockMover Operations:{c.RESET}")
     print("  1. Load A: DRAM (row-major) → Scratchpad A (column-major)")
-    print(f"     {c.RED}⚠ Requires transpose during DMA transfer{c.RESET}")
-    print("     Option 1: DMA hardware performs transpose (strided access)")
-    print("     Option 2: CPU pre-transposes A in DRAM before DMA")
+    print(f"     {c.RED}⚠ Requires transpose during BlockMover transfer{c.RESET}")
+    print("     Option 1: BlockMover hardware performs transpose (strided access)")
+    print("     Option 2: CPU pre-transposes A in DRAM before BlockMover")
     print()
     print("  2. Load B: DRAM (row-major) → Scratchpad B (row-major)")
     print(f"     {c.GREEN}✓ Direct copy, no transformation needed{c.RESET}")

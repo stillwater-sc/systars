@@ -2,10 +2,10 @@
 Local Address Encoding/Decoding Utilities.
 
 This module provides utilities for encoding and decoding addresses in the
-unified local memory address space (scratchpad + accumulator).
+unified local memory address space (scratchpad + Combiner).
 
 Address Layout (32 bits):
-    [31]    is_acc        - 1 = accumulator, 0 = scratchpad
+    [31]    is_combiner        - 1 = Combiner, 0 = scratchpad
     [30]    accumulate    - 1 = accumulate mode (add to existing)
     [29]    read_full_row - 1 = read entire row width
     [28:0]  data          - Bank + row address
@@ -28,10 +28,10 @@ class LocalAddr:
 
     Provides methods to extract fields from a 32-bit local address,
     including flags, bank selection, and row addresses for both
-    scratchpad and accumulator memory spaces.
+    scratchpad and Combiner memory spaces.
 
     Example:
-        >>> config = SystolicConfig(sp_banks=4, acc_banks=2)
+        >>> config = SystolicConfig(sp_banks=4, combiner_banks=2)
         >>> addr_util = LocalAddr(config)
         >>> # In hardware:
         >>> bank = addr_util.sp_bank(address_signal)
@@ -39,7 +39,7 @@ class LocalAddr:
     """
 
     # Bit positions for flag fields
-    IS_ACC_BIT = 31
+    IS_COMBINER_BIT = 31
     ACCUMULATE_BIT = 30
     READ_FULL_ROW_BIT = 29
     DATA_BITS = 29  # Bits 0-28 contain the address data
@@ -56,31 +56,31 @@ class LocalAddr:
         # Bank selection bits: log2(banks), so one bank takes no address bits (with a
         # bit reserved, every other row would select a bank that does not exist)
         self.sp_bank_bits = (config.sp_banks - 1).bit_length()
-        self.acc_bank_bits = (config.acc_banks - 1).bit_length()
+        self.combiner_bank_bits = (config.combiner_banks - 1).bit_length()
 
         # Compute bit widths for row addresses
         self.sp_row_bits = max(1, (config.sp_bank_entries - 1).bit_length())
-        self.acc_row_bits = max(1, (config.acc_bank_entries - 1).bit_length())
+        self.combiner_row_bits = max(1, (config.combiner_bank_entries - 1).bit_length())
 
     @staticmethod
-    def is_acc(addr: Signal) -> Signal:
+    def is_combiner(addr: Signal) -> Signal:
         """
-        Check if address refers to accumulator memory.
+        Check if address refers to Combiner memory.
 
         Args:
             addr: 32-bit address signal
 
         Returns:
-            Signal that is 1 if accumulator, 0 if scratchpad
+            Signal that is 1 if Combiner, 0 if scratchpad
         """
-        return addr[LocalAddr.IS_ACC_BIT]
+        return addr[LocalAddr.IS_COMBINER_BIT]
 
     @staticmethod
     def accumulate(addr: Signal) -> Signal:
         """
         Check if accumulate mode is set.
 
-        When set, writes to accumulator should add to existing value
+        When set, writes to Combiner should add to existing value
         rather than overwriting.
 
         Args:
@@ -147,9 +147,9 @@ class LocalAddr:
         """
         return addr[self.sp_bank_bits : self.sp_bank_bits + self.sp_row_bits]
 
-    def acc_bank(self, addr: Signal) -> Signal:
+    def combiner_bank(self, addr: Signal) -> Signal:
         """
-        Extract accumulator bank index from address.
+        Extract Combiner bank index from address.
 
         Args:
             addr: 32-bit address signal
@@ -157,11 +157,11 @@ class LocalAddr:
         Returns:
             Signal containing bank index
         """
-        return addr[: self.acc_bank_bits]
+        return addr[: self.combiner_bank_bits]
 
-    def acc_row(self, addr: Signal) -> Signal:
+    def combiner_row(self, addr: Signal) -> Signal:
         """
-        Extract accumulator row address within bank.
+        Extract Combiner row address within bank.
 
         Args:
             addr: 32-bit address signal
@@ -169,7 +169,7 @@ class LocalAddr:
         Returns:
             Signal containing row address within bank
         """
-        return addr[self.acc_bank_bits : self.acc_bank_bits + self.acc_row_bits]
+        return addr[self.combiner_bank_bits : self.combiner_bank_bits + self.combiner_row_bits]
 
     @staticmethod
     def is_garbage(addr: Signal) -> Signal:
@@ -186,7 +186,7 @@ class LocalAddr:
             Signal that is 1 if address is garbage
         """
         return (
-            addr[LocalAddr.IS_ACC_BIT]
+            addr[LocalAddr.IS_COMBINER_BIT]
             & addr[LocalAddr.ACCUMULATE_BIT]
             & addr[LocalAddr.READ_FULL_ROW_BIT]
         )
@@ -209,11 +209,11 @@ class LocalAddr:
             addr |= 1 << LocalAddr.READ_FULL_ROW_BIT
         return addr
 
-    def make_acc_addr(
+    def make_combiner_addr(
         self, bank: int, row: int, accumulate: bool = False, read_full_row: bool = False
     ) -> int:
         """
-        Create an accumulator address from components.
+        Create a Combiner address from components.
 
         Args:
             bank: Bank index
@@ -224,9 +224,9 @@ class LocalAddr:
         Returns:
             32-bit address integer
         """
-        # Bank in the low acc_bank_bits, row above it (matches the hardware decode)
-        addr = bank | (row << self.acc_bank_bits)
-        addr |= 1 << LocalAddr.IS_ACC_BIT  # Mark as accumulator
+        # Bank in the low combiner_bank_bits, row above it (matches the hardware decode)
+        addr = bank | (row << self.combiner_bank_bits)
+        addr |= 1 << LocalAddr.IS_COMBINER_BIT  # Mark as Combiner
         if accumulate:
             addr |= 1 << LocalAddr.ACCUMULATE_BIT
         if read_full_row:
@@ -242,7 +242,7 @@ class LocalAddr:
             32-bit garbage address with all flag bits set
         """
         return (
-            (1 << LocalAddr.IS_ACC_BIT)
+            (1 << LocalAddr.IS_COMBINER_BIT)
             | (1 << LocalAddr.ACCUMULATE_BIT)
             | (1 << LocalAddr.READ_FULL_ROW_BIT)
         )

@@ -40,17 +40,19 @@ BlockMover and the Streamer, and DMA belongs to the SoC's memory control layer.
 
 ## What systars has today
 
-The accumulator (`memory/accumulator.py`) follows Gemmini's, from the Gemmini-modelled first
-plan of systars ([lineage](lineage.md#gemmini)). It is a separate result memory:
+The Combiner's storage (`memory/combiner.py`, until #37 the accumulator) follows Gemmini's
+accumulator, from the Gemmini-modelled first plan of systars
+([lineage](lineage.md#gemmini)). It is a separate result memory:
 
-| The accumulator today | The Combiner |
+| The Combiner's storage today | The Combiner |
 |---|---|
 | WS/IS partial sums accumulate in it (`COMPUTE_ACCUMULATE`). OS results drain into it. | Merges partials in L2 |
-| A bias is a LOAD into it (the accumulator pool's second producer, `SlotPool(producers=2)`) | Applies the bias as results pass through. No LOAD into a result memory. |
+| A bias is a LOAD into it (the Combiner pool's second producer, `SlotPool(producers=2)`) | Applies the bias as results pass through. No LOAD into a result memory. |
 | ReLU and ReLU6 as rows are read out (`memory/activation.py`) | Activation on the way into L2 |
 | No scaling. The module's header diagram draws "+ Scale", but the RTL has none. | Scaling up or down |
 | No block-format conversion | Block-format conversion: MXINT8, then MXFP8 |
 | Results stay in it, and STORE moves them from it | Results land in L2, and STORE moves them from there |
 
-The port is #38, after the rename (#37) that calls the accumulator the Combiner's storage
-and `dma/` the BlockMover. kpugen keeps the same code, so both repos change together.
+The rename (#37, a port of kpugen esg#67) calls the accumulator the Combiner's storage and
+`dma/` the BlockMover. The port of the function is #38. kpugen keeps the same code, so both
+repos change together.

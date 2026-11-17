@@ -1,13 +1,13 @@
 """
-StoreController - moves a result tile from the accumulator to L3 (the BlockMover's
+StoreController - moves a result tile from the Combiner to L3 (the BlockMover's
 L2 -> L3 leg).
 
 In the KPU's CSP model (kpu-sim) the tile's AXI port is its link to L3. A STORE
-command moves one tile: ``len`` accumulator rows, row ``n`` written to L3 byte
+command moves one tile: ``len`` Combiner rows, row ``n`` written to L3 byte
 address ``dram_addr + n * stride``.
 
 - Any byte address, with byte strobes: only ``row_bytes`` bytes of each row are
-  written (0 = a whole accumulator row), so an edge N tile leaves the bytes past
+  written (0 = a whole Combiner row), so an edge N tile leaves the bytes past
   it untouched and C can be dense. A row that spills into the next beat is a
   2-beat burst.
 - ``stride`` 0 means rows one bus beat apart.
@@ -18,75 +18,75 @@ address ``dram_addr + n * stride``.
 
 ``TRANSPOSE`` is a MEMCPY with a corner turn, for results the array produces as
 columns (input-stationary, #21). The tile is first read into a corner-turn
-buffer of ``lanes`` accumulator rows (``lanes = acc_width // acc_bits``): one
+buffer of ``lanes`` Combiner rows (``lanes = combiner_width // acc_bits``): one
 row per element of an L3 row, ``ceil(row_bytes * 8 / acc_bits)`` rows from
-``acc_addr``, read back to back. L3 row ``i`` is then element ``i`` of every
-buffered row: accumulator row ``n`` becomes element ``n`` of each L3 row. The
+``combiner_addr``, read back to back. L3 row ``i`` is then element ``i`` of every
+buffered row: Combiner row ``n`` becomes element ``n`` of each L3 row. The
 rows go out exactly as a MEMCPY's, and the activation applies to each element. A
 TRANSPOSE moves at most one tile: ``len`` is clamped to ``lanes``.
 
 State Machine:
     IDLE [-> GATHER (TRANSPOSE: read the tile into the corner-turn buffer)]
-         -> NEXT -> ISSUE_BURST -> (READ_ACC -> WAIT_VALID -> SEND_STREAM)* -> WAIT_DONE
+         -> NEXT -> ISSUE_BURST -> (READ_COMBINER -> WAIT_VALID -> SEND_STREAM)* -> WAIT_DONE
                     (consecutive beats from a beat boundary: one burst of up to 256 rows,
                     within one 4 KB page)
-                 -> READ_ACC -> WAIT_VALID -> ISSUE_ROW -> SEND_LO [-> SEND_HI] -> WAIT_DONE
+                 -> READ_COMBINER -> WAIT_VALID -> ISSUE_ROW -> SEND_LO [-> SEND_HI] -> WAIT_DONE
                     (any other row; when its second beat starts the next 4 KB page,
                     SEND_LO -> WAIT_LO -> ISSUE_HI -> SEND_HI: two 1-beat bursts)
          -> (NEXT | DONE)
 
 Data Flow:
-    Accumulator --> StoreController --> StreamWriter --> L3
+    Combiner --> StoreController --> StreamWriter --> L3
 """
 
 from amaranth import Cat, Const, Module, Mux, Signal, signed
 from amaranth.lib.wiring import Component, In, Out
 
+from ..blockmover.axi import AXI_4KB
 from ..config import SystolicConfig
-from ..dma.axi import AXI_4KB
 from ..memory.activation import activate_row
-from ..util.commands import DmaOpcode
+from ..util.commands import BlockMoverOpcode
 
 
 class StoreController(Component):
     """
-    Store controller for accumulator -> DRAM transfers.
+    Store controller for Combiner -> DRAM transfers.
 
-    Coordinates data movement from the accumulator through the StreamWriter
-    DMA engine to external memory.
+    Coordinates data movement from the Combiner through the StreamWriter
+    BlockMover engine to external memory.
 
     Ports:
         Command Interface:
             cmd_valid: Command available
             cmd_ready: Controller ready to accept command
             cmd_opcode: Operation code (MEMCPY, or TRANSPOSE: with a corner turn)
-            cmd_acc_addr: Source address in accumulator (32-bit local format)
+            cmd_combiner_addr: Source address in Combiner (32-bit local format)
             cmd_dram_addr: Destination byte address of row 0 in L3 (64-bit, any alignment)
             cmd_len: Rows to move (0 completes at once)
             cmd_stride: Bytes between destination rows (0 = one bus beat)
-            cmd_row_bytes: Bytes written per row (0 = a whole accumulator row)
+            cmd_row_bytes: Bytes written per row (0 = a whole Combiner row)
             cmd_id: Command ID for tracking
             cmd_activation: Activation function (0=none, 1=relu)
 
-        Accumulator Interface:
-            acc_read_req: Read request
-            acc_read_addr: Read address (local format)
-            acc_read_data: Read data (acc_width bits)
-            acc_read_valid: Data valid
+        Combiner Interface:
+            combiner_read_req: Read request
+            combiner_read_addr: Read address (local format)
+            combiner_read_data: Read data (combiner_width bits)
+            combiner_read_valid: Data valid
 
-        DMA Interface (to StreamWriter):
-            dma_req_valid: Request valid
-            dma_req_ready: DMA ready to accept
-            dma_req_addr: DRAM address (64-bit)
-            dma_req_len: Burst length (AXI4 style: 0=1 beat)
+        BlockMover Interface (to StreamWriter):
+            engine_req_valid: Request valid
+            engine_req_ready: BlockMover ready to accept
+            engine_req_addr: DRAM address (64-bit)
+            engine_req_len: Burst length (AXI4 style: 0=1 beat)
 
-            dma_data_valid: Write data valid
-            dma_data_ready: DMA ready for data
-            dma_data: Write data (dma_buswidth bits)
-            dma_data_strb: Byte strobes of the beat
-            dma_data_last: Last beat of burst
+            engine_data_valid: Write data valid
+            engine_data_ready: BlockMover ready for data
+            engine_data: Write data (blockmover_buswidth bits)
+            engine_data_strb: Byte strobes of the beat
+            engine_data_last: Last beat of burst
 
-            dma_done: DMA write complete
+            engine_done: BlockMover write complete
 
         Status:
             busy: Controller is processing a command
@@ -96,22 +96,22 @@ class StoreController(Component):
 
     def __init__(self, config: SystolicConfig):
         self.config = config
-        buswidth = config.dma_buswidth
-        acc_width = config.acc_width
-        if acc_width > buswidth:
-            # One accumulator row is sent per DMA beat; a wider row would be
-            # silently truncated to its low dma_buswidth bits
+        buswidth = config.blockmover_buswidth
+        combiner_width = config.combiner_width
+        if combiner_width > buswidth:
+            # One Combiner row is sent per BlockMover beat; a wider row would be
+            # silently truncated to its low blockmover_buswidth bits
             raise ValueError(
-                f"StoreController: accumulator row ({acc_width} bits = {config.grid_cols * config.tile_cols}"
-                f" x {config.acc_bits}) is wider than dma_buswidth ({buswidth}); "
-                f"set dma_buswidth >= {acc_width}"
+                f"StoreController: Combiner row ({combiner_width} bits = {config.grid_cols * config.tile_cols}"
+                f" x {config.acc_bits}) is wider than blockmover_buswidth ({buswidth}); "
+                f"set blockmover_buswidth >= {combiner_width}"
             )
 
-        self.lanes = acc_width // config.acc_bits  # elements per accumulator row
+        self.lanes = combiner_width // config.acc_bits  # elements per Combiner row
         beat = buswidth // 8
         if beat < 2 or beat & (beat - 1):
             raise ValueError(
-                f"StoreController: dma_buswidth must be a power-of-two bytes, got {buswidth}"
+                f"StoreController: blockmover_buswidth must be a power-of-two bytes, got {buswidth}"
             )
         if beat > AXI_4KB:
             raise ValueError(f"StoreController: a {beat}-byte beat is wider than a 4 KB page")
@@ -122,29 +122,29 @@ class StoreController(Component):
                 "cmd_valid": In(1),
                 "cmd_ready": Out(1),
                 "cmd_opcode": In(8),
-                "cmd_acc_addr": In(32),
+                "cmd_combiner_addr": In(32),
                 "cmd_dram_addr": In(64),
                 "cmd_len": In(16),  # Rows to move
                 "cmd_stride": In(32),  # Bytes between destination rows (0 = one beat)
                 "cmd_row_bytes": In(16),  # Bytes written per row (0 = whole row)
                 "cmd_id": In(8),
                 "cmd_activation": In(4),  # Activation function
-                # Accumulator read interface
-                "acc_read_req": Out(1),
-                "acc_read_addr": Out(32),
-                "acc_read_data": In(signed(acc_width)),
-                "acc_read_valid": In(1),
-                # DMA interface (to StreamWriter)
-                "dma_req_valid": Out(1),
-                "dma_req_ready": In(1),
-                "dma_req_addr": Out(64),
-                "dma_req_len": Out(8),  # AXI4 style: 0=1 beat
-                "dma_data_valid": Out(1),
-                "dma_data_ready": In(1),
-                "dma_data": Out(buswidth),
-                "dma_data_strb": Out(buswidth // 8),
-                "dma_data_last": Out(1),
-                "dma_done": In(1),
+                # Combiner read interface
+                "combiner_read_req": Out(1),
+                "combiner_read_addr": Out(32),
+                "combiner_read_data": In(signed(combiner_width)),
+                "combiner_read_valid": In(1),
+                # BlockMover interface (to StreamWriter)
+                "engine_req_valid": Out(1),
+                "engine_req_ready": In(1),
+                "engine_req_addr": Out(64),
+                "engine_req_len": Out(8),  # AXI4 style: 0=1 beat
+                "engine_data_valid": Out(1),
+                "engine_data_ready": In(1),
+                "engine_data": Out(buswidth),
+                "engine_data_strb": Out(buswidth // 8),
+                "engine_data_last": Out(1),
+                "engine_done": In(1),
                 # Status
                 "busy": Out(1),
                 "completed": Out(1),
@@ -156,13 +156,13 @@ class StoreController(Component):
         m = Module()
         cfg = self.config
 
-        W = cfg.dma_buswidth
+        W = cfg.blockmover_buswidth
         beat = W // 8
-        acc_bytes = cfg.acc_width // 8
+        combiner_bytes = cfg.combiner_width // 8
         off_bits = (beat - 1).bit_length()
 
         # Registered command parameters
-        acc_addr_reg = Signal(32)
+        combiner_addr_reg = Signal(32)
         row_addr = Signal(64)  # byte address of the current row
         len_reg = Signal(16)
         stride_reg = Signal(32)
@@ -171,14 +171,14 @@ class StoreController(Component):
         activation_reg = Signal(4)
         row = Signal(16)
 
-        # TRANSPOSE: the corner-turn buffer (one tile), and its reads from the accumulator.
+        # TRANSPOSE: the corner-turn buffer (one tile), and its reads from the Combiner.
         # It is never cleared: rows past the ones a TRANSPOSE reads only fill elements
         # past row_bytes, which the byte strobes leave unwritten
         eb = cfg.acc_bits
         lanes = self.lanes
         transpose = Signal()
-        turn = [Signal(cfg.acc_width, name=f"turn_{n}") for n in range(lanes)]
-        gather = Signal(16)  # accumulator rows to read
+        turn = [Signal(cfg.combiner_width, name=f"turn_{n}") for n in range(lanes)]
+        gather = Signal(16)  # Combiner rows to read
         issued = Signal(16)
         received = Signal(16)
         turned_row = Cat(*[t[:eb] for t in turn])  # element 0 of every buffered row
@@ -193,18 +193,18 @@ class StoreController(Component):
         # The row and its strobes, shifted up to its byte offset across two beats
         data_buf = Signal(2 * W)
         strb_buf = Signal(2 * beat)
-        keep = Cat(*[i < row_bytes for i in range(acc_bytes)])
+        keep = Cat(*[i < row_bytes for i in range(combiner_bytes)])
 
         m.d.comb += [
             self.cmd_ready.eq(0),
-            self.acc_read_req.eq(0),
-            self.acc_read_addr.eq(0),
-            self.dma_req_valid.eq(0),
-            self.dma_req_len.eq(0),
-            self.dma_data_valid.eq(0),
-            self.dma_data.eq(0),
-            self.dma_data_strb.eq(0),
-            self.dma_data_last.eq(0),
+            self.combiner_read_req.eq(0),
+            self.combiner_read_addr.eq(0),
+            self.engine_req_valid.eq(0),
+            self.engine_req_len.eq(0),
+            self.engine_data_valid.eq(0),
+            self.engine_data.eq(0),
+            self.engine_data_strb.eq(0),
+            self.engine_data_last.eq(0),
             self.completed.eq(0),
             self.completed_id.eq(0),
         ]
@@ -225,20 +225,22 @@ class StoreController(Component):
         split = Signal()  # a 2-beat row whose second beat starts a new page
         m.d.comb += split.eq(two_beats & (page_beats == 1))
         aligned = Cat(Const(0, off_bits), row_addr[off_bits:])
-        m.d.comb += self.dma_req_addr.eq(aligned)
+        m.d.comb += self.engine_req_addr.eq(aligned)
 
         def activated_row():
             # The latched activation applied to each acc_bits element (the
-            # accumulator's own read activation is disabled by SystolicTop, so this
+            # Combiner's own read activation is disabled by SystolicTop, so this
             # is the only one). A TRANSPOSE's row comes from the corner-turn buffer.
-            source = Mux(transpose, turned_row, self.acc_read_data)
+            source = Mux(transpose, turned_row, self.combiner_read_data)
             return activate_row(source, activation_reg, cfg.acc_bits, lanes)
 
-        accepted = (self.cmd_opcode == DmaOpcode.MEMCPY) | (self.cmd_opcode == DmaOpcode.TRANSPOSE)
-        is_transpose = self.cmd_opcode == DmaOpcode.TRANSPOSE
+        accepted = (self.cmd_opcode == BlockMoverOpcode.MEMCPY) | (
+            self.cmd_opcode == BlockMoverOpcode.TRANSPOSE
+        )
+        is_transpose = self.cmd_opcode == BlockMoverOpcode.TRANSPOSE
         cmd_row_bytes = Mux(
-            (self.cmd_row_bytes == 0) | (self.cmd_row_bytes > acc_bytes),
-            acc_bytes,
+            (self.cmd_row_bytes == 0) | (self.cmd_row_bytes > combiner_bytes),
+            combiner_bytes,
             self.cmd_row_bytes,
         )
 
@@ -248,7 +250,7 @@ class StoreController(Component):
                 with m.If(self.cmd_valid & accepted):
                     cmd_len = Mux(is_transpose & (self.cmd_len > lanes), lanes, self.cmd_len)
                     m.d.sync += [
-                        acc_addr_reg.eq(self.cmd_acc_addr),
+                        combiner_addr_reg.eq(self.cmd_combiner_addr),
                         row_addr.eq(self.cmd_dram_addr),
                         len_reg.eq(cmd_len),
                         stride_reg.eq(Mux(self.cmd_stride == 0, beat, self.cmd_stride)),
@@ -268,19 +270,19 @@ class StoreController(Component):
                     with m.Else():
                         m.next = "NEXT"
 
-            # TRANSPOSE: read the tile's accumulator rows into the corner-turn buffer,
+            # TRANSPOSE: read the tile's Combiner rows into the corner-turn buffer,
             # one request per cycle
             with m.State("GATHER"):
                 with m.If(issued < gather):
                     m.d.comb += [
-                        self.acc_read_req.eq(1),
-                        self.acc_read_addr.eq(acc_addr_reg + issued),
+                        self.combiner_read_req.eq(1),
+                        self.combiner_read_addr.eq(combiner_addr_reg + issued),
                     ]
                     m.d.sync += issued.eq(issued + 1)
-                with m.If(self.acc_read_valid):
+                with m.If(self.combiner_read_valid):
                     for n in range(lanes):
                         with m.If(received == n):
-                            m.d.sync += turn[n].eq(self.acc_read_data)
+                            m.d.sync += turn[n].eq(self.combiner_read_data)
                     m.d.sync += received.eq(received + 1)
                     with m.If(received + 1 >= gather):
                         m.next = "NEXT"
@@ -291,25 +293,25 @@ class StoreController(Component):
                     m.d.sync += burst_left.eq(burst_rows)
                     m.next = "ISSUE_BURST"
                 with m.Else():
-                    m.next = "READ_ACC"
+                    m.next = "READ_COMBINER"
 
             # --- Streaming: one burst, one beat per row ---
             with m.State("ISSUE_BURST"):
-                m.d.comb += [self.dma_req_valid.eq(1), self.dma_req_len.eq(burst_left - 1)]
-                with m.If(self.dma_req_ready):
-                    m.next = "READ_ACC"
+                m.d.comb += [self.engine_req_valid.eq(1), self.engine_req_len.eq(burst_left - 1)]
+                with m.If(self.engine_req_ready):
+                    m.next = "READ_COMBINER"
 
-            # --- Read the row from the accumulator ---
-            with m.State("READ_ACC"):
+            # --- Read the row from the Combiner ---
+            with m.State("READ_COMBINER"):
                 with m.If(~transpose):
                     m.d.comb += [
-                        self.acc_read_req.eq(1),
-                        self.acc_read_addr.eq(acc_addr_reg + row),
+                        self.combiner_read_req.eq(1),
+                        self.combiner_read_addr.eq(combiner_addr_reg + row),
                     ]
                 m.next = "WAIT_VALID"
 
-            # A TRANSPOSE's row is in the corner-turn buffer: no accumulator read
-            with m.State("WAIT_VALID"), m.If(self.acc_read_valid | transpose):
+            # A TRANSPOSE's row is in the corner-turn buffer: no Combiner read
+            with m.State("WAIT_VALID"), m.If(self.combiner_read_valid | transpose):
                 # Place the row at its byte offset (0 when streaming)
                 m.d.sync += [
                     data_buf.eq(activated_row() << (offset * 8)),
@@ -325,12 +327,12 @@ class StoreController(Component):
             with m.State("SEND_STREAM"):
                 last = burst_left == 1
                 m.d.comb += [
-                    self.dma_data_valid.eq(1),
-                    self.dma_data.eq(data_buf[:W]),
-                    self.dma_data_strb.eq(strb_buf[:beat]),
-                    self.dma_data_last.eq(last),
+                    self.engine_data_valid.eq(1),
+                    self.engine_data.eq(data_buf[:W]),
+                    self.engine_data_strb.eq(strb_buf[:beat]),
+                    self.engine_data_last.eq(last),
                 ]
-                with m.If(self.dma_data_ready):
+                with m.If(self.engine_data_ready):
                     m.d.sync += [
                         row.eq(row + 1),
                         row_addr.eq(row_addr + beat),
@@ -339,22 +341,25 @@ class StoreController(Component):
                     with m.If(last):
                         m.next = "WAIT_DONE"
                     with m.Else():
-                        m.next = "READ_ACC"
+                        m.next = "READ_COMBINER"
 
             # --- One row: a 1- or 2-beat burst at its byte offset ---
             with m.State("ISSUE_ROW"):
-                m.d.comb += [self.dma_req_valid.eq(1), self.dma_req_len.eq(two_beats & ~split)]
-                with m.If(self.dma_req_ready):
+                m.d.comb += [
+                    self.engine_req_valid.eq(1),
+                    self.engine_req_len.eq(two_beats & ~split),
+                ]
+                with m.If(self.engine_req_ready):
                     m.next = "SEND_LO"
 
             with m.State("SEND_LO"):
                 m.d.comb += [
-                    self.dma_data_valid.eq(1),
-                    self.dma_data.eq(data_buf[:W]),
-                    self.dma_data_strb.eq(strb_buf[:beat]),
-                    self.dma_data_last.eq(~two_beats | split),
+                    self.engine_data_valid.eq(1),
+                    self.engine_data.eq(data_buf[:W]),
+                    self.engine_data_strb.eq(strb_buf[:beat]),
+                    self.engine_data_last.eq(~two_beats | split),
                 ]
-                with m.If(self.dma_data_ready):
+                with m.If(self.engine_data_ready):
                     with m.If(split):
                         m.next = "WAIT_LO"
                     with m.Elif(two_beats):
@@ -364,29 +369,29 @@ class StoreController(Component):
 
             # The row's second beat starts the next 4 KB page: once the first burst is
             # acknowledged, the second beat goes as a burst of its own
-            with m.State("WAIT_LO"), m.If(self.dma_done):
+            with m.State("WAIT_LO"), m.If(self.engine_done):
                 m.next = "ISSUE_HI"
 
             with m.State("ISSUE_HI"):
                 m.d.comb += [
-                    self.dma_req_valid.eq(1),
-                    self.dma_req_addr.eq(aligned + beat),
-                    self.dma_req_len.eq(0),
+                    self.engine_req_valid.eq(1),
+                    self.engine_req_addr.eq(aligned + beat),
+                    self.engine_req_len.eq(0),
                 ]
-                with m.If(self.dma_req_ready):
+                with m.If(self.engine_req_ready):
                     m.next = "SEND_HI"
 
             with m.State("SEND_HI"):
                 m.d.comb += [
-                    self.dma_data_valid.eq(1),
-                    self.dma_data.eq(data_buf[W:]),
-                    self.dma_data_strb.eq(strb_buf[beat:]),
-                    self.dma_data_last.eq(1),
+                    self.engine_data_valid.eq(1),
+                    self.engine_data.eq(data_buf[W:]),
+                    self.engine_data_strb.eq(strb_buf[beat:]),
+                    self.engine_data_last.eq(1),
                 ]
-                with m.If(self.dma_data_ready):
+                with m.If(self.engine_data_ready):
                     m.next = "WAIT_DONE"
 
-            with m.State("WAIT_DONE"), m.If(self.dma_done):
+            with m.State("WAIT_DONE"), m.If(self.engine_done):
                 done_rows = Mux(streaming, row, row + 1)
                 with m.If(~streaming):
                     m.d.sync += [row.eq(row + 1), row_addr.eq(row_addr + stride_reg)]

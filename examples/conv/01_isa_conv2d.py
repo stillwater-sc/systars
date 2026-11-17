@@ -36,7 +36,7 @@ from amaranth.sim import Simulator
 from systars.config import SystolicConfig
 from systars.isa.command import CTRL_LOAD, CTRL_STORE
 from systars.isa.conv2d import Conv2d, Conv2dCmd, Conv2dError
-from systars.util.commands import DmaOpcode, ExecOpcode
+from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
 X_ADDR, F_ADDR, Y_ADDR = 0x1000_0000, 0x2000_0000, 0x3000_0000
 
@@ -57,7 +57,7 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
     print("=" * 70)
 
     config = SystolicConfig(
-        grid_rows=array_dim, grid_cols=array_dim, sp_capacity_kb=4, acc_capacity_kb=4
+        grid_rows=array_dim, grid_cols=array_dim, sp_capacity_kb=4, combiner_capacity_kb=4
     )
     conv = Conv2d(config)
     y_stride = 0  # dense output: out_c results per position
@@ -142,7 +142,7 @@ def run_conv2d_demo(batch, in_h, in_w, in_c, out_c, kernel, stride, pad, dilatio
         actual[op] = sum(
             1 for t in trace if t[0] not in (CTRL_LOAD, CTRL_STORE) and t[1] == ExecOpcode[op]
         )
-    padded = sum(1 for t in trace if t[0] == CTRL_LOAD and t[1] == DmaOpcode.CLEAR)
+    padded = sum(1 for t in trace if t[0] == CTRL_LOAD and t[1] == BlockMoverOpcode.CLEAR)
 
     print(f"\n   {len(trace)} commands; {padded} input rows are CLEARs (padding, no L3 read)")
     print("   Expected vs actual:")

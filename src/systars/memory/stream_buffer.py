@@ -25,7 +25,7 @@ first-in, first-out buffer of up to ``depth`` results. The fabric
 delivers a column's results in row order, so once every column holds its next
 result, those results form one row of the result tile: the buffers emit it
 (``out_valid``, ``out_data``, column 0 in the low bits) and drop it. That turns the
-columns back into the row-major rows the accumulator and STORE expect.
+columns back into the row-major rows the Combiner and STORE expect.
 
 - ``credit_j`` is high while buffer ``j`` has room; a result arriving at a full
   buffer is a protocol error (``error``, sticky).

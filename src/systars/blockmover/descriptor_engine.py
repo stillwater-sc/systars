@@ -1,7 +1,7 @@
 """
 DescriptorEngine - Hardware engine for executing descriptor chains.
 
-The DescriptorEngine fetches DMA descriptors from memory, parses them,
+The DescriptorEngine fetches BlockMover descriptors from memory, parses them,
 and executes the specified operations. It supports chained descriptors
 for complex multi-operation transfers.
 
@@ -35,7 +35,7 @@ from ..config import SystolicConfig
 
 class DescriptorEngine(Component):
     """
-    Hardware engine for executing DMA descriptor chains.
+    Hardware engine for executing BlockMover descriptor chains.
 
     Coordinates with StreamReader/StreamWriter to perform memory operations
     as specified by descriptors fetched from memory.
@@ -52,7 +52,7 @@ class DescriptorEngine(Component):
         fetch_req_ready: StreamReader ready
         fetch_req_addr: Descriptor address
         fetch_resp_valid: Descriptor data valid
-        fetch_resp_data: Descriptor data (dma_buswidth bits)
+        fetch_resp_data: Descriptor data (blockmover_buswidth bits)
         fetch_resp_last: Last beat of descriptor
 
     Data Read Interface (to StreamReader for MEMCPY source):
@@ -86,7 +86,7 @@ class DescriptorEngine(Component):
 
     def __init__(self, config: SystolicConfig):
         self.config = config
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
 
         super().__init__(
             {
@@ -136,7 +136,7 @@ class DescriptorEngine(Component):
     def elaborate(self, _platform):
         m = Module()
         cfg = self.config
-        buswidth = cfg.dma_buswidth
+        buswidth = cfg.blockmover_buswidth
         bytes_per_beat = buswidth // 8
 
         # Number of beats to fetch a 64-byte descriptor

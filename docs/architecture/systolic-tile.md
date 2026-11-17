@@ -19,7 +19,7 @@ Built bottom up, each level a `lib.wiring.Component`:
 | `PE` | `core/pe.py` | One MAC with an input register on every link. Run-time mode: output-stationary (0) or stationary (1). |
 | `PEArray` | `core/pe_array.py` | A `tile_rows x tile_cols` block of PEs. Purely structural, since every link is already registered. |
 | `SystolicArray` | `core/systolic_array.py` | A `grid_rows x grid_cols` grid of PEArrays, 8x8 to 64x64 PEs. No skew or deskew registers. |
-| `SystolicTop` | `top.py` | The tile: fabric, scratchpad, accumulator, controllers, DMA engines and the command queues. |
+| `SystolicTop` | `top.py` | The tile: fabric, scratchpad, Combiner, controllers, BlockMover engines and the command queues. |
 
 ## The memory levels
 
@@ -29,18 +29,18 @@ SYSTARS uses KPU names for its memories, never cache names:
 |---|---|---|---|
 | L3 | Outside the tile, over AXI | BlockMover STORE | BlockMover LOAD |
 | L2 | `memory/scratchpad.py`, two read ports | BlockMover LOAD | Streamer |
-| Accumulator | `memory/accumulator.py` | Streamer results; a LOAD with `LocalAddr` bit 31 | BlockMover STORE |
+| Combiner | `memory/combiner.py` | Streamer results; a LOAD with `LocalAddr` bit 31 | BlockMover STORE |
 | L1 | `memory/stream_buffer.py` | Streamer | The fabric (stream buffers); the Streamer (result buffers) |
 
 ## The processes
 
-The **BlockMover** has two legs: LOAD (L3 to L2 or the accumulator; `controller/load.py`,
-`dma/reader.py`) and STORE (accumulator to L3; `controller/store.py`, `dma/writer.py`). It moves
+The **BlockMover** has two legs: LOAD (L3 to L2 or the Combiner; `controller/load.py`,
+`blockmover/reader.py`) and STORE (Combiner to L3; `controller/store.py`, `blockmover/writer.py`). It moves
 a whole tile per command: `len` rows, `stride` bytes apart, `row_bytes` each, from any byte
 address, with no AXI burst crossing a 4 KB boundary.
 
 The **Streamer** (`controller/execute.py`) turns L2 tiles into element streams through L1 and
-writes the results into the accumulator.
+writes the results into the Combiner.
 
 Every command carries `cmd_sync`: the slots it reads and fills, and the ACQUIRE, SIGNAL, WAIT
 and RELEASE flags that take and return credits and tile-ready tokens (`controller/sync.py`). The
@@ -50,7 +50,7 @@ and RELEASE flags that take and return credits and tile-ready tokens (`controlle
 
 One dataclass, `SystolicConfig` (`config.py`), sets everything: the grid and tile shape,
 `input_bits` (default 8), `acc_bits` (32), the supported `dataflow` flags (default
-`OUTPUT_STATIONARY | B_STATIONARY`), scratchpad and accumulator capacity, slot counts and
+`OUTPUT_STATIONARY | B_STATIONARY`), scratchpad and Combiner capacity, slot counts and
 queue lengths. The presets are `DEFAULT_CONFIG`, `LEAN_CONFIG`, `CHIP_CONFIG` and
 `LARGE_CONFIG`. The RTL targets in `targets.py` use small shapes, such as the 4x4
 `systolic_top` that the cocotb tests run (`python3 -m systars.targets list`).
@@ -101,7 +101,7 @@ These come from the Streamer's docstring and are checked by the tests:
 ## Current limits
 
 - `SystolicTop` and the controllers are not synthesis targets yet: `just synth` covers the PE,
-  the arrays, the scratchpad and the accumulator.
+  the arrays, the scratchpad and the Combiner.
 - The L2 behind the Streamer is an idealized scratchpad with two read ports; the banked L2 that
   sustains two vectors per clock is open (#17).
 - Conv2d runs only in OS. WS and IS need a column-write LOAD

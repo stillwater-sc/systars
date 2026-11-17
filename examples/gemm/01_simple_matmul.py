@@ -18,7 +18,7 @@ using the systolic array accelerator. It shows:
      * LOAD A from DRAM to Scratchpad
      * LOAD B from DRAM to Scratchpad
      * EXECUTE matrix multiply
-     * STORE C from Accumulator to DRAM
+     * STORE C from Combiner to DRAM
 
 4. Execution (RTL Simulation)
    - Run the command sequence through the hardware model
@@ -68,26 +68,26 @@ class AcceleratorConfig:
 
     # Data widths
     input_bits: int = 8  # Input/weight element width
-    acc_bits: int = 32  # Accumulator width
+    acc_bits: int = 32  # MAC accumulate width
 
     # Memory sizes
     scratchpad_kb: int = 64  # Scratchpad capacity
-    accumulator_kb: int = 16  # Accumulator capacity
+    combiner_kb: int = 16  # Combiner capacity
 
     # Bus parameters
-    dma_buswidth: int = 128  # DMA bus width in bits
+    blockmover_buswidth: int = 128  # BlockMover bus width in bits
 
     @property
     def bytes_per_beat(self) -> int:
-        return self.dma_buswidth // 8
+        return self.blockmover_buswidth // 8
 
     @property
     def elements_per_beat_int8(self) -> int:
-        return self.dma_buswidth // 8
+        return self.blockmover_buswidth // 8
 
     @property
     def elements_per_beat_int32(self) -> int:
-        return self.dma_buswidth // 32
+        return self.blockmover_buswidth // 32
 
 
 # =============================================================================
@@ -99,7 +99,7 @@ class CommandType(IntEnum):
     """Command types for the accelerator."""
 
     LOAD = 0  # Load data from DRAM to Scratchpad
-    STORE = 1  # Store data from Accumulator to DRAM
+    STORE = 1  # Store data from Combiner to DRAM
     EXECUTE = 2  # Execute compute operation
 
 
@@ -149,7 +149,7 @@ class Command:
             )
         elif self.cmd_type == CommandType.STORE:
             return (
-                f"STORE[{self.cmd_id}]: ACC[0x{self.local_addr:X}] -> "
+                f"STORE[{self.cmd_id}]: CMB[0x{self.local_addr:X}] -> "
                 f"DRAM[0x{self.dram_addr:X}], len={self.length}"
             )
         elif self.cmd_type == CommandType.EXECUTE:
@@ -188,7 +188,7 @@ class CommandGenerator:
         c_dram_addr: int,
         a_sp_addr: int,
         b_sp_addr: int,
-        c_acc_addr: int,
+        c_combiner_addr: int,
         M: int,
         K: int,
         N: int,
@@ -202,7 +202,7 @@ class CommandGenerator:
             c_dram_addr: DRAM address for result C
             a_sp_addr: Scratchpad address for A
             b_sp_addr: Scratchpad address for B
-            c_acc_addr: Accumulator address for C
+            c_combiner_addr: Combiner address for C
             M: Rows in A and C
             K: Cols in A, rows in B
             N: Cols in B and C
@@ -260,7 +260,7 @@ class CommandGenerator:
             Command(
                 cmd_type=CommandType.EXECUTE,
                 opcode=ExecOpcode.COMPUTE,
-                local_addr=c_acc_addr,
+                local_addr=c_combiner_addr,
                 cmd_id=self.next_id(),
                 extra={
                     "a_sp_addr": a_sp_addr,
@@ -272,13 +272,13 @@ class CommandGenerator:
             )
         )
 
-        # 5. Store result C: Accumulator -> DRAM
+        # 5. Store result C: Combiner -> DRAM
         commands.append(
             Command(
                 cmd_type=CommandType.STORE,
                 opcode=StoreOpcode.MEMCPY,
                 dram_addr=c_dram_addr,
-                local_addr=c_acc_addr,
+                local_addr=c_combiner_addr,
                 length=c_beats,
                 cmd_id=self.next_id(),
             )
@@ -305,7 +305,7 @@ def simulate_matmul_software(
     """
     # Simulated local memories
     scratchpad = {}  # addr -> data
-    accumulator = {}  # addr -> data
+    combiner = {}  # addr -> data
 
     for cmd in commands:
         if cmd.cmd_type == CommandType.LOAD:
@@ -318,11 +318,11 @@ def simulate_matmul_software(
                 scratchpad[sp_addr] = data
 
         elif cmd.cmd_type == CommandType.STORE:
-            # Copy from accumulator to DRAM
+            # Copy from Combiner to DRAM
             print(f"  Executing: {cmd}")
             for i in range(cmd.length):
-                acc_addr = cmd.local_addr + i
-                data = accumulator.get(acc_addr, 0)
+                combiner_addr = cmd.local_addr + i
+                data = combiner.get(combiner_addr, 0)
                 beat_addr = cmd.dram_addr + i * config.bytes_per_beat
                 dram.write_beat(beat_addr, data)
 
@@ -337,7 +337,7 @@ def simulate_matmul_software(
                 M, K, N = extra["M"], extra["K"], extra["N"]
                 a_sp_addr = extra["a_sp_addr"]
                 b_sp_addr = extra["b_sp_addr"]
-                c_acc_addr = cmd.local_addr
+                c_combiner_addr = cmd.local_addr
 
                 # Reconstruct matrices from scratchpad
                 # (simplified - assumes data fits in loaded beats)
@@ -372,9 +372,9 @@ def simulate_matmul_software(
                 C = A.astype(np.int32) @ B.astype(np.int32)
                 print(f"    Computed C[{M}x{N}] = A[{M}x{K}] @ B[{K}x{N}]")
 
-                # Store result in accumulator
+                # Store result in Combiner
                 c_flat = C.flatten()
-                elements_per_beat = config.dma_buswidth // 32
+                elements_per_beat = config.blockmover_buswidth // 32
 
                 for i in range(0, len(c_flat), elements_per_beat):
                     beat = 0
@@ -384,7 +384,7 @@ def simulate_matmul_software(
                             if val < 0:
                                 val += 1 << 32
                             beat |= (val & 0xFFFFFFFF) << (j * 32)
-                    accumulator[c_acc_addr + i // elements_per_beat] = beat
+                    combiner[c_combiner_addr + i // elements_per_beat] = beat
 
 
 # =============================================================================
@@ -439,13 +439,13 @@ def run_demo(matrix_size: int = 4, run_rtl: bool = False):
         array_cols=matrix_size,
         input_bits=8,
         acc_bits=32,
-        dma_buswidth=128,
+        blockmover_buswidth=128,
     )
 
     print(f"   Array size: {config.array_rows} x {config.array_cols}")
     print(f"   Input precision: {config.input_bits}-bit")
-    print(f"   Accumulator precision: {config.acc_bits}-bit")
-    print(f"   DMA bus width: {config.dma_buswidth}-bit")
+    print(f"   Accumulate precision: {config.acc_bits}-bit")
+    print(f"   BlockMover bus width: {config.blockmover_buswidth}-bit")
     print(f"   Bytes per beat: {config.bytes_per_beat}")
 
     # -------------------------------------------------------------------------
@@ -464,8 +464,8 @@ def run_demo(matrix_size: int = 4, run_rtl: bool = False):
     a_sp_beats = (M * K + config.bytes_per_beat - 1) // config.bytes_per_beat
     B_SP_ADDR = A_SP_ADDR + a_sp_beats  # B directly after A (no overlap for any size)
 
-    # Accumulator address
-    C_ACC_ADDR = 0x00
+    # Combiner address
+    C_COMBINER_ADDR = 0x00
 
     print("   DRAM Layout:")
     print(f"     A: 0x{A_DRAM_ADDR:08X} ({M * K} bytes)")
@@ -474,11 +474,11 @@ def run_demo(matrix_size: int = 4, run_rtl: bool = False):
     print("\n   Scratchpad Layout:")
     print(f"     A: 0x{A_SP_ADDR:02X}")
     print(f"     B: 0x{B_SP_ADDR:02X}")
-    print("\n   Accumulator Layout:")
-    print(f"     C: 0x{C_ACC_ADDR:02X}")
+    print("\n   Combiner Layout:")
+    print(f"     C: 0x{C_COMBINER_ADDR:02X}")
 
     # Initialize DRAM and load input matrices
-    dram = SimulatedDRAM(size_bytes=64 * 1024, buswidth=config.dma_buswidth)
+    dram = SimulatedDRAM(size_bytes=64 * 1024, buswidth=config.blockmover_buswidth)
     dram.store_matrix("A", A_DRAM_ADDR, A)
     dram.store_matrix("B", B_DRAM_ADDR, B)
 
@@ -497,7 +497,7 @@ def run_demo(matrix_size: int = 4, run_rtl: bool = False):
         c_dram_addr=C_DRAM_ADDR,
         a_sp_addr=A_SP_ADDR,
         b_sp_addr=B_SP_ADDR,
-        c_acc_addr=C_ACC_ADDR,
+        c_combiner_addr=C_COMBINER_ADDR,
         M=M,
         K=K,
         N=N,

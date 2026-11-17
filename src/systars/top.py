@@ -4,12 +4,12 @@ SystolicTop - Top-level integration of the systolic array accelerator.
 This module wires together all major subsystems:
 - SystolicArray: Compute fabric for matrix multiply
 - Scratchpad: Input/weight storage
-- Accumulator: Output/partial sum storage
-- StreamReader: DMA for DRAM → local memory
-- StreamWriter: DMA for local memory → DRAM
+- Combiner: Output/partial sum storage
+- StreamReader: BlockMover for DRAM → local memory
+- StreamWriter: BlockMover for local memory → DRAM
 - LoadController: Orchestrates DRAM → Scratchpad
-- StoreController: Orchestrates Accumulator → DRAM
-- ExecuteController: Orchestrates Scratchpad → SystolicArray → Accumulator
+- StoreController: Orchestrates Combiner → DRAM
+- ExecuteController: Orchestrates Scratchpad → SystolicArray → Combiner
 
 External Interfaces:
 - AXI memory interface (read and write channels): the tile's link to L3
@@ -20,30 +20,30 @@ External Interfaces:
   slots' state
 
 Data Flow for Matrix Multiply C = A × B + D:
-1. Optionally load D (a bias, or an existing C) from L3 → Accumulator via
-   LoadController + StreamReader (a LOAD to an accumulator address)
+1. Optionally load D (a bias, or an existing C) from L3 → Combiner via
+   LoadController + StreamReader (a LOAD to a Combiner address)
 2. Load A from DRAM → Scratchpad via LoadController + StreamReader
 3. Load B from DRAM → Scratchpad via LoadController + StreamReader
 4. Execute matmul via ExecuteController + SystolicArray (accumulating onto D)
-5. Store C from Accumulator → DRAM via StoreController + StreamWriter
+5. Store C from Combiner → DRAM via StoreController + StreamWriter
 
-The accumulator's write port is shared: the Streamer writes its results whenever
-they arrive, and a LOAD into the accumulator writes in the clocks it leaves free.
+The Combiner's write port is shared: the Streamer writes its results whenever
+they arrive, and a LOAD into the Combiner writes in the clocks it leaves free.
 """
 
 from amaranth import Cat, Module, Mux, Signal
 from amaranth.lib.fifo import SyncFIFO
 from amaranth.lib.wiring import Component, In, Out
 
+from .blockmover.reader import StreamReader
+from .blockmover.writer import StreamWriter
 from .config import SystolicConfig
 from .controller.execute import ExecuteController
 from .controller.load import LoadController
 from .controller.store import StoreController
 from .controller.sync import SlotPool, Sync
 from .core.systolic_array import SystolicArray
-from .dma.reader import StreamReader
-from .dma.writer import StreamWriter
-from .memory.accumulator import Accumulator
+from .memory.combiner import Combiner
 from .memory.local_addr import LocalAddr
 from .memory.scratchpad import Scratchpad
 
@@ -52,7 +52,7 @@ class SystolicTop(Component):
     """
     Top-level systolic array accelerator.
 
-    Integrates compute fabric, local memories, and DMA engines into
+    Integrates compute fabric, local memories, and BlockMover engines into
     a complete accelerator with external AXI memory interface.
 
     Ports:
@@ -80,9 +80,9 @@ class SystolicTop(Component):
             completed_type: Which controller completed (0=load, 1=store, 2=exec)
             {load,store,exec}_completed[_id]: Per-controller completions (lossless).
                 The Streamer's completion means it is done with L2 (its last block
-                is in L1); exec_result[_id] means its results are in the accumulator
+                is in L1); exec_result[_id] means its results are in the Combiner
             {load,store,exec}_started[_id]: A process started a command
-            l2_free, l2_ready, acc_free, acc_ready: Slot states (OWNED = neither)
+            l2_free, l2_ready, combiner_free, combiner_ready: Slot states (OWNED = neither)
             sync_error: Sticky credit/token protocol error
             l1_error: Sticky L1/fabric schedule error
             interrupt: Interrupt request
@@ -96,7 +96,7 @@ class SystolicTop(Component):
     def __init__(self, config: SystolicConfig):
         self.config = config
 
-        buswidth = config.dma_buswidth
+        buswidth = config.blockmover_buswidth
         strb_width = buswidth // 8
 
         ports = {
@@ -106,7 +106,7 @@ class SystolicTop(Component):
             "cmd_type": In(2),  # 0=load, 1=store, 2=execute
             "cmd_opcode": In(8),
             "cmd_dram_addr": In(64),  # For load/store: DRAM address
-            "cmd_local_addr": In(32),  # For load: SP addr; store: ACC addr
+            "cmd_local_addr": In(32),  # For load: SP addr; store: CMB addr
             "cmd_len": In(16),  # Load/store: rows to move
             "cmd_stride": In(32),  # Load/store: bytes between L3 rows (0 = one beat)
             "cmd_row_bytes": In(16),  # Load/store: bytes per row (0 = whole row)
@@ -166,7 +166,7 @@ class SystolicTop(Component):
             "store_completed_id": Out(8),
             "exec_completed": Out(1),
             "exec_completed_id": Out(8),
-            # The Streamer's results are in the accumulator (its result token)
+            # The Streamer's results are in the Combiner (its result token)
             "exec_result": Out(1),
             "exec_result_id": Out(8),
             "interrupt": Out(1),
@@ -182,8 +182,8 @@ class SystolicTop(Component):
             # neither), and a sticky protocol error
             "l2_free": Out(config.l2_slots),
             "l2_ready": Out(config.l2_slots),
-            "acc_free": Out(config.acc_slots),
-            "acc_ready": Out(config.acc_slots),
+            "combiner_free": Out(config.combiner_slots),
+            "combiner_ready": Out(config.combiner_slots),
             "sync_error": Out(1),
             # Sticky L1/fabric schedule error (controller/execute.py)
             "l1_error": Out(1),
@@ -207,10 +207,10 @@ class SystolicTop(Component):
 
         # Local memories
         m.submodules.scratchpad = scratchpad = Scratchpad(cfg)
-        m.submodules.accumulator = accumulator = Accumulator(cfg)
-        self.scratchpad, self.accumulator = scratchpad, accumulator  # for testbenches (no hardware)
+        m.submodules.combiner = combiner = Combiner(cfg)
+        self.scratchpad, self.combiner = scratchpad, combiner  # for testbenches (no hardware)
 
-        # DMA engines
+        # BlockMover engines
         m.submodules.stream_reader = reader = StreamReader(cfg)
         m.submodules.stream_writer = writer = StreamWriter(cfg)
 
@@ -223,11 +223,11 @@ class SystolicTop(Component):
         # Command Queues, Credits and Tile-Ready Tokens (controller/sync.py)
         # =====================================================================
 
-        # Slot pools: L2 (LOAD fills, PRELOAD/COMPUTE read) and the accumulator
+        # Slot pools: L2 (LOAD fills, PRELOAD/COMPUTE read) and the Combiner
         # (COMPUTE fills, STORE reads)
         m.submodules.l2_slots = l2 = SlotPool(cfg.l2_slots)
-        # The accumulator's second producer is the BlockMover's LOAD into it
-        m.submodules.acc_slots = acc = SlotPool(cfg.acc_slots, producers=2)
+        # The Combiner's second producer is the BlockMover's LOAD into it
+        m.submodules.combiner_slots = acc = SlotPool(cfg.combiner_slots, producers=2)
 
         # One in-order queue per process: the host (or an ISA instruction) pushes
         # commands ahead, and a queue's head is dispatched when its credits and
@@ -241,7 +241,7 @@ class SystolicTop(Component):
             ),
             self.CTRL_STORE: (
                 "store", store_ctrl, cfg.st_queue_length,
-                {"opcode": "opcode", "acc_addr": "local_addr", "dram_addr": "dram_addr",
+                {"opcode": "opcode", "combiner_addr": "local_addr", "dram_addr": "dram_addr",
                  "len": "len", "stride": "stride", "row_bytes": "row_bytes", "id": "id",
                  "activation": "activation"},
             ),
@@ -289,37 +289,37 @@ class SystolicTop(Component):
             ]
             return dispatch, Sync.fields(head), Sync.fields(inflight)
 
-        # BlockMover, L3 -> L2 (or the accumulator, for a LOAD to an accumulator
+        # BlockMover, L3 -> L2 (or the Combiner, for a LOAD to a Combiner
         # address): takes the destination slot's credit; emits its token when done
-        ld_to_acc = Signal()  # the head LOAD fills an accumulator slot
-        ld_acc_inflight = Signal()  # the running one does
-        m.d.comb += ld_to_acc.eq(LocalAddr.is_acc(load_ctrl.cmd_sp_addr))
+        ld_to_combiner = Signal()  # the head LOAD fills a Combiner slot
+        ld_combiner_inflight = Signal()  # the running one does
+        m.d.comb += ld_to_combiner.eq(LocalAddr.is_combiner(load_ctrl.cmd_sp_addr))
         ld_go, ld_head, ld_done = gate(
             self.CTRL_LOAD,
-            lambda h: ~h.acquire | Mux(ld_to_acc, acc.fill_credit, l2.prod_credit),
+            lambda h: ~h.acquire | Mux(ld_to_combiner, acc.fill_credit, l2.prod_credit),
         )
         with m.If(ld_go):
-            m.d.sync += ld_acc_inflight.eq(ld_to_acc)
+            m.d.sync += ld_combiner_inflight.eq(ld_to_combiner)
         ld_signal = load_ctrl.completed & ld_done.signal
         m.d.comb += [
             l2.prod_slot.eq(ld_head.dst),
-            l2.prod_acquire.eq(ld_head.acquire & ~ld_to_acc),
-            l2.prod_take.eq(ld_go & ld_head.acquire & ~ld_to_acc),
-            l2.prod_signal.eq(ld_signal & ~ld_acc_inflight),
+            l2.prod_acquire.eq(ld_head.acquire & ~ld_to_combiner),
+            l2.prod_take.eq(ld_go & ld_head.acquire & ~ld_to_combiner),
+            l2.prod_signal.eq(ld_signal & ~ld_combiner_inflight),
             l2.prod_signal_slot.eq(ld_done.dst),
             acc.fill_slot.eq(ld_head.dst),
-            acc.fill_acquire.eq(ld_head.acquire & ld_to_acc),
-            acc.fill_take.eq(ld_go & ld_head.acquire & ld_to_acc),
-            acc.fill_signal.eq(ld_signal & ld_acc_inflight),
+            acc.fill_acquire.eq(ld_head.acquire & ld_to_combiner),
+            acc.fill_take.eq(ld_go & ld_head.acquire & ld_to_combiner),
+            acc.fill_signal.eq(ld_signal & ld_combiner_inflight),
             acc.fill_signal_slot.eq(ld_done.dst),
         ]
 
-        # Streamer: starts when its L2 tile is ready, its accumulator slot is free
+        # Streamer: starts when its L2 tile is ready, its Combiner slot is free
         # and the fabric can take it on schedule (and then runs to the end). Several
         # of its commands are in flight at once, so it carries each command's sync
         # fields to its own events: it returns the L2 credit once the tile's last
         # block is in L1, and emits the result token once the results are in the
-        # accumulator.
+        # Combiner.
         ex_go, ex_head, _ = gate(
             self.CTRL_EXEC,
             lambda h: (~h.wait | l2.cons_ready) & (~h.acquire | acc.prod_credit),
@@ -339,8 +339,8 @@ class SystolicTop(Component):
             acc.prod_signal_slot.eq(ex_resulted.dst),
         ]
 
-        # BlockMover, accumulator -> L3: fires on the result token; returns the
-        # accumulator credit when done
+        # BlockMover, Combiner -> L3: fires on the result token; returns the
+        # Combiner credit when done
         st_go, st_head, st_done = gate(self.CTRL_STORE, lambda h: ~h.wait | acc.cons_ready)
         m.d.comb += [
             acc.cons_slot.eq(st_head.src),
@@ -361,8 +361,8 @@ class SystolicTop(Component):
         m.d.comb += [
             self.l2_free.eq(l2.free),
             self.l2_ready.eq(l2.ready),
-            self.acc_free.eq(acc.free),
-            self.acc_ready.eq(acc.ready),
+            self.combiner_free.eq(acc.free),
+            self.combiner_ready.eq(acc.ready),
             self.sync_error.eq(l2.error | acc.error),
         ]
 
@@ -372,18 +372,18 @@ class SystolicTop(Component):
 
         # LoadController -> StreamReader
         m.d.comb += [
-            reader.req_valid.eq(load_ctrl.dma_req_valid),
-            load_ctrl.dma_req_ready.eq(reader.req_ready),
-            reader.req_addr.eq(load_ctrl.dma_req_addr),
-            reader.req_len.eq(load_ctrl.dma_req_len),
+            reader.req_valid.eq(load_ctrl.engine_req_valid),
+            load_ctrl.engine_req_ready.eq(reader.req_ready),
+            reader.req_addr.eq(load_ctrl.engine_req_addr),
+            reader.req_len.eq(load_ctrl.engine_req_len),
         ]
 
         # StreamReader -> LoadController
         m.d.comb += [
-            load_ctrl.dma_resp_valid.eq(reader.resp_valid),
-            reader.resp_ready.eq(load_ctrl.dma_resp_ready),
-            load_ctrl.dma_resp_data.eq(reader.resp_data),
-            load_ctrl.dma_resp_last.eq(reader.resp_last),
+            load_ctrl.engine_resp_valid.eq(reader.resp_valid),
+            reader.resp_ready.eq(load_ctrl.engine_resp_ready),
+            load_ctrl.engine_resp_data.eq(reader.resp_data),
+            load_ctrl.engine_resp_last.eq(reader.resp_last),
         ]
 
         # LoadController -> Scratchpad (write)
@@ -395,36 +395,36 @@ class SystolicTop(Component):
         ]
 
         # =====================================================================
-        # StoreController <-> StreamWriter <-> Accumulator
+        # StoreController <-> StreamWriter <-> Combiner
         # =====================================================================
 
         # StoreController -> StreamWriter
         m.d.comb += [
-            writer.req_valid.eq(store_ctrl.dma_req_valid),
-            store_ctrl.dma_req_ready.eq(writer.req_ready),
-            writer.req_addr.eq(store_ctrl.dma_req_addr),
-            writer.req_len.eq(store_ctrl.dma_req_len),
-            writer.data_valid.eq(store_ctrl.dma_data_valid),
-            store_ctrl.dma_data_ready.eq(writer.data_ready),
-            writer.data.eq(store_ctrl.dma_data),
-            writer.data_strb.eq(store_ctrl.dma_data_strb),
-            writer.data_last.eq(store_ctrl.dma_data_last),
-            store_ctrl.dma_done.eq(writer.done),
+            writer.req_valid.eq(store_ctrl.engine_req_valid),
+            store_ctrl.engine_req_ready.eq(writer.req_ready),
+            writer.req_addr.eq(store_ctrl.engine_req_addr),
+            writer.req_len.eq(store_ctrl.engine_req_len),
+            writer.data_valid.eq(store_ctrl.engine_data_valid),
+            store_ctrl.engine_data_ready.eq(writer.data_ready),
+            writer.data.eq(store_ctrl.engine_data),
+            writer.data_strb.eq(store_ctrl.engine_data_strb),
+            writer.data_last.eq(store_ctrl.engine_data_last),
+            store_ctrl.engine_done.eq(writer.done),
         ]
 
-        # Accumulator -> StoreController (read)
+        # Combiner -> StoreController (read)
         m.d.comb += [
-            accumulator.read_req.eq(store_ctrl.acc_read_req),
-            accumulator.read_addr.eq(store_ctrl.acc_read_addr),
-            store_ctrl.acc_read_data.eq(accumulator.read_data),
-            store_ctrl.acc_read_valid.eq(accumulator.read_valid),
+            combiner.read_req.eq(store_ctrl.combiner_read_req),
+            combiner.read_addr.eq(store_ctrl.combiner_read_addr),
+            store_ctrl.combiner_read_data.eq(combiner.read_data),
+            store_ctrl.combiner_read_valid.eq(combiner.read_valid),
             # Activation is applied during store
             # StoreController applies its latched activation per element
-            accumulator.read_activation.eq(0),
+            combiner.read_activation.eq(0),
         ]
 
         # =====================================================================
-        # ExecuteController <-> Scratchpad <-> SystolicArray <-> Accumulator
+        # ExecuteController <-> Scratchpad <-> SystolicArray <-> Combiner
         # =====================================================================
 
         # ExecuteController reads A and B on the scratchpad's two read ports
@@ -440,23 +440,23 @@ class SystolicTop(Component):
             exec_ctrl.sp_b_read_valid.eq(scratchpad.read_b_valid),
         ]
 
-        # The accumulator's write port: the ExecuteController's result rows, which
+        # The Combiner's write port: the ExecuteController's result rows, which
         # never wait, and in the clocks they leave free the LoadController's rows
-        # (a LOAD to an accumulator address). The StoreController only reads it.
-        m.d.comb += load_ctrl.acc_write_ready.eq(~exec_ctrl.acc_write_req)
-        with m.If(exec_ctrl.acc_write_req):
+        # (a LOAD to a Combiner address). The StoreController only reads it.
+        m.d.comb += load_ctrl.combiner_write_ready.eq(~exec_ctrl.combiner_write_req)
+        with m.If(exec_ctrl.combiner_write_req):
             m.d.comb += [
-                accumulator.write_req.eq(1),
-                accumulator.write_addr.eq(exec_ctrl.acc_write_addr),
-                accumulator.write_data.eq(exec_ctrl.acc_write_data),
-                accumulator.accumulate.eq(exec_ctrl.acc_accumulate),
+                combiner.write_req.eq(1),
+                combiner.write_addr.eq(exec_ctrl.combiner_write_addr),
+                combiner.write_data.eq(exec_ctrl.combiner_write_data),
+                combiner.accumulate.eq(exec_ctrl.combiner_accumulate),
             ]
         with m.Else():
             m.d.comb += [
-                accumulator.write_req.eq(load_ctrl.acc_write_en),
-                accumulator.write_addr.eq(load_ctrl.acc_write_addr),
-                accumulator.write_data.eq(load_ctrl.acc_write_data),
-                accumulator.accumulate.eq(load_ctrl.acc_write_accumulate),
+                combiner.write_req.eq(load_ctrl.combiner_write_en),
+                combiner.write_addr.eq(load_ctrl.combiner_write_addr),
+                combiner.write_data.eq(load_ctrl.combiner_write_data),
+                combiner.accumulate.eq(load_ctrl.combiner_write_accumulate),
             ]
 
         # =====================================================================

@@ -1,12 +1,12 @@
 """Utility modules for systars accelerator."""
 
 from .commands import (
+    # Descriptor-based BlockMover API
+    BlockMoverDescriptor,
+    BlockMoverFlags,
+    BlockMoverOpcode,
     ConfigFlags,
     DescriptorChain,
-    # Descriptor-based DMA API
-    DmaDescriptor,
-    DmaFlags,
-    DmaOpcode,
     # Execute controller API
     ExecOpcode,
     MemoryRegion,
@@ -26,10 +26,10 @@ from .commands import (
 )
 
 __all__ = [
-    # Descriptor-based DMA API
-    "DmaDescriptor",
-    "DmaFlags",
-    "DmaOpcode",
+    # Descriptor-based BlockMover API
+    "BlockMoverDescriptor",
+    "BlockMoverFlags",
+    "BlockMoverOpcode",
     "DescriptorChain",
     "MemoryRegion",
     "make_memcpy",

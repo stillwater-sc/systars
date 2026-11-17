@@ -18,7 +18,7 @@ from systars.controller.sync import Sync
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.matmul import IS, OS, WS, Matmul, MatmulCmd, MatmulError
 from systars.top import SystolicTop
-from systars.util.commands import DmaOpcode, ExecOpcode
+from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
 from ._axi import axi_memory
 from ._isa import TopModel, from_bytes, run_isa, to_unsigned_bytes
@@ -32,7 +32,7 @@ DF_IDS = ["os", "ws", "is"]
 
 def config(grid=4, tile=1, **overrides):
     fields = {"grid_rows": grid, "grid_cols": grid, "tile_rows": tile, "tile_cols": tile}
-    fields.update(sp_capacity_kb=4, acc_capacity_kb=4, dataflow=ALL)
+    fields.update(sp_capacity_kb=4, combiner_capacity_kb=4, dataflow=ALL)
     fields.update(overrides)
     return SystolicConfig(**fields)
 
@@ -151,7 +151,7 @@ class TestCommandStream:
         stores = [c for c in cmds if c.type == CTRL_STORE]
         execs = [c.opcode for c in cmds[1:] if c.type == CTRL_EXEC]
         # The corner turns lay the tiles out as the Streamer streams them
-        T, M_ = DmaOpcode.TRANSPOSE, DmaOpcode.MEMCPY
+        T, M_ = BlockMoverOpcode.TRANSPOSE, BlockMoverOpcode.MEMCPY
         a_op, b_op = (M_, T) if dataflow == OS else (T, M_)
         assert [c.opcode for c in loads] == [a_op, b_op] * 2
         assert {c.opcode for c in stores} == {T if dataflow == IS else M_}
@@ -194,13 +194,13 @@ class TestCommandStream:
     @pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
     def test_credits_and_tokens(self, dataflow):
         """Each tile is a slot: LOAD takes its credit and emits its token; PRELOAD and
-        COMPUTE wait for the token and return the credit; COMPUTE takes the accumulator
+        COMPUTE wait for the token and return the credit; COMPUTE takes the Combiner
         credit on the first K tile and emits the result token on the last; STORE waits
         for it and returns the credit. OS reads both tiles of a pair in one COMPUTE, so
         the pair is one slot (the A slot): its A LOAD takes the credit and its B LOAD
         emits the token."""
         cfg = config()
-        # Two K tiles, two N tiles: the slot pairs and accumulator slots rotate
+        # Two K tiles, two N tiles: the slot pairs and Combiner slots rotate
         cmds = run_isa(
             Matmul(cfg), setup(4, 8, 8, 8, 8, 32, dataflow=dataflow), MatmulCmd.START
         ).commands[1:]
@@ -237,7 +237,7 @@ class TestCommandStream:
     @pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
     def test_one_buffer_gives_the_same_results(self, dataflow):
         cfg = config()
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         for buffers in (1, 2):
             check_numerically(
                 cfg, 9, 6, 10, 2 * beat, beat, 6 * 4, buffers=buffers, dataflow=dataflow
@@ -247,38 +247,38 @@ class TestCommandStream:
         with pytest.raises(ValueError, match="L2 slots"):
             Matmul(config(), buffers=3)
         with pytest.raises(ValueError, match="scratchpad rows"):
-            Matmul(config(grid=16, sp_capacity_kb=1, l2_slots=16, acc_slots=8), buffers=8)
+            Matmul(config(grid=16, sp_capacity_kb=1, l2_slots=16, combiner_slots=8), buffers=8)
 
     def test_activation_reaches_store(self):
         cfg = config()
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         cmds = run_isa(
             Matmul(cfg), setup(2, 2, 2, beat, beat, beat, options=1 << 1), MatmulCmd.START
         ).commands
         assert {c.activation for c in cmds if c.type == CTRL_STORE} == {1}
 
     @pytest.mark.parametrize("dataflow", DATAFLOWS, ids=DF_IDS)
-    def test_accumulator_loads(self, dataflow):
-        """Each output tile first loads D (taking the accumulator slot's credit), then
+    def test_combiner_loads(self, dataflow):
+        """Each output tile first loads D (taking the Combiner slot's credit), then
         the existing C (added onto D); the COMPUTEs accumulate onto them, and the first
-        takes no accumulator credit. IS holds Cᵀ, so it loads both with the corner turn."""
+        takes no Combiner credit. IS holds Cᵀ, so it loads both with the corner turn."""
         cfg = config()
         cmds = run_isa(
             Matmul(cfg),
             setup(4, 8, 4, 4, 8, 32, d_addr=D_ADDR, d_stride=0, options=1, dataflow=dataflow),
             MatmulCmd.START,
         ).commands[1:]
-        acc_flag, add = 1 << 31, 1 << 30
+        combiner_flag, add = 1 << 31, 1 << 30
         turn = dataflow == IS
-        d_op = DmaOpcode.BROADCAST_TRANSPOSE if turn else DmaOpcode.BROADCAST
-        c_op = DmaOpcode.TRANSPOSE if turn else DmaOpcode.MEMCPY
+        d_op = BlockMoverOpcode.BROADCAST_TRANSPOSE if turn else BlockMoverOpcode.BROADCAST
+        c_op = BlockMoverOpcode.TRANSPOSE if turn else BlockMoverOpcode.MEMCPY
         for n_tile, acc in enumerate([0, 4]):
             tile = cmds[n_tile * len(cmds) // 2 :][:2]
             assert [(c.type, c.opcode, c.local_addr, c.dram_addr, c.len, c.row_bytes, c.sync)
                     for c in tile] == [
-                (CTRL_LOAD, d_op, acc_flag | acc, D_ADDR + 16 * n_tile, 4, 16,
+                (CTRL_LOAD, d_op, combiner_flag | acc, D_ADDR + 16 * n_tile, 4, 16,
                  n_tile << Sync.DST | Sync.ACQUIRE),
-                (CTRL_LOAD, c_op, acc_flag | add | acc, C_ADDR + 16 * n_tile, 4, 16,
+                (CTRL_LOAD, c_op, combiner_flag | add | acc, C_ADDR + 16 * n_tile, 4, 16,
                  n_tile << Sync.DST),
             ]  # fmt: skip
         computes = [c for c in cmds if c.type == CTRL_EXEC and c.opcode != ExecOpcode.PRELOAD]
@@ -288,7 +288,7 @@ class TestCommandStream:
 
     def test_backpressure_does_not_change_the_stream(self):
         cfg = config()
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         cmds = setup(5, 3, 4, beat, beat, beat)
         fast = run_isa(Matmul(cfg), cmds, MatmulCmd.START).commands
         slow = run_isa(Matmul(cfg), cmds, MatmulCmd.START, ready_every=3, latency=5).commands
@@ -302,7 +302,7 @@ class TestNumerical:
     def test_beat_spaced_rows(self, grid, tile, M, dataflow):
         cfg = config(grid=grid, tile=tile)
         dim = grid * tile
-        beat = cfg.dma_buswidth // 8
+        beat = cfg.blockmover_buswidth // 8
         check_numerically(cfg, M, dim, dim, beat, beat, beat, dataflow=dataflow)
         check_numerically(
             cfg, M, dim - 1, max(1, dim - 1), 2 * beat, beat, beat, seed=1, dataflow=dataflow
@@ -322,7 +322,7 @@ class TestNumerical:
     @pytest.mark.parametrize("M,N,K", [(4, 4, 4), (9, 7, 10), (5, 11, 3)])
     def test_bias(self, M, N, K, bias, dataflow):
         """C = A @ B + D: D (a matrix, or one row added to every row of C) is loaded
-        into the accumulator before the first K tile."""
+        into the Combiner before the first K tile."""
         check_numerically(config(), M, N, K, K, N, N * 4, seed=M * N, dataflow=dataflow, bias=bias)
 
     @pytest.mark.parametrize("bias", [None, "matrix", "row"])
@@ -350,7 +350,7 @@ class TestErrors:
         assert not result.commands
 
     def test_zero_dimension(self):
-        beat = config().dma_buswidth // 8
+        beat = config().blockmover_buswidth // 8
         result = self.run(config(), setup(0, 4, 4, beat, beat, beat))
         assert result.error_code == MatmulError.INVALID_DIMS
 
@@ -373,7 +373,7 @@ class TestErrors:
          (Dataflow.B_STATIONARY, OS), (Dataflow.OUTPUT_STATIONARY, WS)],
     )  # fmt: skip
     def test_dataflow_must_be_built(self, dataflow, selected):
-        beat = config().dma_buswidth // 8
+        beat = config().blockmover_buswidth // 8
         cfg = config(dataflow=dataflow)
         result = self.run(cfg, setup(4, 4, 4, beat, beat, beat, dataflow=selected))
         assert result.error_code == MatmulError.UNSUPPORTED_DATAFLOW
@@ -403,7 +403,7 @@ def run_on_top(cfg, M, N, K, dataflow, *, seed, bias=None, accumulate=False):
 
     Returns C read back from L3, the expected C, and whether every byte outside C
     kept its value."""
-    beat = cfg.dma_buswidth // 8
+    beat = cfg.blockmover_buswidth // 8
     rng = np.random.default_rng(seed)
     A, B, D, C0, expected = operands(rng, M, N, K, bias=bias, accumulate=accumulate)
     a_addr, b_addr, c_addr, d_addr = A_ADDR + 1, B_ADDR + 7, C_ADDR + 3, D_ADDR + 5
@@ -474,7 +474,7 @@ def test_matmul_drives_systolic_top(grid, tile, M, N, K, dataflow):
 )
 def test_matmul_with_bias_drives_systolic_top(bias, accumulate, dataflow):
     """C = A @ B + D, and C += A @ B, on a real SystolicTop: the BlockMover loads D
-    and the existing C into the accumulator, tiled in M, N and K with edge tiles."""
+    and the existing C into the Combiner, tiled in M, N and K with edge tiles."""
     C, expected, untouched = run_on_top(
         config(), 9, 7, 10, dataflow, seed=11, bias=bias, accumulate=accumulate
     )

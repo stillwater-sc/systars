@@ -1,7 +1,7 @@
 """
-Element-wise activation functions on packed accumulator rows.
+Element-wise activation functions on packed Combiner rows.
 
-An accumulator row packs ``n_elems`` signed elements of ``elem_bits`` each
+A Combiner row packs ``n_elems`` signed elements of ``elem_bits`` each
 (element 0 in the least-significant bits). Activations are applied to each
 element independently. Comparing the packed row as one signed number would
 test only the sign of the top element.
