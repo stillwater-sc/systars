@@ -87,9 +87,6 @@ class SystolicConfig:
     acc_bits: int = 32
     """Accumulate width of the MAC (typically 32 for INT32); also the Combiner's element width."""
 
-    output_bits: int = 20
-    """Bit width of PE output before accumulation."""
-
     # =========================================================================
     # Dataflow Configuration
     # =========================================================================
@@ -116,9 +113,6 @@ class SystolicConfig:
     sp_banks: int = 4
     """Number of scratchpad banks (more banks = more parallelism)."""
 
-    sp_singleported: bool = True
-    """If True, scratchpad banks are single-ported (saves area)."""
-
     spad_read_delay: int = 4
     """Read latency from scratchpad in cycles."""
 
@@ -131,28 +125,16 @@ class SystolicConfig:
     combiner_banks: int = 2
     """Number of Combiner banks."""
 
-    combiner_sub_banks: int = 1
-    """Sub-banks within each Combiner bank (for single-ported designs)."""
-
-    combiner_singleported: bool = False
-    """If True, Combiner banks are single-ported."""
-
     combiner_latency: int = 2
     """Combiner access latency in cycles."""
 
     # =========================================================================
     # BlockMover Configuration
     # =========================================================================
-    blockmover_maxbytes: int = 64
-    """Maximum bytes per BlockMover transaction."""
-
     blockmover_buswidth: int = 0
     """BlockMover bus width in bits. 0 (default) = automatic: the widest scratchpad or
     Combiner row, at least 128 bits, rounded up to a power of two. The BlockMover
     moves one row per beat, so an explicit width must be at least that wide."""
-
-    max_in_flight_reqs: int = 16
-    """Maximum number of in-flight BlockMover requests."""
 
     # =========================================================================
     # Queue Depths
@@ -175,45 +157,6 @@ class SystolicConfig:
 
     combiner_slots: int = 2
     """Tile slots in the Combiner, one credit each."""
-
-    # =========================================================================
-    # Reservation Station Configuration
-    # =========================================================================
-    rs_entries_ld: int = 8
-    """Reservation station entries for load commands."""
-
-    rs_entries_st: int = 4
-    """Reservation station entries for store commands."""
-
-    rs_entries_ex: int = 16
-    """Reservation station entries for execute commands."""
-
-    # =========================================================================
-    # Feature Flags
-    # =========================================================================
-    has_training_convs: bool = True
-    """Enable training convolution support (transpose convs)."""
-
-    has_max_pool: bool = True
-    """Enable max pooling during store operations."""
-
-    has_nonlinear_activations: bool = True
-    """Enable nonlinear activation functions (ReLU, etc.)."""
-
-    has_normalizations: bool = False
-    """Enable normalization operations (LayerNorm, etc.)."""
-
-    has_first_layer_optimizations: bool = True
-    """Enable first-layer optimizations (pixel repeats)."""
-
-    # =========================================================================
-    # Pipeline Tuning
-    # =========================================================================
-    tile_latency: int = 0
-    """Pipeline latency within a tile (0 = combinational)."""
-
-    array_output_delay: int = 1
-    """Output delay from SystolicArray in cycles."""
 
     # =========================================================================
     # Computed Properties
@@ -285,16 +228,6 @@ class SystolicConfig:
         """Bits needed for unified local address (max of sp and acc)."""
         return max(self.sp_addr_bits, self.combiner_addr_bits)
 
-    @property
-    def max_block_len(self) -> int:
-        """Maximum block length for scratchpad transfers."""
-        return self.blockmover_maxbytes // self.sp_width_bytes
-
-    @property
-    def max_block_len_combiner(self) -> int:
-        """Maximum block length for Combiner transfers."""
-        return self.blockmover_maxbytes // self.combiner_width_bytes
-
     def __post_init__(self):
         """Validate configuration parameters."""
         if self.blockmover_buswidth == 0:
@@ -348,20 +281,13 @@ class SystolicConfig:
 DEFAULT_CONFIG = SystolicConfig()
 """Default configuration."""
 
-LEAN_CONFIG = SystolicConfig(
-    dataflow=Dataflow.B_STATIONARY,
-    max_in_flight_reqs=64,
-    has_normalizations=False,
-)
+LEAN_CONFIG = SystolicConfig(dataflow=Dataflow.B_STATIONARY)
 """Lean configuration for faster simulation."""
 
 CHIP_CONFIG = SystolicConfig(
     sp_capacity_kb=64,
     combiner_capacity_kb=32,
     dataflow=Dataflow.B_STATIONARY,
-    combiner_singleported=True,
-    combiner_sub_banks=2,
-    array_output_delay=2,
 )
 """Configuration optimized for tapeout."""
 

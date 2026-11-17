@@ -190,6 +190,12 @@ The code sketches below keep the plan's paths, relative to the package.
 
 ### 1.2 Configuration System
 
+The plan's configuration, after Gemmini's. `SystolicConfig` has since dropped the fields no
+RTL read: `output_bits`, the single-port and sub-bank options, `blockmover_maxbytes`,
+`max_in_flight_reqs`, the reservation-station sizes, the feature switches and the pipeline
+delays (#42). `src/systars/config.py` is the current one, and `tests/unit/test_config.py`
+checks that the RTL reads every field.
+
 ```python
 # config.py
 from dataclasses import dataclass, field

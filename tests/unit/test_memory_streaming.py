@@ -32,7 +32,6 @@ class TestMemoryStreaming:
         """Configuration for tests."""
         return SystolicConfig(
             blockmover_buswidth=128,
-            blockmover_maxbytes=64,
             grid_rows=2,
             grid_cols=2,
             tile_rows=1,
@@ -310,7 +309,6 @@ class TestMemoryStreamingVerilogGeneration:
 
         config = SystolicConfig(
             blockmover_buswidth=128,
-            blockmover_maxbytes=64,
             grid_rows=2,
             grid_cols=2,
         )

@@ -33,7 +33,6 @@ class TestDescriptorEngine:
         """Configuration for tests."""
         return SystolicConfig(
             blockmover_buswidth=128,  # 16 bytes per beat
-            blockmover_maxbytes=64,
             grid_rows=4,
             grid_cols=4,
         )
@@ -569,7 +568,7 @@ class TestDescriptorEngineVerilogGeneration:
         except Exception:
             pytest.skip("Yosys not found")
 
-        config = SystolicConfig(blockmover_buswidth=128, blockmover_maxbytes=64)
+        config = SystolicConfig(blockmover_buswidth=128)
         engine = DescriptorEngine(config)
 
         output = verilog.convert(engine, name="DescriptorEngine")
@@ -603,9 +602,7 @@ class TestDescriptorEngineTransfers:
         ],
     )
     def test_full_transfer(self, opcode, beats):
-        config = SystolicConfig(
-            blockmover_buswidth=128, blockmover_maxbytes=64, grid_rows=4, grid_cols=4
-        )
+        config = SystolicConfig(blockmover_buswidth=128, grid_rows=4, grid_cols=4)
         engine = DescriptorEngine(config)
         bpb = config.blockmover_buswidth // 8
         desc_bytes = BlockMoverDescriptor(

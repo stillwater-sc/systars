@@ -244,6 +244,21 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **`SystolicConfig` lost the 16 fields no RTL read** (#42, 2026-11-17; port of
+  branes-ai/embodied-ai-soc-generator#96). They were Gemmini's array options, carried over by
+  SYSTARS:
+  - the reservation-station sizes (`rs_entries_*`);
+  - the feature switches (`has_*`);
+  - the pipeline delays (`tile_latency`, `array_output_delay`);
+  - `output_bits`, `sp_singleported`, `combiner_sub_banks`, `combiner_singleported`,
+    `blockmover_maxbytes` and `max_in_flight_reqs`, with the unused `max_block_len*`
+    properties.
+
+  The presets lose their values for them. `ld/st/ex_queue_length` stay, since they size the
+  processes' command queues. `tests/unit/test_config.py` checks that the RTL reads every
+  config field, from the syntax trees (a comment or docstring is no read, a property's
+  reads count). The generated Verilog is unchanged.
+
 - **The tile's blocks carry the KPU model's names** (#37, 2026-11-17; port of
   branes-ai/embodied-ai-soc-generator#67, kpugen PR #72). A rename only: the Verilog differs
   from main only in names.
