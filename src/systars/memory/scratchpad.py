@@ -39,6 +39,7 @@ from amaranth.lib.memory import Memory
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import SystolicConfig
+from ..errors import L2Error
 from .local_addr import LocalAddr
 
 
@@ -162,6 +163,7 @@ def _ports(width: int) -> dict:
         "write_data": In(unsigned(width)),
         "write_mask": In(unsigned(width // 8)),
         "error": Out(1),
+        "error_kind": Out(4),
     }
 
 
@@ -175,6 +177,8 @@ class Scratchpad(Component):
         read_b_*: read port B, the same
         write_req, write_addr, write_data, write_mask: the write port
         error: sticky, an access the macros can't take
+        error_kind: the first such access's ``L2Error`` (tiles/systolic/errors.py), from
+            the clock ``error`` rises
     """
 
     def __init__(self, config: SystolicConfig):
@@ -196,19 +200,22 @@ class Scratchpad(Component):
 
         error_now = Signal()
         error = Signal()
+        kind = Signal(4)
         m.d.sync += error.eq(error | error_now)
-        m.d.comb += self.error.eq(error)
-        faults = []
+        m.d.comb += [self.error.eq(error), self.error_kind.eq(kind)]
+        faults = []  # (L2Error, condition), the first listed wins a clock with several
 
         # Read ports A and B, decoded
         reads = []
         for tag, req, addr in (("a", self.read_req, self.read_addr), ("b", self.read_b_req, self.read_b_addr)):  # fmt: skip
             group, bank, bank_row, out = lay.decode(m, addr, f"rd_{tag}")
             reads.append((tag, req, group, bank, bank_row))
-            faults.append(req & out)
+            faults.append(
+                (L2Error.READ_A_PAST_L2 if tag == "a" else L2Error.READ_B_PAST_L2, req & out)
+            )
         (_, a_req, a_group, a_bank, a_row), (_, b_req, b_group, b_bank, b_row) = reads
         # Both reads in one group: port A keeps it, port B's data is wrong
-        faults.append(a_req & b_req & (a_group == b_group))
+        faults.append((L2Error.READS_SAME_GROUP, a_req & b_req & (a_group == b_group)))
 
         # The crossbar: each group's read port serves whichever port addresses it
         for g, group in enumerate(groups):
@@ -242,7 +249,7 @@ class Scratchpad(Component):
 
         # The write port: route to its bank
         w_group, w_bank, w_row, w_out = lay.decode(m, self.write_addr, "wr")
-        faults.append(self.write_req & w_out)
+        faults.append((L2Error.WRITE_PAST_L2, self.write_req & w_out))
         for g, group in enumerate(groups):
             for b, bank in enumerate(group):
                 m.d.comb += [
@@ -257,17 +264,21 @@ class Scratchpad(Component):
         occ = cfg.l2_bank_occupancy
         if occ > 1:
             for i, bank in enumerate(self.banks):
-                for kind, en in (("rd", bank.read_en), ("wr", bank.write_en)):
-                    busy = Signal(range(occ), name=f"bank_{i}_{kind}_busy")
+                for port, en in (("rd", bank.read_en), ("wr", bank.write_en)):
+                    busy = Signal(range(occ), name=f"bank_{i}_{port}_busy")
                     with m.If(en):
                         m.d.sync += busy.eq(occ - 1)
                     with m.Elif(busy != 0):
                         m.d.sync += busy.eq(busy - 1)
-                    faults.append(en & (busy != 0))
+                    busy_kind = L2Error.READ_BANK_BUSY if port == "rd" else L2Error.WRITE_BANK_BUSY
+                    faults.append((busy_kind, en & (busy != 0)))
 
-        for f in faults:
+        kind_now = Signal(4)
+        for k, f in reversed(faults):  # the first listed is assigned last, so it wins
             with m.If(f):
-                m.d.comb += error_now.eq(1)
+                m.d.comb += [error_now.eq(1), kind_now.eq(k)]
+        with m.If(error_now & ~error):  # the first error's kind, valid as `error` rises
+            m.d.sync += kind.eq(kind_now)
         return m
 
 

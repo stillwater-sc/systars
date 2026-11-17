@@ -45,6 +45,21 @@ from .controller.blockmover_out import BlockMoverOut
 from .controller.streamer import Streamer
 from .controller.sync import SlotPool, Sync
 from .core.systolic_array import SystolicArray
+from .errors import (
+    CMD_ID,
+    CMD_TYPE,
+    CMD_VALID,
+    KIND,
+    KIND_BITS,
+    MULTI,
+    SOURCE,
+    ErrorSource,
+    L2Error,
+    SlotError,
+    SlotPoolId,
+    axi_kind,
+    sync_kind,
+)  # fmt: skip
 from .memory.combiner import Combiner
 from .memory.epilogue import PROFILES
 from .memory.local_addr import LocalAddr
@@ -91,6 +106,13 @@ class SystolicTop(Component):
             l1_error: Sticky L1/fabric schedule error
             l2_error: Sticky L2 access its macros can't take (memory/scratchpad.py)
             interrupt: Interrupt request
+
+        First-error capture (errors.py, #84):
+            cycle: Free-running clock counter (the CSR CYCLE)
+            err_info: The first error event since reset or the last err_rearm: its source,
+                kind and command, packed as the CSR ERR_INFO (``errors.FirstError``)
+            err_cycle: The cycle it was seen (ERR_CYCLE)
+            err_rearm: Strobe: forget the capture, so the next error event is recorded
     """
 
     # Controller type constants
@@ -201,6 +223,11 @@ class SystolicTop(Component):
             **{f"cmb_clip_{n}": In(32) for n in range(PROFILES)},
             # Sticky L2 bank conflict (memory/scratchpad.py)
             "l2_error": Out(1),
+            # The first-error capture (errors.py, #84)
+            "cycle": Out(32),
+            "err_info": Out(32),
+            "err_cycle": Out(32),
+            "err_rearm": In(1),
         }
 
         super().__init__(ports)
@@ -599,4 +626,113 @@ class SystolicTop(Component):
         # Interrupt (could be extended)
         m.d.comb += self.interrupt.eq(0)
 
+        self._first_error(m, scratchpad, streamer, l2, acc)
+
         return m
+
+    def _first_error(self, m, scratchpad, streamer, l2_pool, combiner_pool):
+        """Latch the first error event: a sticky bit rising (L1, L2, SYNC) or an AXI error
+        response, with its source, kind and the command responsible (errors.py)."""
+        cycle = Signal(32)
+        m.d.sync += cycle.eq(cycle + 1)
+        m.d.comb += self.cycle.eq(cycle)
+
+        # Per process: the command it started last (valid once it has started one), and
+        # the command at its queue's head (``*_started_id`` carries the head's ID always)
+        last, started, head = {}, {}, {}
+        for name, ctrl_type in (("bm_in", self.CTRL_LOAD), ("bm_out", self.CTRL_STORE),
+                                ("streamer", self.CTRL_EXEC)):  # fmt: skip
+            last_id = Signal(8, name=f"{name}_last_id")
+            has_started = Signal(name=f"{name}_has_started")
+            with m.If(getattr(self, f"{name}_started")):
+                m.d.sync += [last_id.eq(getattr(self, f"{name}_started_id")), has_started.eq(1)]
+            last[ctrl_type], started[ctrl_type] = last_id, has_started
+            head[ctrl_type] = getattr(self, f"{name}_started_id")
+
+        def risen(bit, name):
+            prev = Signal(name=f"{name}_prev")
+            m.d.sync += prev.eq(bit)
+            return bit & ~prev
+
+        def any_of(value, kinds):
+            return Cat(*[value == k for k in kinds]).any()
+
+        # Which process a kind names. SYNC: the port at fault, per pool. A slot number
+        # past the pool is the queue head's (a command that never starts); every other
+        # kind is the command the process started last
+        S = SlotError
+        prod = {S.TAKE_NOT_FREE, S.SIGNAL_NOT_OWNED, S.PROD_NO_SUCH_SLOT}
+        fill = {S.FILL_TAKE_NOT_FREE, S.FILL_SIGNAL_NOT_OWNED, S.FILL_NO_SUCH_SLOT}
+        cons = {S.WAIT_NOT_READY, S.RELEASE_NOT_HELD, S.CONS_NO_SUCH_SLOT, S.TAKE_AND_RELEASE}
+        queued = {S.PROD_NO_SUCH_SLOT, S.FILL_NO_SUCH_SLOT, S.CONS_NO_SUCH_SLOT}
+        pools = (
+            (l2_pool, SlotPoolId.L2, {self.CTRL_LOAD: prod, self.CTRL_EXEC: cons}),
+            (combiner_pool, SlotPoolId.COMBINER,
+             {self.CTRL_EXEC: prod, self.CTRL_LOAD: fill, self.CTRL_STORE: cons}),
+        )  # fmt: skip
+        l2_writes = {L2Error.WRITE_PAST_L2, L2Error.WRITE_BANK_BUSY}  # the LOAD's writes
+
+        # Events, in priority order for a clock with several:
+        # (fired, source, kind, names a process, the process, its queue head's command)
+        events = []
+        l2_kind = scratchpad.error_kind
+        l2_proc = Mux(any_of(l2_kind, l2_writes), self.CTRL_LOAD, self.CTRL_EXEC)
+        events.append((risen(scratchpad.error, "l2_error"), ErrorSource.L2, l2_kind, 1, l2_proc, 0))
+        events.append((risen(streamer.error, "l1_error"), ErrorSource.L1,
+                       streamer.error_kind, 1, self.CTRL_EXEC, 0))  # fmt: skip
+        for pool, pool_id, owners in pools:
+            kind = pool.error_kind
+            tag = pool_id.name.lower()
+            proc = Signal(2, name=f"{tag}_slot_err_proc")
+            named = Signal(name=f"{tag}_slot_err_named")
+            for ctrl_type, kinds in owners.items():
+                with m.If(any_of(kind, kinds)):
+                    m.d.comb += [proc.eq(ctrl_type), named.eq(1)]
+            events.append((risen(pool.error, f"{tag}_slot_error"), ErrorSource.SYNC,
+                           sync_kind(pool_id, 0) | kind, named, proc, any_of(kind, queued)))  # fmt: skip
+        for write, valid, ready, resp, ctrl_type in (
+            (False, self.axi_rvalid, self.axi_rready, self.axi_rresp, self.CTRL_LOAD),
+            (True, self.axi_bvalid, self.axi_bready, self.axi_bresp, self.CTRL_STORE),
+        ):
+            events.append((valid & ready & (resp != 0), ErrorSource.AXI,
+                           axi_kind(write, 0) | resp << 2, 1, ctrl_type, 0))  # fmt: skip
+
+        # The highest-priority event of the clock, and whether there was another
+        any_event = Signal()
+        source = Signal(3)
+        kind = Signal(KIND_BITS)
+        named = Signal()
+        proc = Signal(2)
+        from_head = Signal()
+        for fired, src, k, nm, p, hd in reversed(events):
+            with m.If(fired):
+                m.d.comb += [any_event.eq(1), source.eq(src), kind.eq(k), named.eq(nm),
+                             proc.eq(p), from_head.eq(hd)]  # fmt: skip
+        multi = Signal()
+        m.d.comb += multi.eq(sum(e[0].as_unsigned() for e in events) > 1)
+        cmd_id = Signal(8)
+        cmd_valid = Signal()
+        with m.Switch(proc):
+            for ctrl_type in last:
+                with m.Case(ctrl_type):
+                    m.d.comb += [
+                        cmd_id.eq(Mux(from_head, head[ctrl_type], last[ctrl_type])),
+                        # A process that has started nothing has no last command to name
+                        cmd_valid.eq(named & (from_head | started[ctrl_type])),
+                    ]
+
+        valid = Signal()
+        info = Signal(32)
+        at = Signal(32)
+        with m.If(any_event & (~valid | self.err_rearm)):
+            m.d.sync += [
+                valid.eq(1),
+                info.eq(1 | source << SOURCE[0] | kind << KIND[0]
+                        | Mux(cmd_valid, 1 << CMD_VALID[0] | proc << CMD_TYPE[0]
+                              | cmd_id << CMD_ID[0], 0)
+                        | multi << MULTI[0]),
+                at.eq(cycle),
+            ]  # fmt: skip
+        with m.Elif(self.err_rearm):
+            m.d.sync += [valid.eq(0), info.eq(0), at.eq(0)]
+        m.d.comb += [self.err_info.eq(info), self.err_cycle.eq(at)]

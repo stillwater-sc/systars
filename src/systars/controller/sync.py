@@ -72,6 +72,8 @@ from typing import NamedTuple
 from amaranth import Cat, Const, Module, Signal, Value
 from amaranth.lib.wiring import Component, In, Out
 
+from ..errors import SlotError
+
 SLOT_BITS = 4  # Slot tags are 4 bits: up to 16 slots per pool
 
 
@@ -159,6 +161,8 @@ class SlotPool(Component):
         Status:
             free, ready: Per-slot state bits (OWNED and READING = neither)
             error: Sticky protocol error (see the module docstring)
+            error_kind: The first such error's ``SlotError`` (tiles/systolic/errors.py),
+                from the clock ``error`` rises
     """
 
     def __init__(self, slots: int, producers: int = 1):
@@ -198,6 +202,7 @@ class SlotPool(Component):
                 "free": Out(slots),
                 "ready": Out(slots),
                 "error": Out(1),
+                "error_kind": Out(4),
             }
         )
 
@@ -222,9 +227,16 @@ class SlotPool(Component):
                 m.d.comb += self.cons_ready.eq(state[s] == SlotState.READY)
 
         error = Signal()
-        m.d.comb += self.error.eq(error)
+        kind = Signal(4)
+        m.d.comb += [self.error.eq(error), self.error_kind.eq(kind)]
 
-        def transition(strobe, slot, src, dst):
+        def fault(k: SlotError):
+            """Raise the error (in the current condition); the first one's kind is kept."""
+            m.d.sync += error.eq(1)
+            with m.If(~error):
+                m.d.sync += kind.eq(k)
+
+        def transition(strobe, slot, src, dst, bad: SlotError, no_slot: SlotError):
             sources = src if isinstance(src, tuple) else (src,)
             for s in range(n):
                 with m.If(strobe & (slot == s)):
@@ -234,42 +246,51 @@ class SlotPool(Component):
                     with m.If(from_ok):
                         m.d.sync += state[s].eq(dst)
                     with m.Else():
-                        m.d.sync += error.eq(1)
+                        fault(bad)
             if n < 1 << SLOT_BITS:
                 with m.If(strobe & (slot >= n)):
-                    m.d.sync += error.eq(1)
+                    fault(no_slot)
 
         # Each transition starts from a different state, so at most one applies to a
         # slot in a cycle (a take and a RELEASE without WAIT of one READY slot at once
         # is a protocol error)
-        transition(self.prod_take, self.prod_slot, SlotState.FREE, SlotState.OWNED)
-        transition(self.prod_signal, self.prod_signal_slot, SlotState.OWNED, SlotState.READY)
+        E = SlotError
+        transition(self.prod_take, self.prod_slot, SlotState.FREE, SlotState.OWNED,
+                   E.TAKE_NOT_FREE, E.PROD_NO_SUCH_SLOT)  # fmt: skip
+        transition(self.prod_signal, self.prod_signal_slot, SlotState.OWNED, SlotState.READY,
+                   E.SIGNAL_NOT_OWNED, E.PROD_NO_SUCH_SLOT)  # fmt: skip
         if self.producers == 2:
-            transition(self.fill_take, self.fill_slot, SlotState.FREE, SlotState.OWNED)
-            transition(self.fill_signal, self.fill_signal_slot, SlotState.OWNED, SlotState.READY)
+            transition(self.fill_take, self.fill_slot, SlotState.FREE, SlotState.OWNED,
+                       E.FILL_TAKE_NOT_FREE, E.FILL_NO_SUCH_SLOT)  # fmt: skip
+            transition(self.fill_signal, self.fill_signal_slot, SlotState.OWNED, SlotState.READY,
+                       E.FILL_SIGNAL_NOT_OWNED, E.FILL_NO_SUCH_SLOT)  # fmt: skip
             # Two producers moving one slot in a clock (a take is excluded above)
             with m.If(
                 self.prod_signal
                 & self.fill_signal
                 & (self.prod_signal_slot == self.fill_signal_slot)
             ):
-                m.d.sync += error.eq(1)
-        transition(self.cons_take, self.cons_slot, SlotState.READY, SlotState.READING)
+                fault(E.DOUBLE_SIGNAL)
+        transition(self.cons_take, self.cons_slot, SlotState.READY, SlotState.READING,
+                   E.WAIT_NOT_READY, E.CONS_NO_SUCH_SLOT)  # fmt: skip
         transition(
             self.cons_release, self.cons_release_slot,
             (SlotState.READING, SlotState.READY), SlotState.FREE,
+            E.RELEASE_NOT_HELD, E.CONS_NO_SUCH_SLOT,
         )  # fmt: skip
         with m.If(self.cons_take & self.cons_release & (self.cons_slot == self.cons_release_slot)):
-            m.d.sync += error.eq(1)
+            fault(E.TAKE_AND_RELEASE)
 
         # A head command naming a slot outside the pool would wait forever
         if n < 1 << SLOT_BITS:
-            outside = (self.prod_acquire & (self.prod_slot >= n)) | (
-                self.cons_wait & (self.cons_slot >= n)
-            )
+            outside = [
+                (self.cons_wait & (self.cons_slot >= n), E.CONS_NO_SUCH_SLOT),
+                (self.prod_acquire & (self.prod_slot >= n), E.PROD_NO_SUCH_SLOT),
+            ]
             if self.producers == 2:
-                outside = outside | (self.fill_acquire & (self.fill_slot >= n))
-            with m.If(outside):
-                m.d.sync += error.eq(1)
+                outside.append((self.fill_acquire & (self.fill_slot >= n), E.FILL_NO_SUCH_SLOT))
+            for cond, k in outside:
+                with m.If(cond):
+                    fault(k)
 
         return m
