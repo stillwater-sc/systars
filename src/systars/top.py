@@ -232,6 +232,20 @@ class SystolicTop(Component):
 
         super().__init__(ports)
 
+        # The submodules are built here, not in elaborate(), so a testbench or a trace's
+        # probes can reach their signals before a simulation starts
+        cfg = config
+        self.systolic_array = SystolicArray(cfg)
+        self.scratchpad = make_l2(cfg)  # L2
+        self.combiner = Combiner(cfg)
+        self.stream_reader = StreamReader(cfg)
+        self.stream_writer = StreamWriter(cfg)
+        self.bm_in = BlockMoverIn(cfg)
+        self.bm_out = BlockMoverOut(cfg)
+        self.streamer = Streamer(cfg)
+        self.l2_slots = SlotPool(cfg.l2_slots)
+        self.combiner_slots = SlotPool(cfg.combiner_slots, producers=2)
+
     def elaborate(self, _platform):
         m = Module()
         cfg = self.config
@@ -244,21 +258,20 @@ class SystolicTop(Component):
         # =====================================================================
 
         # Compute fabric
-        m.submodules.systolic_array = array = SystolicArray(cfg)
+        m.submodules.systolic_array = array = self.systolic_array
 
         # Local memories
-        m.submodules.scratchpad = scratchpad = make_l2(cfg)
-        m.submodules.combiner = combiner = Combiner(cfg)
-        self.scratchpad, self.combiner = scratchpad, combiner  # for testbenches (no hardware)
+        m.submodules.scratchpad = scratchpad = self.scratchpad
+        m.submodules.combiner = combiner = self.combiner
 
         # BlockMover engines
-        m.submodules.stream_reader = reader = StreamReader(cfg)
-        m.submodules.stream_writer = writer = StreamWriter(cfg)
+        m.submodules.stream_reader = reader = self.stream_reader
+        m.submodules.stream_writer = writer = self.stream_writer
 
         # Controllers
-        m.submodules.bm_in = bm_in = BlockMoverIn(cfg)
-        m.submodules.bm_out = bm_out = BlockMoverOut(cfg)
-        m.submodules.streamer = streamer = Streamer(cfg)
+        m.submodules.bm_in = bm_in = self.bm_in
+        m.submodules.bm_out = bm_out = self.bm_out
+        m.submodules.streamer = streamer = self.streamer
 
         # =====================================================================
         # Command Queues, Credits and Tile-Ready Tokens (controller/sync.py)
@@ -266,9 +279,9 @@ class SystolicTop(Component):
 
         # Slot pools: L2 (LOAD fills, PRELOAD/COMPUTE read) and the Combiner
         # (COMPUTE fills, STORE reads)
-        m.submodules.l2_slots = l2 = SlotPool(cfg.l2_slots)
+        m.submodules.l2_slots = l2 = self.l2_slots
         # The Combiner's second producer is the BlockMover's LOAD into it
-        m.submodules.combiner_slots = acc = SlotPool(cfg.combiner_slots, producers=2)
+        m.submodules.combiner_slots = acc = self.combiner_slots
 
         # One in-order queue per process: the host (or an ISA instruction) pushes
         # commands ahead, and a queue's head is dispatched when its credits and

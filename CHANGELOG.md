@@ -311,6 +311,17 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **The tile's hooks for a trace** (#18, part: the systolic RTL of
+  branes-ai/embodied-ai-soc-generator#27, kpugen PRs #91 and #92). `SlotPool` gains a
+  `reading` output beside `free` and `ready`. `SystolicTop` builds its submodules in
+  `__init__` (`systolic_array`, `scratchpad`, `combiner`, `stream_reader`, `stream_writer`,
+  `bm_in`, `bm_out`, `streamer`, `l2_slots`, `combiner_slots`), and the Streamer builds its
+  L1 buffers there (`a_buf`, `b_buf`, `north`, `south`, `w_buf`), so a testbench or a
+  trace's probes reach their signals before a simulation starts.
+  `tests/unit/test_trace_hooks.py` checks them. The generated Verilog changes only by the
+  `reading` wires. kpugen's trace package (lanes, recorder, rendering, checks) isn't ported
+  here; it builds on the tile-flow recorder (#14), and #18 stays open for it.
+
 - **Nearest-neighbour weight loading, overlapped with compute** (#34, 2026-11-17; port of
   branes-ai/embodied-ai-soc-generator#55, kpugen PR #56). The fabric no longer broadcasts a
   weight-shift enable. A weight travels down its column's chain with a `w_valid` marker, one
