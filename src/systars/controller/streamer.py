@@ -1,5 +1,5 @@
 """
-ExecuteController - the Streamer: turns L2 tiles into streams through L1 into the fabric.
+Streamer - turns L2 tiles into streams through L1 into the fabric.
 
 The Streamer is the only process that reads L2 for the fabric. It reads one L2 row
 per clock on each of the scratchpad's two read ports and writes each row, in
@@ -91,7 +91,7 @@ CHAIN_CONTINUES = 0b01  # cmd_chain bit 0: continues the previous reduction
 CHAIN_MORE = 0b10  # cmd_chain bit 1: the reduction continues into the next command
 
 
-class ExecuteController(Component):
+class Streamer(Component):
     """
     The Streamer (see the module docstring).
 

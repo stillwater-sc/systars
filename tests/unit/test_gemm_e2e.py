@@ -250,7 +250,7 @@ class TestGemmEndToEnd:
         A_addr = 0x100
         dram.write_matrix_int8(A_addr, A)
 
-        results = {"load_completed": False, "axi_reads": 0}
+        results = {"bm_in_completed": False, "axi_reads": 0}
 
         def testbench():
             bytes_per_beat = dram.bytes_per_beat
@@ -316,7 +316,7 @@ class TestGemmEndToEnd:
                 # Check completion
                 completed = yield dut.completed
                 if completed:
-                    results["load_completed"] = True
+                    results["bm_in_completed"] = True
                     break
 
         sim = Simulator(dut)
@@ -324,7 +324,7 @@ class TestGemmEndToEnd:
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results["load_completed"], "Load should complete"
+        assert results["bm_in_completed"], "Load should complete"
         assert results["axi_reads"] >= 1, "Should issue at least one AXI read"
 
     def test_store_matrix_to_dram(self, small_config):
@@ -335,7 +335,7 @@ class TestGemmEndToEnd:
         # Destination address for results
         C_addr = 0x200
 
-        results = {"store_completed": False, "axi_writes": 0}
+        results = {"bm_out_completed": False, "axi_writes": 0}
 
         def testbench():
             bytes_per_beat = dram.bytes_per_beat
@@ -408,7 +408,7 @@ class TestGemmEndToEnd:
                 # Check completion
                 completed = yield dut.completed
                 if completed:
-                    results["store_completed"] = True
+                    results["bm_out_completed"] = True
                     break
 
         sim = Simulator(dut)
@@ -416,11 +416,11 @@ class TestGemmEndToEnd:
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results["store_completed"], "Store should complete"
+        assert results["bm_out_completed"], "Store should complete"
         assert results["axi_writes"] >= 1, "Should issue at least one AXI write"
 
     def test_execute_config(self, small_config):
-        """Test configuring the execute controller."""
+        """Test configuring the Streamer."""
         dut = SystolicTop(small_config)
         results = {"config_done": False}
 
@@ -440,9 +440,9 @@ class TestGemmEndToEnd:
             # Wait for completion
             for _ in range(20):
                 yield Tick()
-                exec_busy = yield dut.exec_busy
+                streamer_busy = yield dut.streamer_busy
                 completed = yield dut.completed
-                if completed or not exec_busy:
+                if completed or not streamer_busy:
                     results["config_done"] = True
                     break
 
@@ -605,7 +605,7 @@ class TestGemmEndToEnd:
                 read_state, write_state = yield from run_axi_cycle(
                     bytes_per_beat, read_state, write_state
                 )
-                if not (yield dut.load_busy):
+                if not (yield dut.bm_in_busy):
                     break
 
             # ========== Phase 2: Load Matrix B ==========
@@ -628,7 +628,7 @@ class TestGemmEndToEnd:
                     results["load_b_done"] = True
                     break
 
-            # ========== Phase 3: Configure Execute Controller ==========
+            # ========== Phase 3: Configure the Streamer ==========
             yield dut.cmd_type.eq(SystolicTop.CTRL_EXEC)
             yield dut.cmd_opcode.eq(OpCode.CONFIG_EX)
             yield dut.cmd_rs1.eq(0)  # OS mode
@@ -639,7 +639,7 @@ class TestGemmEndToEnd:
 
             for _ in range(20):
                 yield Tick()
-                busy = yield dut.exec_busy
+                busy = yield dut.streamer_busy
                 completed = yield dut.completed
                 if completed or not busy:
                     results["config_done"] = True

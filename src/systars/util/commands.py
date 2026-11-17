@@ -495,7 +495,7 @@ class DescriptorChain:
 
 
 # =============================================================================
-# Legacy Command Support (for ExecuteController)
+# Legacy Command Support (for Streamer)
 # =============================================================================
 
 # Keep OpCode as alias for backward compatibility during transition
@@ -552,7 +552,7 @@ def encode_command(
     Encode a 64-bit command word.
 
     DEPRECATED: Use descriptor-based API (BlockMoverDescriptor, make_memcpy, etc.)
-    for BlockMover operations. This function is retained for ExecuteController commands.
+    for BlockMover operations. This function is retained for Streamer commands.
     """
     return (opcode << 56) | (id_tag << 48) | (flags << 32) | (data & 0xFFFFFFFF)
 

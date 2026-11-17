@@ -13,7 +13,7 @@ A textbook array needs a triangle of skew registers on its inputs and another of
 registers on its outputs, about R(R - 1)/2 registers each. SYSTARS has neither. The Streamer
 loads the L1 stream buffers on consecutive clocks, so buffer i starts one clock after
 buffer i - 1: that stagger is the skew. One result FIFO per column turns the columns back into
-rows. (`memory/stream_buffer.py`, `controller/execute.py`)
+rows. (`memory/stream_buffer.py`, `controller/streamer.py`)
 
 ## 2. A fully registered fabric
 

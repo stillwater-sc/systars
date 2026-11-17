@@ -110,7 +110,7 @@ buffer `i - 1`: that stagger is the skew, and the array has no skew or deskew re
 the edge the results leave (north for OS, south for stationary), one result buffer per
 column turns the columns back into row-major rows for the Combiner.
 
-**The Streamer** (`controller/execute.py`) reads one L2 row per clock on each of the
+**The Streamer** (`controller/streamer.py`) reads one L2 row per clock on each of the
 scratchpad's two read ports into L1:
 
 | Command (`ExecOpcode`) | OS | Stationary (WS, IS) |
@@ -134,13 +134,13 @@ when the fabric can take it on schedule and never stalls:
 
 Two in-order events carry each command's `cmd_sync`: **completed** when its last block is in
 L1 (`SystolicTop` returns the L2 credit, so the BlockMover can refill the slot early) and
-**result** (`exec_result`) when its results are in the Combiner (the result token). An
+**result** (`streamer_result`) when its results are in the Combiner (the result token). An
 untracked command (`cmd_sync` 0) runs alone and completes with its results, so a host can
 issue one command at a time. `l1_error` (sticky) reports a schedule violation, which a valid
 schedule never raises.
 
 Verified by `tests/unit/test_systolic_array.py` and `test_pe*.py` (the result clocks, back to
-back tiles, the `2R - 2` collision), `test_stream_buffer.py`, `test_execute_controller.py`
+back tiles, the `2R - 2` collision), `test_stream_buffer.py`, `test_streamer.py`
 (no bubbles within or between tiles, the drain spacing, the events) and
 `test_gemm_systolic.py` (LOAD → COMPUTE → STORE through `SystolicTop`: OS with chained K
 tiles, WS, and IS with a STORE corner turn). The L2 behind the Streamer is still the

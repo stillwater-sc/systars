@@ -102,7 +102,7 @@ class MatmulError(IntEnum):
     UNSUPPORTED_DATAFLOW = 0x09  # The array was not built with the selected dataflow
 
 
-OS, WS, IS = 0, 1, 2  # CONFIG_DATAFLOW, and the ExecuteController CONFIG rs1
+OS, WS, IS = 0, 1, 2  # CONFIG_DATAFLOW, and the Streamer CONFIG rs1
 
 
 class Matmul(Component):

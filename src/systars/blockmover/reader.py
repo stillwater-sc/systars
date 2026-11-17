@@ -2,7 +2,7 @@
 StreamReader - BlockMover engine for external memory to local memory transfers.
 
 The StreamReader handles AXI-like burst read transactions from external memory,
-providing data to the LoadController for writing to the Scratchpad.
+providing data to the BlockMoverIn for writing to the Scratchpad.
 
 Features (initial implementation):
 - Single outstanding burst request
@@ -21,18 +21,18 @@ class StreamReader(Component):
     """
     BlockMover read engine for external memory -> local memory transfers.
 
-    Accepts read requests from the LoadController and issues AXI-like
+    Accepts read requests from the BlockMoverIn and issues AXI-like
     burst read transactions to external memory.
 
-    Request Interface (from LoadController):
+    Request Interface (from BlockMoverIn):
         req_valid: Request valid
         req_ready: Ready to accept request
         req_addr: Physical address (64-bit)
         req_len: Burst length in beats (0 = 1 beat, 255 = 256 beats)
 
-    Response Interface (to LoadController):
+    Response Interface (to BlockMoverIn):
         resp_valid: Response data valid
-        resp_ready: LoadController ready to accept
+        resp_ready: BlockMoverIn ready to accept
         resp_data: Read data (blockmover_buswidth bits)
         resp_last: Last beat of burst
 
@@ -61,12 +61,12 @@ class StreamReader(Component):
 
         super().__init__(
             {
-                # Request interface (from LoadController)
+                # Request interface (from BlockMoverIn)
                 "req_valid": In(1),
                 "req_ready": Out(1),
                 "req_addr": In(64),
                 "req_len": In(8),  # AXI4 burst length (0-255 = 1-256 beats)
-                # Response interface (to LoadController)
+                # Response interface (to BlockMoverIn)
                 "resp_valid": Out(1),
                 "resp_ready": In(1),
                 "resp_data": Out(buswidth),

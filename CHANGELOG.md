@@ -244,6 +244,20 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **The control processes carry the KPU model's names** (#43, 2026-11-17; port of
+  branes-ai/embodied-ai-soc-generator#97, kpugen PR #99). `LoadController`, `StoreController`
+  and `ExecuteController` become `BlockMoverIn` (the BlockMover's L3 → L2 leg, a LOAD),
+  `BlockMoverOut` (its L2 → L3 leg, a STORE) and `Streamer` (L2 → L1 → fabric, an EXECUTE),
+  in `controller/blockmover_in.py`, `blockmover_out.py` and `streamer.py`.
+  `TransposeLoadController` becomes `TransposeBlockMoverIn`. `SystolicTop` follows:
+  - the `bm_in`, `bm_out` and `streamer` submodules;
+  - the per-process ports `{bm_in,bm_out,streamer}_{busy,started,completed}`;
+  - `streamer_result`.
+
+  The shared names stay: the LOAD/STORE/EXECUTE command types and `SystolicConfig`'s queue
+  lengths. The tests (`test_blockmover_in.py`, `test_blockmover_out.py`, `test_streamer.py`)
+  and docs follow. The generated Verilog differs from main only in names.
+
 - **`SystolicConfig` lost the 16 fields no RTL read** (#42, 2026-11-17; port of
   branes-ai/embodied-ai-soc-generator#96). They were Gemmini's array options, carried over by
   SYSTARS:

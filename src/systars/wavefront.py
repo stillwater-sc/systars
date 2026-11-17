@@ -18,7 +18,7 @@ inputs, so the wavefront advances one PE per clock in every direction:
   ``s + R + j + m`` (``SystolicArray.stationary_result_clock``).
 
 A run is one tile or several back to back, started on the Streamer's schedule
-(``streamer_starts``, which ``tests/unit/test_execute_controller.py`` checks
+(``streamer_starts``, which ``tests/unit/test_streamer.py`` checks
 against the Streamer itself): with ``K >= 2R - 1`` (OS) or ``M >= R`` (stationary)
 the tiles stream with no bubble between them.
 
@@ -76,7 +76,7 @@ def streamer_starts(
     The next tile starts ``max(K, R, C)`` clocks after the last (OS; ``max(M, R)``
     stationary), and an OS reduction only once its results will leave ``2R - 1``
     clocks after the previous reduction's, so results never meet on a north link
-    (``controller/execute.py``, "Schedule"). Every tile here is a whole reduction,
+    (``controller/streamer.py``, "Schedule"). Every tile here is a whole reduction,
     streamed as one command or as commands of at least ``max(R, C)`` elements each
     (shorter chained commands each take ``max(R, C)`` clocks).
     """

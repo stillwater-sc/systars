@@ -67,8 +67,8 @@ Each one ends in something you can check. Do them in order.
   `s + K + j + 2i` (`core/pe.py`). Predict the clocks for a 4x4 array with K = 4, then
   confirm with `08_rtl_wavefront.py --grid 2 2 --tile 2 2 --n 4`.
 - [ ] **Break the skew and watch it fail.** On a scratch branch, change the order in which the
-  Streamer loads the L1 buffers (`controller/execute.py`). Run `tests/unit/test_wavefront.py`
-  and `tests/unit/test_execute_controller.py`, read the failures, then revert.
+  Streamer loads the L1 buffers (`controller/streamer.py`). Run `tests/unit/test_wavefront.py`
+  and `tests/unit/test_streamer.py`, read the failures, then revert.
 - [ ] **Measure double buffering.** Find where `tests/unit/test_credits.py` compares
   `buffers=1` with `buffers=2` (907 against 744 cycles for 8x8x16 on 4x4). Change the shape
   and explain the new numbers.
@@ -115,13 +115,13 @@ registered fabric and the CSP rework, and three packages model other architectur
 | `config.py`, `targets.py`, `top.py` | Current | Configuration, the RTL target list, the compute tile |
 | `core/` | Current | `PE`, `PEArray`, `SystolicArray` |
 | `memory/scratchpad.py`, `combiner.py`, `stream_buffer.py`, `local_addr.py` | Current | L2, the Combiner, L1, local address encoding |
-| `controller/execute.py`, `load.py`, `store.py`, `sync.py` | Current | The Streamer, the BlockMover's legs, credits and tokens |
+| `controller/streamer.py`, `blockmover_in.py`, `blockmover_out.py`, `sync.py` | Current | The Streamer, the BlockMover's legs, credits and tokens |
 | `blockmover/reader.py`, `writer.py`, `axi.py` | Current | The AXI burst engines behind the BlockMover |
 | `isa/` | Current | `Matmul`, `Conv2d`, the command port |
 | `wavefront.py` | Current | RTL tracing, checking and SVG rendering |
 | `util/commands.py` | Current | `BlockMoverOpcode`, `ExecOpcode` and command helpers |
 | `memory/skew_buffer.py` | Legacy | The skew-register approach; used only by `test_sram_read_scheduler.py` and example 05 |
-| `controller/load_transpose.py`, `blockmover/strided_reader.py` | Legacy | An earlier transposing load; `SystolicTop` turns corners in the BlockMover |
+| `controller/blockmover_in_transpose.py`, `blockmover/strided_reader.py` | Legacy | An earlier transposing load; `SystolicTop` turns corners in the BlockMover |
 | `blockmover/descriptor_engine.py` | Not integrated | BlockMover descriptor chains ([design](../architecture/blockmover-descriptors.md)); tested, not wired into `SystolicTop` |
 | `loop/`, `arithmetic/` | Empty | Placeholders for planned components |
 | `stencil/` | Side package | A line-buffer stencil machine for 2D convolution |

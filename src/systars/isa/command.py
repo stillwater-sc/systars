@@ -209,6 +209,6 @@ def connect_to_top(m: Module, isa, top) -> None:
         top.cmd_type.eq(isa.cmd_type),
         top.cmd_opcode.eq(isa.cmd_opcode),
         top.cmd_id.eq(isa.cmd_id),
-        isa.cmd_store_completed.eq(top.store_completed),
+        isa.cmd_store_completed.eq(top.bm_out_completed),
     ]
     m.d.comb += [getattr(top, f"cmd_{name}").eq(getattr(isa, f"cmd_{name}")) for name in _FIELDS]

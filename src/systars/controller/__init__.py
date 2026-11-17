@@ -1,15 +1,15 @@
 """Controller modules for systars accelerator."""
 
-from .execute import ExecuteController
-from .load import LoadController
-from .load_transpose import MatrixLoader, TransposeLoadController, TransposeOpcode
-from .store import StoreController
+from .blockmover_in import BlockMoverIn
+from .blockmover_in_transpose import MatrixLoader, TransposeBlockMoverIn, TransposeOpcode
+from .blockmover_out import BlockMoverOut
+from .streamer import Streamer
 
 __all__ = [
-    "ExecuteController",
-    "LoadController",
+    "BlockMoverIn",
+    "BlockMoverOut",
     "MatrixLoader",
-    "StoreController",
-    "TransposeLoadController",
+    "Streamer",
+    "TransposeBlockMoverIn",
     "TransposeOpcode",
 ]

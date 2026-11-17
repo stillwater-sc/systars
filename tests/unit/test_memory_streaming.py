@@ -2,15 +2,15 @@
 Memory Streaming Tests.
 
 This test verifies the memory streaming data paths:
-1. LoadController -> StreamReader -> Scratchpad data path
-2. StoreController -> StreamWriter -> DRAM data path
+1. BlockMoverIn -> StreamReader -> Scratchpad data path
+2. BlockMoverOut -> StreamWriter -> DRAM data path
 3. BlockMover engine roundtrip data integrity
 
 The test simulates simplified data flows without actual memory:
-- Mock BlockMover responses for LoadController
-- Verify LoadController writes to scratchpad interface
-- Mock Combiner data for StoreController
-- Verify StoreController sends data through BlockMover interface
+- Mock BlockMover responses for BlockMoverIn
+- Verify BlockMoverIn writes to scratchpad interface
+- Mock Combiner data for BlockMoverOut
+- Verify BlockMoverOut sends data through BlockMover interface
 """
 
 import pytest
@@ -19,8 +19,8 @@ from amaranth.sim import Simulator, Tick
 from systars.blockmover.reader import StreamReader
 from systars.blockmover.writer import StreamWriter
 from systars.config import SystolicConfig
-from systars.controller.load import LoadController
-from systars.controller.store import StoreController
+from systars.controller.blockmover_in import BlockMoverIn
+from systars.controller.blockmover_out import BlockMoverOut
 from systars.util.commands import BlockMoverOpcode
 
 
@@ -38,147 +38,147 @@ class TestMemoryStreaming:
             tile_cols=1,
         )
 
-    def test_load_controller_with_stream_reader(self, config):
-        """Test LoadController issuing commands to StreamReader."""
-        load_ctrl = LoadController(config)
+    def test_blockmover_in_with_stream_reader(self, config):
+        """Test BlockMoverIn issuing commands to StreamReader."""
+        bm_in = BlockMoverIn(config)
         # StreamReader would be connected in full integration
         results = {"engine_req": False, "transfer_complete": False}
 
         def testbench():
-            # Issue MEMCPY command to LoadController
-            yield load_ctrl.cmd_valid.eq(1)
-            yield load_ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
-            yield load_ctrl.cmd_dram_addr.eq(0x1000)
-            yield load_ctrl.cmd_sp_addr.eq(0x10)
-            yield load_ctrl.cmd_len.eq(2)
-            yield load_ctrl.cmd_id.eq(1)
+            # Issue MEMCPY command to BlockMoverIn
+            yield bm_in.cmd_valid.eq(1)
+            yield bm_in.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
+            yield bm_in.cmd_dram_addr.eq(0x1000)
+            yield bm_in.cmd_sp_addr.eq(0x10)
+            yield bm_in.cmd_len.eq(2)
+            yield bm_in.cmd_id.eq(1)
             yield Tick()
-            yield load_ctrl.cmd_valid.eq(0)
+            yield bm_in.cmd_valid.eq(0)
             yield Tick()
 
-            # LoadController should issue BlockMover request
-            dma_valid = yield load_ctrl.engine_req_valid
-            engine_addr = yield load_ctrl.engine_req_addr
+            # BlockMoverIn should issue BlockMover request
+            dma_valid = yield bm_in.engine_req_valid
+            engine_addr = yield bm_in.engine_req_addr
             if dma_valid:
                 results["engine_req"] = True
                 assert engine_addr == 0x1000
 
             # Simulate BlockMover request acceptance
-            yield load_ctrl.engine_req_ready.eq(1)
+            yield bm_in.engine_req_ready.eq(1)
             yield Tick()
-            yield load_ctrl.engine_req_ready.eq(0)
+            yield bm_in.engine_req_ready.eq(0)
             yield Tick()
 
             # Simulate BlockMover response with 2 beats of data
             for i in range(2):
-                yield load_ctrl.engine_resp_valid.eq(1)
-                yield load_ctrl.engine_resp_data.eq(0xABCD0000 + i)
-                yield load_ctrl.engine_resp_last.eq(1 if i == 1 else 0)
+                yield bm_in.engine_resp_valid.eq(1)
+                yield bm_in.engine_resp_data.eq(0xABCD0000 + i)
+                yield bm_in.engine_resp_last.eq(1 if i == 1 else 0)
 
                 # Check scratchpad write
-                sp_write_en = yield load_ctrl.sp_write_en
-                sp_write_addr = yield load_ctrl.sp_write_addr
+                sp_write_en = yield bm_in.sp_write_en
+                sp_write_addr = yield bm_in.sp_write_addr
                 if sp_write_en:
                     assert sp_write_addr == 0x10 + i
 
                 yield Tick()
 
-            yield load_ctrl.engine_resp_valid.eq(0)
+            yield bm_in.engine_resp_valid.eq(0)
 
             # Check completion
-            completed = yield load_ctrl.completed
+            completed = yield bm_in.completed
             if completed:
                 results["transfer_complete"] = True
 
             yield Tick()
             yield Tick()
 
-        sim = Simulator(load_ctrl)
+        sim = Simulator(bm_in)
         sim.add_clock(1e-6)
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results["engine_req"], "LoadController should issue BlockMover request"
+        assert results["engine_req"], "BlockMoverIn should issue BlockMover request"
         assert results["transfer_complete"], "Transfer should complete"
 
-    def test_store_controller_with_stream_writer(self, config):
-        """Test StoreController issuing commands to StreamWriter."""
-        store_ctrl = StoreController(config)
+    def test_blockmover_out_with_stream_writer(self, config):
+        """Test BlockMoverOut issuing commands to StreamWriter."""
+        bm_out = BlockMoverOut(config)
         # StreamWriter would be connected in full integration
         results = {"engine_req": False, "data_sent": False, "transfer_complete": False}
 
         def testbench():
-            # Issue MEMCPY command to StoreController
-            yield store_ctrl.cmd_valid.eq(1)
-            yield store_ctrl.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
-            yield store_ctrl.cmd_combiner_addr.eq(0x20)
-            yield store_ctrl.cmd_dram_addr.eq(0x2000)
-            yield store_ctrl.cmd_len.eq(2)
-            yield store_ctrl.cmd_id.eq(2)
-            yield store_ctrl.cmd_activation.eq(0)
+            # Issue MEMCPY command to BlockMoverOut
+            yield bm_out.cmd_valid.eq(1)
+            yield bm_out.cmd_opcode.eq(BlockMoverOpcode.MEMCPY)
+            yield bm_out.cmd_combiner_addr.eq(0x20)
+            yield bm_out.cmd_dram_addr.eq(0x2000)
+            yield bm_out.cmd_len.eq(2)
+            yield bm_out.cmd_id.eq(2)
+            yield bm_out.cmd_activation.eq(0)
             yield Tick()
-            yield store_ctrl.cmd_valid.eq(0)
+            yield bm_out.cmd_valid.eq(0)
             yield Tick()
 
-            # StoreController should issue BlockMover request
-            dma_valid = yield store_ctrl.engine_req_valid
-            engine_addr = yield store_ctrl.engine_req_addr
+            # BlockMoverOut should issue BlockMover request
+            dma_valid = yield bm_out.engine_req_valid
+            engine_addr = yield bm_out.engine_req_addr
             if dma_valid:
                 results["engine_req"] = True
                 assert engine_addr == 0x2000
 
             # Accept BlockMover request
-            yield store_ctrl.engine_req_ready.eq(1)
+            yield bm_out.engine_req_ready.eq(1)
             yield Tick()
-            yield store_ctrl.engine_req_ready.eq(0)
+            yield bm_out.engine_req_ready.eq(0)
 
             # Process 2 beats: read from acc, send to BlockMover
             for i in range(2):
                 # Check Combiner read request
-                combiner_read_req = yield store_ctrl.combiner_read_req
+                combiner_read_req = yield bm_out.combiner_read_req
                 if combiner_read_req:
                     pass  # Request issued
                 yield Tick()
 
                 # Provide Combiner data
-                yield store_ctrl.combiner_read_valid.eq(1)
-                yield store_ctrl.combiner_read_data.eq(0x5000 + i)
+                yield bm_out.combiner_read_valid.eq(1)
+                yield bm_out.combiner_read_data.eq(0x5000 + i)
                 yield Tick()
-                yield store_ctrl.combiner_read_valid.eq(0)
+                yield bm_out.combiner_read_valid.eq(0)
                 yield Tick()
 
                 # Check BlockMover data output
-                engine_data_valid = yield store_ctrl.engine_data_valid
-                engine_data = yield store_ctrl.engine_data
+                engine_data_valid = yield bm_out.engine_data_valid
+                engine_data = yield bm_out.engine_data
                 if engine_data_valid:
                     results["data_sent"] = True
                     assert engine_data == 0x5000 + i
 
                 # Accept BlockMover data
-                yield store_ctrl.engine_data_ready.eq(1)
+                yield bm_out.engine_data_ready.eq(1)
                 yield Tick()
-                yield store_ctrl.engine_data_ready.eq(0)
+                yield bm_out.engine_data_ready.eq(0)
 
             yield Tick()
 
             # Signal BlockMover done
-            yield store_ctrl.engine_done.eq(1)
+            yield bm_out.engine_done.eq(1)
             yield Tick()
-            yield store_ctrl.engine_done.eq(0)
+            yield bm_out.engine_done.eq(0)
 
             # Check completion
-            completed = yield store_ctrl.completed
+            completed = yield bm_out.completed
             if completed:
                 results["transfer_complete"] = True
 
             yield Tick()
 
-        sim = Simulator(store_ctrl)
+        sim = Simulator(bm_out)
         sim.add_clock(1e-6)
         sim.add_testbench(testbench)
         sim.run()
 
-        assert results["engine_req"], "StoreController should issue BlockMover request"
+        assert results["engine_req"], "BlockMoverOut should issue BlockMover request"
         assert results["data_sent"], "Data should be sent to BlockMover"
         assert results["transfer_complete"], "Transfer should complete"
 
@@ -284,14 +284,14 @@ class TestMemoryStreaming:
         writer = StreamWriter(config)
 
         # Controllers
-        load_ctrl = LoadController(config)
-        store_ctrl = StoreController(config)
+        bm_in = BlockMoverIn(config)
+        bm_out = BlockMoverOut(config)
 
         # All should have correct config
         assert reader.config == config
         assert writer.config == config
-        assert load_ctrl.config == config
-        assert store_ctrl.config == config
+        assert bm_in.config == config
+        assert bm_out.config == config
 
 
 class TestMemoryStreamingVerilogGeneration:
@@ -316,8 +316,8 @@ class TestMemoryStreamingVerilogGeneration:
         components = [
             ("StreamReader", StreamReader(config)),
             ("StreamWriter", StreamWriter(config)),
-            ("LoadController", LoadController(config)),
-            ("StoreController", StoreController(config)),
+            ("BlockMoverIn", BlockMoverIn(config)),
+            ("BlockMoverOut", BlockMoverOut(config)),
         ]
 
         for name, component in components:

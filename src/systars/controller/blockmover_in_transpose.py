@@ -1,5 +1,5 @@
 """
-TransposeLoadController - 2D BlockMover with optional matrix transpose.
+TransposeBlockMoverIn - 2D BlockMover with optional matrix transpose.
 
 Handles loading matrices from DRAM to scratchpad with optional transpose:
 - LOAD_CONTIGUOUS: Standard row-by-row copy (B matrix, no transpose needed)
@@ -42,15 +42,15 @@ from ..config import SystolicConfig
 
 
 class TransposeOpcode:
-    """Opcodes for TransposeLoadController."""
+    """Opcodes for TransposeBlockMoverIn."""
 
     LOAD_CONTIGUOUS = 0x10  # Standard 2D load, no transpose
     LOAD_TRANSPOSE = 0x11  # Load with transpose (columns → rows)
 
 
-class TransposeLoadController(Component):
+class TransposeBlockMoverIn(Component):
     """
-    Load controller with 2D addressing and transpose support.
+    The BlockMover's inbound leg with 2D addressing and transpose support.
 
     Handles loading matrices from DRAM with optional transpose operation
     for preparing data in the correct layout for systolic array feeding.
@@ -309,14 +309,14 @@ class TransposeLoadController(Component):
 
 class MatrixLoader(Component):
     """
-    High-level matrix loader combining strided reader and transpose controller.
+    High-level matrix loader combining the strided reader and TransposeBlockMoverIn.
 
     Provides a simple interface for loading matrices A and B for systolic matmul:
     - load_a: Loads A with transpose (row-major → column-major)
     - load_b: Loads B directly (row-major → row-major)
 
     This component integrates:
-    - TransposeLoadController for orchestration
+    - TransposeBlockMoverIn for orchestration
     - StridedStreamReader for BlockMover access
 
     Ports:
@@ -391,7 +391,7 @@ class MatrixLoader(Component):
 
         # Instantiate components
         reader = StridedStreamReader(cfg)
-        loader = TransposeLoadController(cfg)
+        loader = TransposeBlockMoverIn(cfg)
         m.submodules.reader = reader
         m.submodules.loader = loader
 

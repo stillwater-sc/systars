@@ -4,7 +4,7 @@ from L3 into the scratchpad, STORE moves a result tile from the Combiner to
 L3, each from or to any byte address, ``stride`` bytes between rows, with
 ``row_bytes`` valid bytes per row.
 
-- LoadController + StreamReader, and StoreController + StreamWriter, over a
+- BlockMoverIn + StreamReader, and BlockMoverOut + StreamWriter, over a
   byte-addressed AXI memory: every byte offset in a beat, rows spilling into the
   next beat, partial rows, strides, streamed bursts longer than 256 beats, and
   zero-length commands.
@@ -27,8 +27,8 @@ from amaranth import Elaboratable, Module, Signal
 from systars.blockmover.reader import StreamReader
 from systars.blockmover.writer import StreamWriter
 from systars.config import Dataflow, SystolicConfig
-from systars.controller.load import LoadController
-from systars.controller.store import StoreController
+from systars.controller.blockmover_in import BlockMoverIn
+from systars.controller.blockmover_out import BlockMoverOut
 from systars.top import SystolicTop
 from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
@@ -61,10 +61,10 @@ class _AxiPorts:
 
 
 class LoadPath(Elaboratable, _AxiPorts):
-    """LoadController + StreamReader; scratchpad writes are recorded by the testbench."""
+    """BlockMoverIn + StreamReader; scratchpad writes are recorded by the testbench."""
 
     def __init__(self, cfg):
-        self.ctrl = LoadController(cfg)
+        self.ctrl = BlockMoverIn(cfg)
         self.reader = StreamReader(cfg)
         self._alias(self.reader, self.READ, True)
         self._alias(None, self.WRITE, False)
@@ -87,10 +87,10 @@ class LoadPath(Elaboratable, _AxiPorts):
 
 
 class StorePath(Elaboratable, _AxiPorts):
-    """StoreController + StreamWriter, reading a model Combiner."""
+    """BlockMoverOut + StreamWriter, reading a model Combiner."""
 
     def __init__(self, cfg):
-        self.ctrl = StoreController(cfg)
+        self.ctrl = BlockMoverOut(cfg)
         self.writer = StreamWriter(cfg)
         self._alias(self.writer, self.WRITE, True)
         self._alias(None, self.READ, False)

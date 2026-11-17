@@ -37,8 +37,8 @@ This document provides a comprehensive plan for rewriting the SYSTARS systolic a
 │              ┌───────────────┼───────────────┐                 │
 │              ▼               ▼               ▼                 │
 │  ┌────────────────┐ ┌─────────────────┐ ┌───────────────┐      │
-│  │ LoadController │ │ExecuteController│ │StoreController│      │
-│  │    (DMA In)    │ │    (Compute)    │ │   (DMA Out)   │      │
+│  │  BlockMoverIn  │ │    Streamer     │ │ BlockMoverOut │      │
+│  │  (L3 -> L2)    │ │    (Compute)    │ │  (L2 -> L3)   │      │
 │  └───────┬────────┘ └───────┬─────────┘ └───────┬───────┘      │
 │          │                  │                   │              │
 │          ▼                  ▼                   ▼              │
@@ -140,11 +140,11 @@ systars/
 │   │   ├── local_addr.py      # Local address encoding
 │   │   └── skew_buffer.py     # Legacy skew registers (examples and one test only)
 │   ├── controller/
-│   │   ├── load.py            # BlockMover inbound leg, L3 -> L2 or the Combiner (#43)
-│   │   ├── store.py           # BlockMover outbound leg, Combiner -> L3 (#43)
-│   │   ├── execute.py         # The Streamer, L2 -> L1 (#43)
+│   │   ├── blockmover_in.py   # BlockMoverIn: the BlockMover's inbound leg, L3 -> L2 or the Combiner
+│   │   ├── blockmover_out.py  # BlockMoverOut: its outbound leg, Combiner -> L3
+│   │   ├── streamer.py        # Streamer: L2 -> L1 -> fabric
 │   │   ├── sync.py            # Credits and tile-ready tokens (SlotPool, Sync)
-│   │   └── load_transpose.py  # Legacy transposing load
+│   │   └── blockmover_in_transpose.py # Legacy transposing load
 │   ├── blockmover/            # The BlockMover's engines
 │   │   ├── reader.py          # StreamReader, AXI read
 │   │   ├── writer.py          # StreamWriter, AXI write
@@ -740,11 +740,11 @@ class ReservationStation(Elaboratable):
 ### 3.2 Execute Controller
 
 ```python
-# controller/execute.py
+# controller/streamer.py
 from amaranth import *
 from ..core.systolic_array_with_delays import SystolicArrayWithDelays
 
-class ExecuteController(Elaboratable):
+class Streamer(Elaboratable):
     """
     Orchestrates matrix multiply operations.
 
@@ -794,24 +794,24 @@ class ExecuteController(Elaboratable):
 ### 3.3 Load/Store Controllers
 
 ```python
-# controller/load.py
-class LoadController(Component):
+# controller/blockmover_in.py
+class BlockMoverIn(Component):
     """
     DMA load orchestration.
     Handles MEMCPY commands for DRAM -> Scratchpad transfers.
     """
 
     def __init__(self, config: SystolicConfig):
-        # See src/systars/controller/load.py for implementation
+        # See src/systars/controller/blockmover_in.py for implementation
         # ...
 
-# controller/store.py
-class StoreController(Component):
+# controller/blockmover_out.py
+class BlockMoverOut(Component):
     """
     DMA store orchestration.
     Handles MEMCPY commands for Combiner -> DRAM transfers.
     """
-    # See src/systars/controller/store.py for implementation
+    # See src/systars/controller/blockmover_out.py for implementation
 ```
 
 ### 3.4 DMA Engine
@@ -844,9 +844,9 @@ class StreamWriter(Elaboratable):
 ### 3.5 Deliverables for Phase 3
 
 1. **ReservationStation** with dependency tracking
-2. **ExecuteController** FSM with systolic array integration
-3. **LoadController** with 3 configuration states
-4. **StoreController** with pooling support
+2. **Streamer** FSM with systolic array integration
+3. **BlockMoverIn** with 3 configuration states
+4. **BlockMoverOut** with pooling support
 5. **StreamReader/Writer** DMA engines
 6. **DMACommandTracker** for in-flight request management
 7. **Integration tests** for command flow
@@ -997,9 +997,9 @@ class SYSTARS(Elaboratable):
         m.submodules.rob = rob = ReservationStation(self.config)
         m.submodules.scratchpad = sp = Scratchpad(self.config)
         m.submodules.combiner = combiner = Combiner(self.config)
-        m.submodules.exe_ctrl = exe = ExecuteController(self.config)
-        m.submodules.load_ctrl = ld = LoadController(self.config)
-        m.submodules.store_ctrl = st = StoreController(self.config)
+        m.submodules.streamer = exe = Streamer(self.config)
+        m.submodules.bm_in = ld = BlockMoverIn(self.config)
+        m.submodules.bm_out = st = BlockMoverOut(self.config)
         m.submodules.loop_matmul = lm = LoopMatmul(self.config)
         m.submodules.loop_conv = lc = LoopConv(self.config)
         m.submodules.dma_reader = dr = StreamReader(self.config)
@@ -1129,9 +1129,9 @@ def compare_matmul_output():
 | 8 | Transposer | Medium | None |
 | 9 | SystolicArrayWithDelays | High | SystolicArray, Transposer |
 | 10 | ReservationStation | High | None |
-| 11 | ExecuteController | High | SystolicArrayWithDelays, Memory |
-| 12 | LoadController | Medium | DMA |
-| 13 | StoreController | Medium | DMA |
+| 11 | Streamer | High | SystolicArrayWithDelays, Memory |
+| 12 | BlockMoverIn | Medium | DMA |
+| 13 | BlockMoverOut | Medium | DMA |
 | 14 | StreamReader | High | TLB (optional) |
 | 15 | StreamWriter | High | TLB (optional) |
 | 16 | LoopMatmul | High | All controllers |

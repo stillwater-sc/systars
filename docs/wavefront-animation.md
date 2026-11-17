@@ -93,7 +93,7 @@ the tile boundaries.
 
 ![Stationary schedule, 16x16, three tiles](wavefront/ws-3-schedule.svg)
 
-Tiles follow each other on the Streamer's schedule (`controller/execute.py`, "Schedule"):
+Tiles follow each other on the Streamer's schedule (`controller/streamer.py`, "Schedule"):
 
 - **OS.** A tile of reduction length `K` starts `max(K_prev, R, C, K_prev - K + 2R - 1)`
   clocks after the previous one, of length `K_prev`. The first three terms are the streams:
@@ -109,7 +109,7 @@ Tiles follow each other on the Streamer's schedule (`controller/execute.py`, "Sc
 - **Stationary.** The next tile starts `max(M_prev, R)` clocks after the last, and there's
   no north drain, so `M >= R` is enough.
 
-`wavefront.streamer_starts` is this schedule, and `tests/unit/test_execute_controller.py`
+`wavefront.streamer_starts` is this schedule, and `tests/unit/test_streamer.py`
 checks it against the Streamer itself.
 
 ## How the animations are made, and checked

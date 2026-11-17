@@ -1,5 +1,5 @@
 """
-Unit tests for ExecuteController (the Streamer), wired to a real SystolicArray.
+Unit tests for Streamer (the Streamer), wired to a real SystolicArray.
 Python models serve the scratchpad's two read ports and record the Combiner
 writes. Commands are untracked (one at a time, ``cmd_sync`` 0) or tracked (pushed
 back to back, ``cmd_sync`` != 0), where the Streamer overlaps them.
@@ -10,10 +10,10 @@ import pytest
 from amaranth import Elaboratable, Module
 
 from systars.config import Dataflow, SystolicConfig
-from systars.controller.execute import (
+from systars.controller.streamer import (
     CHAIN_CONTINUES,
     CHAIN_MORE,
-    ExecuteController,
+    Streamer,
 )
 from systars.controller.sync import Sync
 from systars.core.systolic_array import SystolicArray
@@ -35,7 +35,7 @@ def config(**overrides):
 class Harness(Elaboratable):
     def __init__(self, cfg):
         self.cfg = cfg
-        self.ctrl = ExecuteController(cfg)
+        self.ctrl = Streamer(cfg)
         self.array = SystolicArray(cfg)
         self.rows, self.cols, self.kb = self.ctrl.rows, self.ctrl.cols, self.ctrl.block
 
@@ -180,11 +180,11 @@ class TestElaboration:
     def test_rows_must_fit_a_scratchpad_row(self):
         # 4 rows of 8-bit A elements do not fit a 2-column (16-bit) scratchpad row
         with pytest.raises(ValueError, match="cannot hold 4 A elements"):
-            ExecuteController(config(grid_rows=4, grid_cols=2))
+            Streamer(config(grid_rows=4, grid_cols=2))
 
     def test_needs_a_dataflow(self):
         with pytest.raises(ValueError, match="not implemented"):
-            ExecuteController(config(dataflow=Dataflow(0)))
+            Streamer(config(dataflow=Dataflow(0)))
 
     @pytest.mark.parametrize(
         "dataflow,initial",
@@ -196,14 +196,14 @@ class TestElaboration:
         assert log["dataflow"] == [initial]
 
     def test_block_length(self):
-        assert ExecuteController(config(grid_cols=4)).block == 4
+        assert Streamer(config(grid_cols=4)).block == 4
 
     def test_verilog(self):
         skip_without_yosys()
         from amaranth.back import verilog
 
-        out = verilog.convert(ExecuteController(config()), name="ExecuteController")
-        assert "module ExecuteController" in out
+        out = verilog.convert(Streamer(config()), name="Streamer")
+        assert "module Streamer" in out
 
 
 class TestCommands:

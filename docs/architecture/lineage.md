@@ -112,7 +112,7 @@ follows Gemmini's, and systars owes it the following:
 - the parameter set of `SystolicConfig` (scratchpad and accumulator capacity and banks, DMA
   and queue sizes), after Gemmini's array configuration
 - the execute command set: `CONFIG`, `PRELOAD`, `COMPUTE` and `COMPUTE_ACCUMULATE`
-  (`controller/execute.py`)
+  (`controller/streamer.py`)
 - the local address encoding, where bit 31 selects the accumulator, bit 30 accumulates and
   bit 29 reads a full row (`memory/local_addr.py`)
 - the accumulator, a separate result memory with activation on read-out

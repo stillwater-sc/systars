@@ -102,7 +102,7 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
 
 - **L1 (`memory/stream_buffer.py`)**: `StreamBuffers` (one block per array row or column, one credit each; a buffer takes the next block in the clock its last element leaves) and `ResultBuffers` (one FIFO per column).
 
-- **ExecuteController (`controller/execute.py`)**: The Streamer. It reads L2 (the scratchpad's two read ports) into L1 on schedule and never stalls: with `K >= R, C` tiles stream back to back, and a reduction's end waits for the OS north drain (`2R - 1` clocks between reductions). It reports each command's L2 release (`completed`, once its last block is in L1) and its result (`result`) separately. The command semantics (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE; `cmd_chain`; OS, WS and IS operand layouts) are in its module docstring.
+- **Streamer (`controller/streamer.py`)**: It reads L2 (the scratchpad's two read ports) into L1 on schedule and never stalls: with `K >= R, C` tiles stream back to back, and a reduction's end waits for the OS north drain (`2R - 1` clocks between reductions). It reports each command's L2 release (`completed`, once its last block is in L1) and its result (`result`) separately. The command semantics (CONFIG, PRELOAD, COMPUTE, COMPUTE_ACCUMULATE; `cmd_chain`; OS, WS and IS operand layouts) are in its module docstring.
 
 - **Config (`config.py`)**: Central `SystolicConfig` dataclass with all hardware parameters. Pre-defined configs: `DEFAULT_CONFIG`, `LEAN_CONFIG`, `CHIP_CONFIG`, `LARGE_CONFIG`
 
@@ -113,7 +113,7 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
   Gemmini-style result memory (the accumulator until #37). The KPU's **Combiner**, between L1
   and L2, merges WS/IS partials and fuses bias, activation, scaling and block-format
   conversion as results are written to L2 (`docs/architecture/combiner.md`; port #38).
-- Load/Execute/Store controllers, the BlockMover's engines (`blockmover/`: StreamReader,
+- The CSP processes (`BlockMoverIn`, `BlockMoverOut`, `Streamer`), the BlockMover's engines (`blockmover/`: StreamReader,
   StreamWriter), and `SystolicTop`,
   which computes a verified GEMM end to end (`tests/unit/test_gemm_systolic.py`)
 - `SystolicTop` is a systolic KPU compute tile following kpu-sim's CSP model: AXI = L3,

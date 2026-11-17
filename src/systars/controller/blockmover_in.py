@@ -1,5 +1,5 @@
 """
-LoadController - moves a tile from L3 into the scratchpad or the Combiner (the
+BlockMoverIn - moves a tile from L3 into the scratchpad or the Combiner (the
 BlockMover's L3 -> L2 leg).
 
 In the KPU's CSP model (kpu-sim, docs/01-architecture/kpu-execution-model.md) the
@@ -53,7 +53,7 @@ State Machine (per row):
     IDLE -> CLEAR (one zero row per clock) -> DONE
 
 Data Flow:
-    L3 (via StreamReader) --> LoadController --> Scratchpad | Combiner
+    L3 (via StreamReader) --> BlockMoverIn --> Scratchpad | Combiner
 """
 
 from amaranth import Cat, Const, Module, Mux, Signal
@@ -65,9 +65,9 @@ from ..memory.local_addr import LocalAddr
 from ..util.commands import BlockMoverOpcode
 
 
-class LoadController(Component):
+class BlockMoverIn(Component):
     """
-    Load controller for DRAM -> scratchpad transfers.
+    The BlockMover's inbound leg: a LOAD, L3 -> the scratchpad (L2) or the Combiner.
 
     Coordinates data movement from external memory through the StreamReader
     BlockMover engine into the scratchpad memory.
@@ -124,19 +124,19 @@ class LoadController(Component):
             # One scratchpad row is written per BlockMover beat; a wider row would only
             # receive the low blockmover_buswidth bits
             raise ValueError(
-                f"LoadController: scratchpad row ({sp_width} bits) is wider than "
+                f"BlockMoverIn: scratchpad row ({sp_width} bits) is wider than "
                 f"blockmover_buswidth ({buswidth}); set blockmover_buswidth >= {sp_width}"
             )
         beat = buswidth // 8
         if beat < 2 or beat & (beat - 1):
             raise ValueError(
-                f"LoadController: blockmover_buswidth must be a power-of-two bytes, got {buswidth}"
+                f"BlockMoverIn: blockmover_buswidth must be a power-of-two bytes, got {buswidth}"
             )
         if beat > AXI_4KB:
-            raise ValueError(f"LoadController: a {beat}-byte beat is wider than a 4 KB page")
+            raise ValueError(f"BlockMoverIn: a {beat}-byte beat is wider than a 4 KB page")
         if config.combiner_width > buswidth:
             raise ValueError(
-                f"LoadController: Combiner row ({config.combiner_width} bits) is wider than "
+                f"BlockMoverIn: Combiner row ({config.combiner_width} bits) is wider than "
                 f"blockmover_buswidth ({buswidth}); set blockmover_buswidth >= {config.combiner_width}"
             )
         mask_width = sp_width // 8

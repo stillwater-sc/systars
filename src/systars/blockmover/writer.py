@@ -2,7 +2,7 @@
 StreamWriter - BlockMover engine for local memory to external memory transfers.
 
 The StreamWriter handles AXI-like burst write transactions to external memory,
-receiving data from the StoreController (reading from Combiner).
+receiving data from the BlockMoverOut (reading from Combiner).
 
 Features (initial implementation):
 - Single outstanding burst request
@@ -21,16 +21,16 @@ class StreamWriter(Component):
     """
     BlockMover write engine for local memory -> external memory transfers.
 
-    Accepts write requests from the StoreController and issues AXI-like
+    Accepts write requests from the BlockMoverOut and issues AXI-like
     burst write transactions to external memory.
 
-    Request Interface (from StoreController):
+    Request Interface (from BlockMoverOut):
         req_valid: Request valid (start of burst)
         req_ready: Ready to accept request
         req_addr: Physical address (64-bit)
         req_len: Burst length in beats (0 = 1 beat, 255 = 256 beats)
 
-    Data Interface (from StoreController):
+    Data Interface (from BlockMoverOut):
         data_valid: Write data valid
         data_ready: Ready to accept data
         data: Write data (blockmover_buswidth bits)
@@ -72,12 +72,12 @@ class StreamWriter(Component):
 
         super().__init__(
             {
-                # Request interface (from StoreController)
+                # Request interface (from BlockMoverOut)
                 "req_valid": In(1),
                 "req_ready": Out(1),
                 "req_addr": In(64),
                 "req_len": In(8),
-                # Data interface (from StoreController)
+                # Data interface (from BlockMoverOut)
                 "data_valid": In(1),
                 "data_ready": Out(1),
                 "data": In(buswidth),
@@ -184,7 +184,7 @@ class StreamWriter(Component):
                     m.d.sync += state.eq(state_data)
 
             with m.Case(state_data):
-                # Forward data from StoreController to AXI W channel
+                # Forward data from BlockMoverOut to AXI W channel
                 m.d.comb += [
                     self.data_ready.eq(self.mem_wready),
                     self.mem_wvalid.eq(self.data_valid),
