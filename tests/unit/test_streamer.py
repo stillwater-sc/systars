@@ -10,6 +10,7 @@ import pytest
 from amaranth import Elaboratable, Module
 
 from systars.config import Dataflow, SystolicConfig
+from systars.controller.result_path import ResultPath
 from systars.controller.streamer import (
     CHAIN_CONTINUES,
     CHAIN_MORE,
@@ -35,12 +36,14 @@ def config(**overrides):
 
 
 class Harness(Elaboratable):
-    """The Streamer and the fabric. With ``l2``, the real banked L2 serves the reads:
-    ``b_base`` is then its B group's first row, where stationary and B tiles go."""
+    """The Streamer, the fabric and the result path (the L1 -> L2 hop, wired as in
+    SystolicTop). With ``l2``, the real banked L2 serves the reads: ``b_base`` is then
+    its B group's first row, where stationary and B tiles go."""
 
     def __init__(self, cfg, *, l2=False):
         self.cfg = cfg
         self.ctrl = Streamer(cfg)
+        self.results = ResultPath(cfg)
         self.array = SystolicArray(cfg)
         self.rows, self.cols, self.kb = self.ctrl.rows, self.ctrl.cols, self.ctrl.block
         self.l2 = Scratchpad(cfg) if l2 else None
@@ -49,7 +52,19 @@ class Harness(Elaboratable):
     def elaborate(self, _platform):
         m = Module()
         m.submodules.ctrl = ctrl = self.ctrl
+        m.submodules.results = res = self.results
         m.submodules.array = array = self.array
+        m.d.comb += [
+            res.tile_valid.eq(ctrl.tile_valid),
+            ctrl.tile_ready.eq(res.tile_ready),
+            *[getattr(res, f"tile_{name}").eq(getattr(ctrl, f"tile_{name}"))
+              for name, _ in res.layout],
+            res.stationary.eq(ctrl.cfg_dataflow),
+            ctrl.results_busy.eq(res.busy),
+            ctrl.held.eq(res.held),
+            ctrl.held_id.eq(res.held_id),
+            ctrl.held_sync.eq(res.held_sync),
+        ]  # fmt: skip
         if self.l2 is not None:
             m.submodules.l2 = l2 = self.l2
             for port, prefix in (("a", "read"), ("b", "read_b")):
@@ -61,7 +76,7 @@ class Harness(Elaboratable):
                 ]
         m.d.comb += [
             array.in_control_dataflow.eq(ctrl.array_in_dataflow),
-            ctrl.array_out_collision.eq(array.out_collision),
+            res.array_out_collision.eq(array.out_collision),
         ]
         for i in range(self.rows):
             for name in ("a", "valid", "first", "last"):
@@ -75,7 +90,7 @@ class Harness(Elaboratable):
                 getattr(array, f"in_w_valid_{j}").eq(getattr(ctrl, f"array_in_w_valid_{j}")),
             ]
             for name in ("c", "c_valid", "psum", "psum_valid"):
-                m.d.comb += getattr(ctrl, f"array_out_{name}_{j}").eq(
+                m.d.comb += getattr(res, f"array_out_{name}_{j}").eq(
                     getattr(array, f"out_{name}_{j}")
                 )
         return m
@@ -97,7 +112,7 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect
     (``cmd_ready`` only), then the run waits for every completion and result. A
     command's ``sync`` field overrides its ``cmd_sync``.
     """
-    ctrl, cfg = harness.ctrl, harness.cfg
+    ctrl, rp, cfg = harness.ctrl, harness.results, harness.cfg
     log = {
         "a_reads": [], "b_reads": [], "writes": [], "completed": [], "results": [],
         "dataflow": [], "streaming": [], "accepted": [], "error": 0,
@@ -128,10 +143,11 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect
         """Log every clock's Combiner writes, completions, results and accepts."""
         t = 0
         async for sample in ctx.tick().sample(
-            ctrl.combiner_write_req, ctrl.combiner_write_addr, ctrl.combiner_write_data, ctrl.combiner_accumulate,
+            rp.combiner_write_req, rp.combiner_write_addr, rp.combiner_write_data, rp.combiner_accumulate,
             ctrl.completed, ctrl.completed_id, ctrl.completed_sync,
-            ctrl.result, ctrl.result_id, ctrl.result_sync,
-            ctrl.array_in_valid_0, ctrl.error, ctrl.cmd_valid, ctrl.cmd_ready, ctrl.cmd_id,
+            rp.result, rp.result_id, rp.result_sync,
+            ctrl.array_in_valid_0, ctrl.error | rp.error, ctrl.cmd_valid, ctrl.cmd_ready,
+            ctrl.cmd_id,
         ):  # fmt: skip
             _, _, req, addr, data, acc, done, done_id, done_sync, res, res_id, res_sync = sample[
                 :12
@@ -173,7 +189,8 @@ def run(harness, scratchpad, commands, *, tracked=False, max_cycles=4000, expect
         while ctx.get(ctrl.busy) or len(log["completed"]) < len(commands):
             await ctx.tick()
         await ctx.tick().repeat(2)
-        log["error_kind"] = ctx.get(ctrl.error_kind)
+        # The Streamer's error, else the result path's (SystolicTop's order)
+        log["error_kind"] = ctx.get(ctrl.error_kind if ctx.get(ctrl.error) else rp.error_kind)
         if harness.l2 is not None:
             log["l2_error"] = ctx.get(harness.l2.error)
 

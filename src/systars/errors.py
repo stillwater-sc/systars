@@ -6,9 +6,9 @@ The tile's error bits are sticky and say only that something went wrong. Each mo
 reports **what kind** of error it saw first (its ``error_kind`` output, stable from the clock
 its ``error`` bit rises), and ``SystolicTop`` latches the first error event of all of them:
 
-- the **source**: L1 (the Streamer's schedule and the L1 buffers), L2 (an access the
-  macros can't take), SYNC (a credit or token protocol error, in one of the two slot pools)
-  or AXI (an error response);
+- the **source**: L1 (the Streamer's schedule and stream buffers, and the result path's
+  result buffers), L2 (an access the macros can't take), SYNC (a credit or token protocol
+  error, in one of the two slot pools) or AXI (an error response);
 - the **kind**, from that source's table below;
 - the **command** (its type and ID), when the kind names a controller:
   - a SYNC fault at a command's completion (a signal or a release,
@@ -48,7 +48,7 @@ class ErrorSource(IntEnum):
 
 
 class L1Error(IntEnum):
-    """``Streamer.error_kind``."""
+    """``Streamer.error_kind`` and ``ResultPath.error_kind`` (the L1 source)."""
 
     SIGNAL_NO_RESULT = 1  # a command with SIGNAL that writes no result
     RESULT_WITHOUT_COMMAND = 2  # a result row with no command waiting for it

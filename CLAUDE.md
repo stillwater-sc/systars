@@ -120,7 +120,7 @@ PE (Processing Element) → PEArray (PE grid) → SystolicArray (PEArray grid) �
   reduction's final commit applies one of four profiles: requantization, the SFU bank, or
   MXINT8 (`docs/architecture/combiner.md`). `SystolicTop` takes the profiles on its
   `cmb_scale_<n>`, `cmb_control_<n>` and `cmb_clip_<n>` ports (kpugen: CSRs).
-- The CSP processes (`BlockMoverIn`, `BlockMoverOut`, `Streamer`), the BlockMover's engines (`blockmover/`: StreamReader,
+- The CSP processes, one per hop (#44): the BlockMover (`controller/blockmover.py`, its legs `BlockMoverIn` and `BlockMoverOut` on one L3 port), the Streamer (L2 -> L1) and the result path (`controller/result_path.py`, L1 -> the Combiner), the BlockMover's engines (`blockmover/`: StreamReader,
   StreamWriter), and `SystolicTop`,
   which computes a verified GEMM end to end (`tests/unit/test_gemm_systolic.py`)
 - `SystolicTop` is a systolic KPU compute tile following kpu-sim's CSP model: AXI = L3,

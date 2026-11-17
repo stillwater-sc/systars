@@ -140,9 +140,11 @@ systars/
 │   │   ├── local_addr.py      # Local address encoding
 │   │   └── skew_buffer.py     # Legacy skew registers (examples and one test only)
 │   ├── controller/
+│   │   ├── blockmover.py      # The BlockMover: both legs and their engines on one L3 port
 │   │   ├── blockmover_in.py   # BlockMoverIn: the BlockMover's inbound leg, L3 -> L2 or the Combiner
 │   │   ├── blockmover_out.py  # BlockMoverOut: its outbound leg, Combiner -> L3
 │   │   ├── streamer.py        # Streamer: L2 -> L1 -> fabric
+│   │   ├── result_path.py     # ResultPath: L1 result buffers -> the Combiner
 │   │   ├── sync.py            # Credits and tile-ready tokens (SlotPool, Sync)
 │   │   └── blockmover_in_transpose.py # Legacy transposing load
 │   ├── blockmover/            # The BlockMover's engines

@@ -17,9 +17,9 @@ L2 -> L1          the Streamer             its L2 tile's token is there, its Com
                                            once the tile's last block is in L1
 L1 -> fabric      the fabric               (push-only: no flow control)
 -> L1
-L1 -> L2          the result path, today   each result row as it leaves the L1 result
-                  in the Streamer          buffers; emits the Combiner slot's token once
-                                           the tile's rows are in (#98: the Combiner's)
+L1 -> L2          the result path          each result row as it leaves the L1 result
+                  (``ResultPath``)         buffers; emits the Combiner slot's token once
+                                           the tile's rows are in
 L2 -> L3          the BlockMover, outbound the result tile's token is there; returns the
                   (``BlockMoverOut``)      Combiner slot's credit when done
 ================  =======================  ==============================================
@@ -44,6 +44,7 @@ from amaranth.lib.wiring import Component, In, Out
 
 from .config import SystolicConfig
 from .controller.blockmover import AXI_CHANNELS, BlockMover
+from .controller.result_path import ResultPath
 from .controller.streamer import Streamer
 from .controller.sync import SlotPool, Sync
 from .core.systolic_array import SystolicArray
@@ -56,6 +57,7 @@ from .errors import (
     MULTI,
     SOURCE,
     ErrorSource,
+    FirstErrorKind,
     L2Error,
     SlotError,
     SlotPoolId,
@@ -102,7 +104,7 @@ class SystolicTop(Component):
                 2=exec)
             {bm_in,bm_out,streamer}_completed[_id]: Per-process completions (lossless).
                 The Streamer's completion means it is done with L2 (its last block
-                is in L1); streamer_result[_id] means its results are in the Combiner
+                is in L1); result[_id] means its results are in the Combiner (the result path)
             {bm_in,bm_out,streamer}_started[_id]: A process started a command
             {bm_in,bm_out,streamer}_queued: A process has a command at its queue's head
             l2_free, l2_ready, combiner_free, combiner_ready: Slot states (OWNED = neither)
@@ -200,8 +202,8 @@ class SystolicTop(Component):
             "streamer_completed": Out(1),
             "streamer_completed_id": Out(8),
             # The Streamer's results are in the Combiner (its result token)
-            "streamer_result": Out(1),
-            "streamer_result_id": Out(8),
+            "result": Out(1),
+            "result_id": Out(8),
             "interrupt": Out(1),
             # A process started a command (its queue's head was dispatched): the
             # CSP action's start, matching {bm_in,bm_out,streamer}_completed
@@ -251,6 +253,7 @@ class SystolicTop(Component):
         self.blockmover = BlockMover(cfg)
         self.bm_in, self.bm_out = self.blockmover.bm_in, self.blockmover.bm_out
         self.streamer = Streamer(cfg)
+        self.result_path = ResultPath(cfg)  # the L1 -> L2 hop
         self.l2_slots = SlotPool(cfg.l2_slots)
         self.combiner_slots = SlotPool(cfg.combiner_slots, producers=2)
 
@@ -276,6 +279,7 @@ class SystolicTop(Component):
         m.submodules.blockmover = blockmover = self.blockmover
         bm_in, bm_out = self.bm_in, self.bm_out
         m.submodules.streamer = streamer = self.streamer
+        m.submodules.result_path = results = self.result_path
 
         # =====================================================================
         # Command Queues, Credits and Tile-Ready Tokens (controller/sync.py)
@@ -385,7 +389,7 @@ class SystolicTop(Component):
             lambda h: (~h.wait | l2.cons_ready) & (~h.acquire | acc.prod_credit),
         )
         ex_released = Sync.fields(streamer.completed_sync)
-        ex_resulted = Sync.fields(streamer.result_sync)
+        ex_resulted = Sync.fields(results.result_sync)
         m.d.comb += [
             l2.cons_slot.eq(ex_head.src),
             l2.cons_wait.eq(ex_head.wait),
@@ -395,7 +399,7 @@ class SystolicTop(Component):
             acc.prod_slot.eq(ex_head.dst),
             acc.prod_acquire.eq(ex_head.acquire),
             acc.prod_take.eq(ex_go & ex_head.acquire),
-            acc.prod_signal.eq(streamer.result & ex_resulted.signal),
+            acc.prod_signal.eq(results.result & ex_resulted.signal),
             acc.prod_signal_slot.eq(ex_resulted.dst),
         ]
 
@@ -471,17 +475,33 @@ class SystolicTop(Component):
             streamer.sp_b_read_valid.eq(scratchpad.read_b_valid),
         ]
 
-        # The Combiner's write port: the Streamer's result rows, which
-        # never wait, and in the clocks they leave free the BlockMoverIn's rows
-        # (a LOAD to a Combiner address). The BlockMoverOut only reads it.
-        m.d.comb += bm_in.combiner_write_ready.eq(~streamer.combiner_write_req)
-        with m.If(streamer.combiner_write_req):
+        # =====================================================================
+        # The result path (L1 -> L2): the Streamer's result tiles, the fabric's rows
+        # =====================================================================
+
+        m.d.comb += [
+            results.tile_valid.eq(streamer.tile_valid),
+            streamer.tile_ready.eq(results.tile_ready),
+            *[getattr(results, f"tile_{name}").eq(getattr(streamer, f"tile_{name}"))
+              for name, _ in results.layout],
+            results.stationary.eq(streamer.cfg_dataflow),
+            streamer.results_busy.eq(results.busy),
+            streamer.held.eq(results.held),
+            streamer.held_id.eq(results.held_id),
+            streamer.held_sync.eq(results.held_sync),
+        ]  # fmt: skip
+
+        # The Combiner's write port: the result path's rows, which never wait, and in
+        # the clocks they leave free the BlockMoverIn's rows (a LOAD to a Combiner
+        # address). The BlockMoverOut only reads it.
+        m.d.comb += bm_in.combiner_write_ready.eq(~results.combiner_write_req)
+        with m.If(results.combiner_write_req):
             m.d.comb += [
                 combiner.write_req.eq(1),
-                combiner.write_addr.eq(streamer.combiner_write_addr),
-                combiner.write_data.eq(streamer.combiner_write_data),
-                combiner.accumulate.eq(streamer.combiner_accumulate),
-                combiner.write_epilogue.eq(streamer.combiner_write_epilogue),
+                combiner.write_addr.eq(results.combiner_write_addr),
+                combiner.write_data.eq(results.combiner_write_data),
+                combiner.accumulate.eq(results.combiner_accumulate),
+                combiner.write_epilogue.eq(results.combiner_write_epilogue),
             ]
         with m.Else():
             m.d.comb += [
@@ -492,12 +512,12 @@ class SystolicTop(Component):
             ]
 
         # =====================================================================
-        # Streamer <-> SystolicArray
+        # The fabric: fed by the Streamer, drained by the result path
         # =====================================================================
 
         m.d.comb += [
             array.in_control_dataflow.eq(streamer.array_in_dataflow),
-            streamer.array_out_collision.eq(array.out_collision),
+            results.array_out_collision.eq(array.out_collision),
         ]
         for i in range(total_rows):
             for name in ("a", "valid", "first", "last"):
@@ -511,7 +531,7 @@ class SystolicTop(Component):
                 getattr(array, f"in_w_valid_{j}").eq(getattr(streamer, f"array_in_w_valid_{j}")),
             ]
             for name in ("c", "c_valid", "psum", "psum_valid"):
-                m.d.comb += getattr(streamer, f"array_out_{name}_{j}").eq(
+                m.d.comb += getattr(results, f"array_out_{name}_{j}").eq(
                     getattr(array, f"out_{name}_{j}")
                 )
 
@@ -546,9 +566,8 @@ class SystolicTop(Component):
             self.bm_out_completed_id.eq(bm_out.completed_id),
             self.streamer_completed.eq(streamer.completed),
             self.streamer_completed_id.eq(streamer.completed_id),
-            self.streamer_result.eq(streamer.result),
-            self.streamer_result_id.eq(streamer.result_id),
-            self.l1_error.eq(streamer.error),
+            self.result.eq(results.result),
+            self.result_id.eq(results.result_id),
             self.l2_error.eq(scratchpad.error),
         ]
 
@@ -582,11 +601,22 @@ class SystolicTop(Component):
         # Interrupt (could be extended)
         m.d.comb += self.interrupt.eq(0)
 
-        self._first_error(m, scratchpad, streamer, l2, acc)
+        # L1's errors: the Streamer's (its stream buffers) and the result path's (its
+        # result buffers, the north links); the first to rise names the kind
+        m.submodules.l1_errors = l1 = FirstErrorKind(2, 4)
+        m.d.comb += [
+            l1.error_0.eq(streamer.error),
+            l1.kind_0.eq(streamer.error_kind),
+            l1.error_1.eq(results.error),
+            l1.kind_1.eq(results.error_kind),
+            self.l1_error.eq(l1.error),
+        ]
+
+        self._first_error(m, scratchpad, l1, l2, acc)
 
         return m
 
-    def _first_error(self, m, scratchpad, streamer, l2_pool, combiner_pool):
+    def _first_error(self, m, scratchpad, l1, l2_pool, combiner_pool):
         """Latch the first error event: a sticky bit rising (L1, L2, SYNC) or an AXI error
         response, with its source, kind and the command responsible (errors.py)."""
         cycle = Signal(32)
@@ -620,9 +650,7 @@ class SystolicTop(Component):
             "streamer": last_of(
                 self.streamer_completed, self.streamer_completed_id, "streamer"
             ),  # fmt: skip
-            "streamer_result": last_of(
-                self.streamer_result, self.streamer_result_id, "streamer_result"
-            ),  # fmt: skip
+            "result": last_of(self.result, self.result_id, "result"),  # fmt: skip
         }
 
         def risen(bit, name):
@@ -652,7 +680,7 @@ class SystolicTop(Component):
         # on their completions)
         completion_ids = {
             SlotPoolId.L2: {self.CTRL_LOAD: done["bm_in"], self.CTRL_EXEC: done["streamer"]},
-            SlotPoolId.COMBINER: {self.CTRL_EXEC: done["streamer_result"],
+            SlotPoolId.COMBINER: {self.CTRL_EXEC: done["result"],
                                   self.CTRL_LOAD: done["bm_in"], self.CTRL_STORE: done["bm_out"]},
         }  # fmt: skip
         l2_writes = {L2Error.WRITE_PAST_L2, L2Error.WRITE_BANK_BUSY}  # the LOAD's writes
@@ -665,8 +693,8 @@ class SystolicTop(Component):
         l2_proc = Mux(any_of(l2_kind, l2_writes), self.CTRL_LOAD, self.CTRL_EXEC)
         events.append((risen(scratchpad.error, "l2_error"), ErrorSource.L2, l2_kind, 1, l2_proc,
                        0, 0, 0))  # fmt: skip
-        events.append((risen(streamer.error, "l1_error"), ErrorSource.L1,
-                       streamer.error_kind, 1, self.CTRL_EXEC, 0, 0, 0))  # fmt: skip
+        events.append((risen(l1.error, "l1_error"), ErrorSource.L1,
+                       l1.kind, 1, self.CTRL_EXEC, 0, 0, 0))  # fmt: skip
         for pool, pool_id, owners in pools:
             kind = pool.error_kind
             tag = pool_id.name.lower()

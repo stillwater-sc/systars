@@ -5,7 +5,7 @@ Credits and tile-ready tokens (controller/sync.py, SystolicTop's command queues)
   protocol error.
 - Matmul and Conv2d on a real ``SystolicTop``, with a monitor that replays the
   observable events (commands pushed, ``*_started``, ``*_completed``, and the
-  Streamer's ``streamer_result``) through an independent slot model, every cycle. The
+  result path's ``result``) through an independent slot model, every cycle. The
   Streamer has several commands in flight: each returns its L2 credit on its
   completion (its last block is in L1) and emits its result token on its result,
   matched by command ID:
@@ -182,7 +182,7 @@ class Monitor:
         for name in PROCESSES.values():
             sigs += [getattr(top, f"{name}_started"), getattr(top, f"{name}_started_id"),
                      getattr(top, f"{name}_completed"), getattr(top, f"{name}_completed_id")]  # fmt: skip
-        sigs += [top.streamer_result, top.streamer_result_id]
+        sigs += [top.result, top.result_id]
         return [*sigs, top.l2_free, top.l2_ready, top.combiner_free, top.combiner_ready, top.sync_error,
                 top.l1_error]  # fmt: skip
 

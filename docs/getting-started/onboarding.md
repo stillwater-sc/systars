@@ -115,7 +115,7 @@ registered fabric and the CSP rework, and three packages model other architectur
 | `config.py`, `targets.py`, `top.py` | Current | Configuration, the RTL target list, the compute tile |
 | `core/` | Current | `PE`, `PEArray`, `SystolicArray` |
 | `memory/scratchpad.py`, `combiner.py`, `stream_buffer.py`, `local_addr.py` | Current | L2, the Combiner, L1, local address encoding |
-| `controller/streamer.py`, `blockmover_in.py`, `blockmover_out.py`, `sync.py` | Current | The Streamer, the BlockMover's legs, credits and tokens |
+| `controller/streamer.py`, `result_path.py`, `blockmover.py`, `blockmover_in.py`, `blockmover_out.py`, `sync.py` | Current | The Streamer, the result path, the BlockMover and its legs, credits and tokens |
 | `blockmover/reader.py`, `writer.py`, `axi.py` | Current | The AXI burst engines behind the BlockMover |
 | `isa/` | Current | `Matmul`, `Conv2d`, the command port |
 | `wavefront.py` | Current | RTL tracing, checking and SVG rendering |

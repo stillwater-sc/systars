@@ -7,7 +7,9 @@ and writes each row, in parallel, into one L1 stream buffer (``memory.stream_buf
 the buffer streams it into the fabric one element per clock. The buffers are loaded on
 consecutive clocks, so buffer ``i`` starts one clock after buffer ``i - 1``: that
 stagger is the skew. The fabric's results leave through the L1 result buffers, which
-turn them back into row-major rows, and the Streamer writes those rows to the Combiner.
+turn them back into row-major rows, and the result path (``result_path.py``, the L1 -> L2
+hop) writes those rows to the Combiner. The Streamer describes each result tile to it
+as the COMPUTE that produces it starts.
 
 ``R`` and ``C`` are the array's PE rows and columns, and ``KB`` the longest block a
 stream buffer holds (``sp_width / input_bits`` A elements, ``sp_width /
@@ -73,10 +75,9 @@ then runs to the end without stopping:
 - *Fires when* the head command's L2 tile is ready (``WAIT``), its Combiner slot is free
   (``ACQUIRE``), and the fabric can take the stream on schedule (the rules above). It
   takes the token and the credit as it starts. Several commands are in flight at once.
-- *Outputs:* the L1 streams into the fabric; the result rows into the Combiner (the
-  result path, the L1 -> L2 hop, which #98 moves to a process of its own); on a
-  command's ``result`` event, the Combiner slot's tile-ready token (``SIGNAL``) to the
-  outbound leg.
+- *Outputs:* the L1 streams into the fabric; each producing COMPUTE's result tile, to
+  the result path (``result_path.py``), which writes the rows into the Combiner and
+  emits the slot's tile-ready token (``SIGNAL``) on its ``result`` event.
 - *Credits returned:* the L2 slot's, on ``completed`` (``RELEASE``: its last block is in
   L1), to the inbound leg.
 
@@ -85,19 +86,18 @@ run alone: one starts only when the Streamer is idle, nothing starts while it is
 in flight, and a command with results completes once they are in the Combiner,
 so a host can issue a STORE as soon as it sees the completion.
 
-**Events**, at most one of each per clock, ``result`` in command order:
+**Events**, at most one per clock:
 
 - ``completed`` (``completed_id``, ``completed_sync``): the command is done with
   L2: its last block is in L1. ``SystolicTop`` returns the command's L2 credit on it
   (by slot, so order does not matter). A PRELOAD's completion is a clock late,
   behind any other completion in the same clock, and may come before that of the
   COMPUTE issued ahead of it (the two paths run side by side).
-- ``result`` (``result_id``, ``result_sync``): the command's results are in the
-  Combiner. ``SystolicTop`` emits the Combiner tile's token on it.
+- The command's results reach the Combiner later, on the result path's ``result``
+  event (``result_path.py``), in command order.
 
-``error`` (sticky) is a schedule or protocol violation: an L1 buffer loaded
-without its credit or overflowing, a collision on a north link, a result
-without a command, or a command with SIGNAL that writes no result (``k_dim = 0``,
+``error`` (sticky) is a schedule or protocol violation: an L1 stream buffer loaded
+without its credit, or a command with SIGNAL that writes no result (``k_dim = 0``,
 an OS COMPUTE with ``CHAIN_MORE``, PRELOAD, CONFIG or an unknown opcode), whose
 Combiner slot would never get its token. A valid schedule never raises it.
 
@@ -112,8 +112,9 @@ from amaranth.lib.wiring import Component, In, Out
 
 from ..config import Dataflow, SystolicConfig
 from ..errors import FirstErrorKind, L1Error
-from ..memory.stream_buffer import ResultBuffers, StreamBuffers
+from ..memory.stream_buffer import StreamBuffers
 from ..util.commands import ExecOpcode
+from .result_path import result_tile_layout
 from .sync import Sync
 
 # Read kinds, carried with each read to its return
@@ -132,10 +133,10 @@ class Streamer(Component):
         cmd_*: Command (``valid``/``ready``; fields read in the clock it is accepted)
         cfg_dataflow: Current mode (0 = OS, 1 = stationary)
         sp_a_read_*, sp_b_read_*: The scratchpad's two read ports
-        combiner_write_*, combiner_accumulate, combiner_write_epilogue: Combiner write port
+        tile_valid, tile_ready, tile_*: A producing COMPUTE's result tile, to the result path
+        results_busy, held, held_id, held_sync: The result path's state (result_path.py)
         array_*: SystolicArray edges (see ``SystolicArray``)
         completed, completed_id, completed_sync: A command is done with L2
-        result, result_id, result_sync: A command's results are in the Combiner
         busy, error, state_debug: Status
         error_kind: The first error's ``L1Error`` (tiles/systolic/errors.py), from the clock
             ``error`` rises
@@ -147,8 +148,6 @@ class Streamer(Component):
         ("a_buf", L1Error.A_LOAD_WITHOUT_CREDIT),
         ("b_buf", L1Error.B_LOAD_WITHOUT_CREDIT),
         ("w_buf", L1Error.W_LOAD_WITHOUT_CREDIT),
-        ("north", L1Error.NORTH_RESULT_OVERFLOW),
-        ("south", L1Error.SOUTH_RESULT_OVERFLOW),
     )
 
     def __init__(self, config: SystolicConfig):
@@ -205,17 +204,18 @@ class Streamer(Component):
             "sp_b_read_addr": Out(32),
             "sp_b_read_data": In(config.sp_width),
             "sp_b_read_valid": In(1),
-            "combiner_write_req": Out(1),
-            "combiner_write_addr": Out(32),
-            "combiner_write_data": Out(signed(config.combiner_width)),
-            "combiner_write_epilogue": Out(4),
-            "combiner_accumulate": Out(1),
+            # A producing COMPUTE's result tile, to the result path (result_path.py)
+            "tile_valid": Out(1),
+            "tile_ready": In(1),
+            **{f"tile_{name}": Out(shape) for name, shape in result_tile_layout(config)},
+            # The result path is busy; it completed an untracked command's results
+            "results_busy": In(1),
+            "held": In(1),
+            "held_id": In(8),
+            "held_sync": In(Sync.BITS),
             "completed": Out(1),
             "completed_id": Out(8),
             "completed_sync": Out(Sync.BITS),
-            "result": Out(1),
-            "result_id": Out(8),
-            "result_sync": Out(Sync.BITS),
             "busy": Out(1),
             "error": Out(1),
             "error_kind": Out(4),
@@ -230,21 +230,15 @@ class Streamer(Component):
             ports[f"array_in_b_{j}"] = Out(signed(config.weight_bits))
             ports[f"array_in_w_{j}"] = Out(signed(config.weight_bits))
             ports[f"array_in_w_valid_{j}"] = Out(1)
-            ports[f"array_out_c_{j}"] = In(signed(config.acc_bits))
-            ports[f"array_out_c_valid_{j}"] = In(1)
-            ports[f"array_out_psum_{j}"] = In(signed(config.acc_bits))
-            ports[f"array_out_psum_valid_{j}"] = In(1)
         ports["array_in_dataflow"] = Out(1)
-        ports["array_out_collision"] = In(1)
         super().__init__(ports)
 
-        # L1, built here so a testbench or a trace's probes reach it (None: the dataflow
-        # lacks it)
+        # L1's stream buffers, built here so a testbench or a trace's probes reach them
+        # (None: the dataflow lacks it). The result buffers are the result path's
+        # (result_path.py)
         R, C, KB = rows, cols, self.block
         self.a_buf = StreamBuffers(R, KB, config.input_bits)
         self.b_buf = StreamBuffers(C, KB, config.weight_bits) if self.supports_os else None
-        self.north = ResultBuffers(C, C + 1, config.acc_bits) if self.supports_os else None
-        self.south = ResultBuffers(C, C + 1, config.acc_bits) if self.supports_stationary else None
         # One per column: a column of W, streamed down the weight chain
         self.w_buf = StreamBuffers(C, R, config.weight_bits) if self.supports_stationary else None
 
@@ -261,12 +255,10 @@ class Streamer(Component):
         # L1
         # ---------------------------------------------------------------------
         m.submodules.a_buffers = a_buf = self.a_buf
-        b_buf, north, south, w_buf = self.b_buf, self.north, self.south, self.w_buf
+        b_buf, w_buf = self.b_buf, self.w_buf
         if self.supports_os:
             m.submodules.b_buffers = b_buf
-            m.submodules.north_results = north
         if self.supports_stationary:
-            m.submodules.south_results = south
             m.submodules.w_buffers = w_buf
             for j in range(C):
                 m.d.comb += [
@@ -286,22 +278,6 @@ class Streamer(Component):
         if b_buf is not None:
             for j in range(C):
                 m.d.comb += getattr(self, f"array_in_b_{j}").eq(getattr(b_buf, f"out_{j}"))
-        if north is not None:
-            for j in range(C):
-                m.d.comb += [
-                    getattr(north, f"in_{j}").eq(getattr(self, f"array_out_c_{j}")),
-                    getattr(north, f"in_valid_{j}").eq(
-                        ~stationary & getattr(self, f"array_out_c_valid_{j}")
-                    ),
-                ]
-        if south is not None:
-            for j in range(C):
-                m.d.comb += [
-                    getattr(south, f"in_{j}").eq(getattr(self, f"array_out_psum_{j}")),
-                    getattr(south, f"in_valid_{j}").eq(
-                        stationary & getattr(self, f"array_out_psum_valid_{j}")
-                    ),
-                ]
 
         # ---------------------------------------------------------------------
         # Command decode and the start rule
@@ -354,23 +330,6 @@ class Streamer(Component):
         def unpack_meta(word):
             out, offset = {}, 0
             for name, shape in meta_layout:
-                width = Signal(shape).shape().width
-                out[name] = word[offset : offset + width]
-                offset += width
-            return out
-
-        # Result tiles in flight: where their rows go
-        res_layout = [("rd", 32), ("accumulate", 1), ("rows", range(KB + R + 1)),
-                      ("hold", 1), ("id", 8), ("sync", Sync.BITS), ("epilogue", 4)]  # fmt: skip
-        res_width = sum(Signal(shape).shape().width for _, shape in res_layout)
-        # Deep enough for every tile in flight: a command's last row is written about
-        # D + R + C + KB clocks after it starts, and streams start R or more apart
-        res_depth = 2 + -(-(cfg.spad_read_delay + 6 + R + C + KB) // R)
-        m.submodules.results = res_q = SyncFIFO(width=res_width, depth=max(4, res_depth))
-
-        def unpack_res(word):
-            out, offset = {}, 0
-            for name, shape in res_layout:
                 width = Signal(shape).shape().width
                 out[name] = word[offset : offset + width]
                 offset += width
@@ -440,11 +399,8 @@ class Streamer(Component):
         for sb in (b_buf, w_buf):
             if sb is not None:
                 l1_busy = l1_busy | sb.busy
-        for rb in (north, south):
-            if rb is not None:
-                l1_busy = l1_busy | rb.busy
-        idle = Signal()
-        m.d.comb += idle.eq(quiet & (stream_wait == 0) & ~res_q.r_rdy & ~l1_busy)
+        idle = Signal()  # and every result in the Combiner (the result path is idle)
+        m.d.comb += idle.eq(quiet & (stream_wait == 0) & ~self.results_busy & ~l1_busy)
 
         ok = Signal()
         with m.If(serial | (untracked & ~idle)):
@@ -457,7 +413,7 @@ class Streamer(Component):
             m.d.comb += ok.eq(
                 (stream_wait == 0)
                 & ~direct_pending
-                & (~produces | res_q.w_rdy)
+                & (~produces | self.tile_ready)
                 & (~(os_stream & last) | (k_len >= drain_wait))
                 & (~st_stream | (swap_wait == 0))
             )
@@ -535,20 +491,16 @@ class Streamer(Component):
                         stream_wait.eq(interval - 1),
                         swap_pending.eq(0),
                     ]
-                with m.If(produces):
+                with m.If(produces):  # its result tile, to the result path
                     m.d.comb += [
-                        res_q.w_en.eq(1),
-                        res_q.w_data.eq(
-                            Cat(
-                                self.cmd_rd,
-                                opcode == ExecOpcode.COMPUTE_ACCUMULATE,
-                                tile_rows,
-                                untracked,
-                                self.cmd_id,
-                                self.cmd_sync,
-                                self.cmd_activation,
-                            )
-                        ),
+                        self.tile_valid.eq(1),
+                        self.tile_rd.eq(self.cmd_rd),
+                        self.tile_accumulate.eq(opcode == ExecOpcode.COMPUTE_ACCUMULATE),
+                        self.tile_rows.eq(tile_rows),
+                        self.tile_hold.eq(untracked),
+                        self.tile_id.eq(self.cmd_id),
+                        self.tile_sync.eq(self.cmd_sync),
+                        self.tile_epilogue.eq(self.cmd_activation),
                     ]
 
         # Issue one read slot
@@ -684,8 +636,6 @@ class Streamer(Component):
 
         # Completion: a command's last read returned (an untracked command with
         # results completes with them instead), or a direct command
-        tile = unpack_res(res_q.r_data)
-        tile_done = Signal()  # the last row of the oldest result tile is written
         with m.If(returned & ret["final"]), m.If(~ret["hold"]):
             m.d.comb += [
                 self.completed.eq(1),
@@ -694,11 +644,11 @@ class Streamer(Component):
             ]
             with m.If(ret["serial"]):
                 m.d.sync += serial.eq(0)
-        with m.Elif(tile_done & tile["hold"]):
+        with m.Elif(self.held):  # the result path wrote an untracked command's results
             m.d.comb += [
                 self.completed.eq(1),
-                self.completed_id.eq(tile["id"]),
-                self.completed_sync.eq(tile["sync"]),
+                self.completed_id.eq(self.held_id),
+                self.completed_sync.eq(self.held_sync),
             ]
             m.d.sync += serial.eq(0)
         with m.Elif(p_done):
@@ -719,50 +669,9 @@ class Streamer(Component):
             ]
             m.d.sync += direct_pending.eq(0)
 
-        # ---------------------------------------------------------------------
-        # Results: L1 result buffers -> Combiner rows
-        # ---------------------------------------------------------------------
-        row_count = Signal(range(KB + R + 1))
-        row_valid = Signal()
-        row_data = Signal(cfg.combiner_width)
-        if north is not None and south is not None:
-            m.d.comb += [
-                row_valid.eq(Mux(stationary, south.out_valid, north.out_valid)),
-                row_data.eq(Mux(stationary, south.out_data, north.out_data)),
-            ]
-        else:
-            rb = north if north is not None else south
-            m.d.comb += [row_valid.eq(rb.out_valid), row_data.eq(rb.out_data)]
-
-        with m.If(row_valid):
-            with m.If(res_q.r_rdy):
-                m.d.comb += [
-                    self.combiner_write_req.eq(1),
-                    self.combiner_write_addr.eq(tile["rd"] + row_count),
-                    self.combiner_write_data.eq(row_data),
-                    self.combiner_accumulate.eq(tile["accumulate"]),
-                    self.combiner_write_epilogue.eq(tile["epilogue"]),
-                ]
-                with m.If(row_count == tile["rows"] - 1):
-                    m.d.sync += row_count.eq(0)
-                    m.d.comb += [
-                        res_q.r_en.eq(1),
-                        tile_done.eq(1),
-                        self.result.eq(1),
-                        self.result_id.eq(tile["id"]),
-                        self.result_sync.eq(tile["sync"]),
-                    ]
-                with m.Else():
-                    m.d.sync += row_count.eq(row_count + 1)
-            with m.Else():
-                fault(L1Error.RESULT_WITHOUT_COMMAND)
-
-        with m.If(self.array_out_collision):
-            fault(L1Error.NORTH_COLLISION)
         # This controller's own errors, then each L1 buffer's (L1_UNITS): the first to
         # rise names the kind
-        buffers = {"a_buf": a_buf, "b_buf": b_buf, "w_buf": w_buf, "north": north,
-                   "south": south}  # fmt: skip
+        buffers = {"a_buf": a_buf, "b_buf": b_buf, "w_buf": w_buf}
         units = [(error, local_kind)] + [
             (buffers[name].error, k) for name, k in self.L1_UNITS if buffers[name] is not None
         ]
