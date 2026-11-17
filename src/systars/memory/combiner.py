@@ -121,8 +121,8 @@ class Combiner(Component):
             One per clock, never refused.
         write_epilogue: the request's epilogue code (``memory/epilogue.py``)
         scale_mul, control, clip: the epilogue's configuration (the tile's ``CMB_SCALE``,
-            ``CMB_CONTROL``: shift[5:0], requant[8], act_first[9]; ``CMB_CLIP``: lo[15:0],
-            hi[31:16])
+            ``CMB_CONTROL``: shift[5:0], requant[8], act_first[9], mxint8[10];
+            ``CMB_CLIP``: lo[15:0], hi[31:16])
         read_req, read_addr: STORE's read; it is taken in a clock with ``read_ready``
             (hold ``read_req`` until then)
         read_data, read_valid: its row, ``combiner_latency`` clocks after it was taken
@@ -247,6 +247,7 @@ class Combiner(Component):
             "shift": self.control[0:6],
             "enable": self.control[8],
             "act_first": self.control[9],
+            "mx": self.control[10],
             "clip_lo": self.clip[0:16].as_signed(),
             "clip_hi": self.clip[16:32].as_signed(),
         }

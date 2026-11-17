@@ -18,7 +18,13 @@ from systars.controller.sync import Sync
 from systars.csr import CSR
 from systars.isa.command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, connect_to_top
 from systars.isa.matmul import IS, OS, WS, Matmul, MatmulCmd, MatmulError
-from systars.memory.epilogue import EPILOGUE_FINAL, Requant, epilogue_model
+from systars.memory.epilogue import (
+    EPILOGUE_FINAL,
+    Requant,
+    epilogue_model,
+    sfu_model,
+)
+from systars.memory.mx import mx_row_bytes, mxint8_row_bytes_model
 from systars.top import SystolicTop
 from systars.util.commands import BlockMoverOpcode, ExecOpcode
 
@@ -375,6 +381,24 @@ class TestErrors:
         result = self.run(config(), setup(0, 4, 4, beat, beat, beat))
         assert result.error_code == MatmulError.INVALID_DIMS
 
+    @pytest.mark.parametrize(
+        "case,dataflow,options,N,c_stride",
+        [
+            ("is", IS, 0, 8, 64),  # the corner turn would scramble the blocks
+            ("accumulate", OS, 1, 8, 64),  # an MX C can't be loaded back
+            ("edge_tile_in_n", OS, 0, 6, 64),  # its lanes past N would set the scales
+            ("short_c_stride", OS, 0, 8, 2 * mx_row_bytes(4) - 1),
+        ],
+    )
+    def test_mxint8_c_layouts_refused(self, case, dataflow, options, N, c_stride):
+        """With CMB_CONTROL.mxint8 (#76), Matmul refuses what MX blocks can't hold."""
+        cmds = setup(4, N, 4, 4, N, c_stride, options=options, dataflow=dataflow)
+        result = run_isa(Matmul(config()), cmds, MatmulCmd.START, inputs={"combiner_mx": 1})
+        assert result.error_code == MatmulError.UNSUPPORTED_LAYOUT, case
+        assert not result.commands
+        ok = setup(4, 8, 4, 4, 8, 2 * mx_row_bytes(4), dataflow=OS)
+        assert not run_isa(Matmul(config()), ok, MatmulCmd.START, inputs={"combiner_mx": 1}).error
+
     @pytest.mark.parametrize("case", ["zero_a_stride", "zero_b_stride", "short_c_stride"])
     def test_rejected_layouts(self, case):
         args = {"M": 4, "N": 8, "K": 4, "a_stride": 4, "b_stride": 8, "c_stride": 32}
@@ -438,10 +462,26 @@ def run_on_top(
     A, B, D, C0, expected = operands(rng, M, N, K, bias=bias, accumulate=accumulate)
     rq = requant or Requant()
     narrow = rq.enable
-    expected = np.array(
-        [epilogue_model(list(map(int, row)), activation, rq, cfg.input_bits) for row in expected]
-    )
+    dim = cfg.grid_rows * cfg.tile_rows
+    mx_bytes, tiles_n = mx_row_bytes(dim), -(-N // dim)
+    if rq.mx:
+        # MXINT8 C, tile by tile: each row of a C tile its elements, then its scales
+        sfu = [[sfu_model(int(x), activation, rq) for x in row] for row in expected]
+        expected = np.array(
+            [
+                [list(mxint8_row_bytes_model(row[j * dim : (j + 1) * dim])) for j in range(tiles_n)]
+                for row in sfu
+            ]  # fmt: skip
+        )
+    else:
+        expected = np.array(
+            [
+                epilogue_model(list(map(int, row)), activation, rq, cfg.input_bits)
+                for row in expected
+            ]
+        )
     c_elem = 1 if narrow else 4
+    c_stride = tiles_n * mx_bytes if rq.mx else c_elem * N
     a_addr, b_addr, c_addr, d_addr = A_ADDR + 1, B_ADDR + 7, C_ADDR + 3, D_ADDR + 5
     d_stride = 0 if bias == "row" else N * 4
     memory = bytearray(rng.integers(0, 256, 1 << 17, dtype=np.uint8).tobytes())
@@ -461,11 +501,12 @@ def run_on_top(
     async def testbench(ctx):
         ctx.set(top.cmb_scale, rq.mul & 0xFFFF_FFFF)
         control = rq.shift | (CSR.CMB_REQUANT if rq.enable else 0)
+        control |= CSR.CMB_MXINT8 if rq.mx else 0
         ctx.set(top.cmb_control, control | (CSR.CMB_ACT_FIRST if rq.act_first else 0))
         ctx.set(top.cmb_clip, (rq.clip_lo & 0xFFFF) | (rq.clip_hi & 0xFFFF) << 16)
         options = int(accumulate) | activation << 1  # int8 C follows CMB_CONTROL.requant
         cmds = setup(
-            M, N, K, K, N, c_elem * N, a_addr=a_addr, dataflow=dataflow,
+            M, N, K, K, N, c_stride, a_addr=a_addr, dataflow=dataflow,
             d_addr=d_addr if bias else 0, d_stride=d_stride, options=options,
         )  # fmt: skip
         cmds = [(c, addrs.get(c, d)) for c, d in cmds]
@@ -501,8 +542,12 @@ def run_on_top(
 
     run_sim(dut, testbench, processes=[axi_memory(top, memory, beat), probe], max_cycles=200_000)
     assert status == {"done": 1, "error": 0, "l1": 0, "sync": 0, "l2": 0}
-    c_bytes = M * N * c_elem
-    C = np.array(from_bytes(memory[c_addr : c_addr + c_bytes], 8 * c_elem, M * N)).reshape(M, N)
+    if rq.mx:
+        c_bytes = M * c_stride
+        C = np.array(list(memory[c_addr : c_addr + c_bytes])).reshape(M, tiles_n, mx_bytes)
+    else:
+        c_bytes = M * N * c_elem
+        C = np.array(from_bytes(memory[c_addr : c_addr + c_bytes], 8 * c_elem, M * N)).reshape(M, N)
     untouched = (
         memory[:c_addr] == before[:c_addr]
         and memory[c_addr + c_bytes :] == before[c_addr + c_bytes :]
@@ -626,6 +671,29 @@ def test_the_combiner_epilogue_is_bit_exact(dataflow, activation, requant, bias)
     requantization to int8 with rounding and saturation, in both orders, with a bias."""
     C, expected, untouched = run_on_top(
         config(), 9, 7, 10, dataflow, seed=75, bias=bias, activation=activation,
+        requant=requant,
+    )  # fmt: skip
+    np.testing.assert_array_equal(C, expected)
+    assert untouched
+
+
+@pytest.mark.parametrize("dataflow", [OS, WS], ids=["os", "ws"])
+@pytest.mark.parametrize(
+    "activation,requant",
+    [
+        (0, Requant(mx=True)),
+        (Activation.RELU.value, Requant(mx=True)),
+        (Activation.CLIP.value, Requant(mx=True, clip_lo=-20000, clip_hi=900)),
+    ],
+)
+@pytest.mark.parametrize("bias", [None, "matrix"])
+def test_mxint8_c_is_bit_exact(dataflow, activation, requant, bias):
+    """#76: an MXINT8 C, tiled in M, N and K (two K tiles, so the merge runs first),
+    against the reference model: each row of a C tile its int8 elements then its scale,
+    the SFU before the encoding. (IS is refused: its corner turn comes after the
+    encoding; the encoder itself is the same on every dataflow, test_mx.py.)"""
+    C, expected, untouched = run_on_top(
+        config(), 9, 8, 10, dataflow, seed=76, bias=bias, activation=activation,
         requant=requant,
     )  # fmt: skip
     np.testing.assert_array_equal(C, expected)

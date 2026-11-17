@@ -36,6 +36,7 @@ from amaranth import Cat, Const, Module, Mux, Signal, Value, signed
 from amaranth.lib.wiring import Component, In, Out
 
 from ..config import Activation
+from .mx import MXInt8Encoder, mxint8_row_model
 
 MUL_BITS = 16
 """Width of the requantization multiplier (``CMB_SCALE[15:0]``, signed)."""
@@ -61,6 +62,9 @@ class Requant:
     """Right shift, 0..63, rounding to nearest even."""
     enable: bool = False
     """Requantize to ``input_bits``; otherwise the results stay ``acc_bits`` wide."""
+    mx: bool = False
+    """MXINT8 (#76): the SFU, then MX blocks (``memory/mx.py``); takes precedence over
+    ``enable``."""
     act_first: bool = False
     """Apply the SFU before requantizing (on the wide results)."""
     clip_lo: int = 0
@@ -103,8 +107,12 @@ def requant_model(x: int, cfg: Requant, out_bits: int) -> int:
 
 
 def epilogue_model(values: list[int], code: int, cfg: Requant, out_bits: int) -> list[int]:
-    """A finished row's results after the epilogue (``code`` without the FINAL bit)."""
+    """A finished row's results after the epilogue (``code`` without the FINAL bit). For
+    MXINT8 (``cfg.mx``): the elements, then the block scales (``mxint8_row_model``)."""
     sfu = code & EPILOGUE_SFU_MASK
+    if cfg.mx:
+        elems, scales = mxint8_row_model([sfu_model(x, sfu, cfg) for x in values])
+        return elems + scales
     out = []
     for x in values:
         if not cfg.enable:
@@ -195,8 +203,9 @@ def apply_epilogue(
 ) -> Value:
     """The epilogue on a merged row of ``lanes`` ``wide``-bit results, one
     ``EpilogueLane`` each: the SFU and, when ``cfg["enable"]``, requantization to
-    ``narrow`` bits packed in the low bytes. ``cfg`` holds the configuration signals
-    (``mul``, ``shift``, ``enable``, ``act_first``, ``clip_lo``, ``clip_hi``)."""
+    ``narrow`` bits packed in the low bytes; or, when ``cfg["mx"]``, the SFU then MXINT8
+    (``memory/mx.py``). ``cfg`` holds the configuration signals (``mul``, ``shift``,
+    ``enable``, ``act_first``, ``mx``, ``clip_lo``, ``clip_hi``)."""
     wide_out, narrow_out = [], []
     for i in range(lanes):
         lane = EpilogueLane(wide, narrow)
@@ -214,4 +223,8 @@ def apply_epilogue(
         narrow_out.append(lane.narrow_out[:narrow])
     packed = Signal(width, name="ep_narrow")
     m.d.comb += packed.eq(Cat(*narrow_out))
-    return Mux(cfg["enable"], packed, Cat(*wide_out))
+    # MXINT8 (#76, memory/mx.py): the SFU's wide results, encoded as MX blocks
+    mx = MXInt8Encoder(lanes, wide, width)
+    m.submodules.mxint8 = mx
+    m.d.comb += mx.row.eq(Cat(*wide_out))
+    return Mux(cfg["mx"], mx.out, Mux(cfg["enable"], packed, Cat(*wide_out)))

@@ -63,6 +63,8 @@ def command_ports() -> dict:
         "cmd_store_completed": In(1),
         # The Combiner requantizes finished rows (CMB_CONTROL.requant): C is narrow
         "combiner_requant": In(1),
+        # ... or encodes them as MXINT8 (CMB_CONTROL.mxint8, memory/mx.py)
+        "combiner_mx": In(1),
     }
     ports.update({f"cmd_{name}": Out(width) for name, width in _FIELDS.items()})
     return ports
@@ -220,5 +222,6 @@ def connect_to_top(m: Module, isa, top) -> None:
         top.cmd_id.eq(isa.cmd_id),
         isa.cmd_store_completed.eq(top.bm_out_completed),
         isa.combiner_requant.eq(top.cmb_control[8]),
+        isa.combiner_mx.eq(top.cmb_control[10]),
     ]
     m.d.comb += [getattr(top, f"cmd_{name}").eq(getattr(isa, f"cmd_{name}")) for name in _FIELDS]

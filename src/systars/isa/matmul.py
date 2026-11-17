@@ -70,6 +70,7 @@ from ..config import Dataflow, SystolicConfig
 from ..controller.sync import Sync
 from ..memory.epilogue import EPILOGUE_FINAL, STORE_NARROW
 from ..memory.local_addr import LocalAddr
+from ..memory.mx import mx_row_bytes
 from ..util.commands import BlockMoverOpcode, ExecOpcode
 from .command import CTRL_EXEC, CTRL_LOAD, CTRL_STORE, CommandIssuer, TileBuffers, command_ports
 
@@ -190,6 +191,11 @@ class Matmul(Component):
         reg_narrow = Signal()
         c_bytes = Signal(range(combiner_bytes + 1))
         m.d.comb += c_bytes.eq(Mux(reg_narrow, in_bytes, combiner_bytes))
+        # MXINT8 C (CMB_CONTROL.mxint8, latched at START; memory/mx.py): C is written tile
+        # by tile, each row of a C tile its dim int8 elements and then its block scales
+        # (mx_row_bytes(dim) bytes), the tiles of a C row side by side
+        reg_mx = Signal()
+        mx_bytes = mx_row_bytes(dim)
         df = Signal(2, init=self.default_dataflow)  # dataflow of the next START
         df_ok = Signal()
         m.d.comb += df_ok.eq(
@@ -225,7 +231,11 @@ class Matmul(Component):
         m.d.comb += [
             a_tile.eq(reg_A + (tile_i << dim_shift) * a_stride + (tile_k << dim_shift) * in_bytes),
             b_tile.eq(reg_B + (tile_k << dim_shift) * b_stride + (tile_j << dim_shift) * in_bytes),
-            c_tile.eq(reg_C + (tile_i << dim_shift) * c_stride + (tile_j << dim_shift) * c_bytes),
+            c_tile.eq(
+                reg_C
+                + (tile_i << dim_shift) * c_stride
+                + Mux(reg_mx, tile_j * mx_bytes, (tile_j << dim_shift) * c_bytes)
+            ),
             d_tile.eq(
                 reg_D + (tile_i << dim_shift) * d_stride + (tile_j << dim_shift) * combiner_bytes
             ),
@@ -253,7 +263,14 @@ class Matmul(Component):
         m.d.comb += layout_ok.eq(
             (a_stride != 0)
             & (b_stride != 0)
-            & (c_stride >= reg_N * c_bytes)
+            & Mux(
+                reg_mx,
+                c_stride >= ((reg_N + dim - 1) >> dim_shift) * mx_bytes,
+                c_stride >= reg_N * c_bytes,
+            )
+            # MX blocks run along the result row: IS's corner turn would scramble them,
+            # and an edge tile in N would put the lanes past N (stale) in its scales
+            & ~(reg_mx & ((df == IS) | reg_accumulate | (reg_N[:dim_shift] != 0)))
             # an int8 C can't be loaded back to accumulate onto
             & ~(reg_narrow & reg_accumulate)
         )
@@ -313,6 +330,7 @@ class Matmul(Component):
                         with m.If(dims_valid & addrs_valid):
                             m.d.sync += [
                                 reg_narrow.eq(self.combiner_requant),
+                                reg_mx.eq(self.combiner_mx),
                                 tiles_M.eq((reg_M + dim - 1) >> dim_shift),
                                 tiles_N.eq((reg_N + dim - 1) >> dim_shift),
                                 tiles_K.eq((reg_K + dim - 1) >> dim_shift),
@@ -454,8 +472,8 @@ class Matmul(Component):
                 "STORE", "NEXT_IJ", CTRL_STORE,
                 Mux(df == IS, BlockMoverOpcode.TRANSPOSE, BlockMoverOpcode.MEMCPY),
                 dram_addr=c_tile, local_addr=bufs.combiner_addr, len=tile_M,
-                stride=c_stride, row_bytes=tile_N * c_bytes,
-                activation=Mux(reg_narrow, STORE_NARROW, 0),
+                stride=c_stride, row_bytes=Mux(reg_mx, mx_bytes, tile_N * c_bytes),
+                activation=Mux(reg_narrow & ~reg_mx, STORE_NARROW, 0),
                 sync=bufs.store(), then=bufs.next_combiner(),
             )  # fmt: skip
 
