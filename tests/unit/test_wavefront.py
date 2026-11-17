@@ -229,6 +229,17 @@ def test_zero_length_run_terminates(dataflow):
     render_svg(trace, view="value")
 
 
+def test_stationary_weights_swap_on_the_first_tile_with_a_stream():
+    """A leading empty tile carries no element: the swap marker goes on the first tile
+    that streams, so the weights become active for it (and later tiles reuse them)."""
+    cfg = config((2, 2, 1, 1))
+    A = [np.empty((0, 2), dtype=np.int64), np.array([[5, 6]]), np.array([[1, 1]])]
+    W = np.array([[1, 2], [3, 4]])
+    trace = record(cfg, WS, A, W)
+    assert trace.check() == []
+    np.testing.assert_array_equal(trace.C, [[23, 34], [4, 6]])
+
+
 def test_a_lost_last_marker_is_reported_not_hung(monkeypatch):
     """Without the last marker no PE launches its result: recording still ends, and
     check() reports the missing results."""

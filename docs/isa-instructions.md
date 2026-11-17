@@ -134,9 +134,14 @@ when the fabric can take it on schedule and never stalls:
   for the stream ahead of it, and a stationary `COMPUTE` starts at least `R - 1` clocks after
   the last `PRELOAD`. So with `M >= max(R, C)`, tiles with new weights stream back to back.
 
-Two in-order events carry each command's `cmd_sync`: **completed** when its last block is in
-L1 (`SystolicTop` returns the L2 credit, so the BlockMover can refill the slot early) and
-**result** (`streamer_result`) when its results are in the Combiner (the result token). An
+Two events carry each command's `cmd_sync`:
+
+- **completed**, when its last block is in L1. `SystolicTop` returns the L2 credit, so the
+  BlockMover can refill the slot early. It is not in command order: a PRELOAD runs on its
+  own path, so its completion can come before that of a COMPUTE issued ahead of it. The
+  credit is returned by the slot `cmd_sync` names, so the order doesn't matter.
+- **result** (`streamer_result`), when its results are in the Combiner: the result token.
+  It is always in command order. An
 untracked command (`cmd_sync` 0) runs alone and completes with its results, so a host can
 issue one command at a time. `l1_error` (sticky) reports a schedule violation, which a valid
 schedule never raises.

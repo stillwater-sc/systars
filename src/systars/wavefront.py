@@ -336,6 +336,9 @@ def record(config: SystolicConfig, dataflow: int, A, B, *, starts=None) -> Trace
     if starts is None:
         starts = streamer_starts(dataflow, rows, cols, lengths)
     tiles = [Tile(s, n, a, b) for s, n, a, b in zip(starts, lengths, As, Bs, strict=True)]
+    # Stationary: the first tile with a stream swaps the weights in, and the chain is
+    # timed to it; later tiles reuse them (None: nothing streams, no weights load)
+    swap = next((n for n, tile in enumerate(tiles) if tile.length), None)
     trace = Trace(config, dataflow, tiles, W, np.zeros((0, cols), dtype=np.int64))
     sim = Simulator(dut)  # elaborates the design, so the PE references below exist
     pes = [
@@ -414,7 +417,7 @@ def record(config: SystolicConfig, dataflow: int, A, B, *, starts=None) -> Trace
                     f"in_a_{i}": a, f"in_valid_{i}": e is not None,
                     # the swap: the first stream after the weights load (later
                     # tiles reuse them, as later COMPUTEs after a PRELOAD do)
-                    f"in_first_{i}": e is not None and n == 0 and k == 0,
+                    f"in_first_{i}": e is not None and n == swap and k == 0,
                 })  # fmt: skip
             west_values.append(int(a))
         for j in range(cols):
@@ -426,7 +429,7 @@ def record(config: SystolicConfig, dataflow: int, A, B, *, starts=None) -> Trace
                 north_values.append(int(b))
                 continue
             # the weight chain, bottom row first, R clocks ahead of the first stream
-            r = t + rows - tiles[0].start - stream_start(j) if tiles else -1
+            r = t + rows - tiles[swap].start - stream_start(j) if swap is not None else -1
             on = W is not None and 0 <= r < rows
             w = int(W[rows - 1 - r, j]) if on else 0
             values.update({f"in_w_{j}": w, f"in_w_valid_{j}": on})

@@ -262,7 +262,9 @@ and weight-stationary. The previous execute path could not:
     configuration, registered once per PEArray. `out_collision` is a registered OR tree, so
     the sticky error is set one or two clocks late.
   - **Events.** A PRELOAD's `completed` event may come before that of the COMPUTE ahead of
-    it. The L2 credit is returned by slot, and `result` events stay in command order.
+    it, so `completed` is no longer in command order. The L2 credit is returned by the slot
+    `cmd_sync` names, and `result` events stay in command order
+    (`docs/isa-instructions.md`).
   - **New structural test.** `tests/unit/test_fabric_structure.py` checks on the elaborated
     PEArray and SystolicArray that every cell input comes from its neighbour or its own edge.
   - **Wavefront views.** They draw the weights coming down the chains (`wN`), and the WS
