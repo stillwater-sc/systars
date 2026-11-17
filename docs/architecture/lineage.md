@@ -65,7 +65,7 @@ Mesh arrays, including systars's today, the TPU and Gemmini, use three points of
 E. T. L. Omtzigt built SYSTARS at Delft University of Technology as a CAD tool for the
 synthesis and analysis of systolic and wavefront arrays by this method. It took a recurrence
 and a choice of space-time mapping, and produced the array and its analysis. The work
-continued in Omtzigt's Yale dissertation on domain flow and streaming architectures, which
+continued in Omtzigt's Yale dissertation (1993) on domain flow and streaming architectures, which
 leads to the KPU.
 
 This repository is the modern reimplementation. It generates synthesizable RTL with Amaranth,
@@ -148,7 +148,7 @@ notice and license are in the repository's `NOTICE` file.
    Systolic/Wavefront Arrays," *Proc. International Conference on Systolic Arrays*, 1988
    ([doi:10.1109/ARRAYS.1988.18078](https://ieeexplore.ieee.org/document/18078)).
 9. E. T. L. Omtzigt, *Domain Flow and Streaming Architectures: A Paradigm for Efficient
-   Parallel Computation*, PhD dissertation, Yale University.
+   Parallel Computation*, PhD dissertation, Yale University, 1993.
 10. H. Genc et al., "Gemmini: Enabling Systematic Deep-Learning Architecture Evaluation via
     Full-Stack Integration," *Proc. 58th Design Automation Conference (DAC)*, 2021.
 11. branes-ai/domain_flow: [documentation](https://branes-ai.github.io/domain_flow/) and

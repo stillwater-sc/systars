@@ -244,6 +244,13 @@ and weight-stationary. The previous execute path could not:
 
 ### Changed
 
+- **The implementation plan's layout** (2026-11-17). `docs/plan/implementation.md` showed the
+  `pygemmini/` layout the project was first planned in. It now shows the repository as it is,
+  with each module's role, and a table of the planned modules that were not built or were
+  built differently (the reservation station became `controller/sync.py`, LoopMatmul and
+  LoopConv the ISA instructions). The code sketches drop the `pygemmini/` prefix. The
+  lineage page and `CITATION.cff` give the Yale dissertation's year, 1993.
+
 - **CI calls the `just` recipes `just ci` runs** (#29, 2026-11-10). `lint.yml` runs `just
   lint-python`, `just format-check`, `just typecheck`, `just gen` and `just lint-rtl`, so CI
   now lints every generated target, not only the PE, with the justfile's waivers. `test.yml`

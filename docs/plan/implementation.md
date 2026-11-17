@@ -119,75 +119,79 @@ This document provides a comprehensive plan for rewriting the SYSTARS systolic a
 
 ### 1.1 Repository Setup
 
+The repository as it is today:
+
 ```
-pygemmini/
-├── pygemmini/
-│   ├── __init__.py
-│   ├── config.py              # Configuration dataclass
-│   ├── arithmetic/
-│   │   ├── __init__.py
-│   │   ├── base.py            # Arithmetic protocol/ABC
-│   │   ├── integer.py         # SInt/UInt operations
-│   │   └── floating.py        # Float operations (optional)
+systars/
+├── src/systars/
+│   ├── config.py              # SystolicConfig and its presets
+│   ├── targets.py             # RTL targets read by just gen, just synth and CI
+│   ├── top.py                 # SystolicTop, the KPU compute tile
+│   ├── wavefront.py           # RTL wavefront tracing, checking and animations
 │   ├── core/
-│   │   ├── __init__.py
-│   │   ├── pe.py              # Processing Element
-│   │   ├── pe_array.py        # PEArray (grid of PEs)
-│   │   ├── systolic_array.py  # SystolicArray (grid of PEArrays)
-│   │   └── systolic_array_with_delays.py # SystolicArray with I/O buffering
+│   │   ├── pe.py              # Processing Element: OS and stationary (WS/IS) modes
+│   │   ├── pe_array.py        # PEArray, a structural block of PEs
+│   │   └── systolic_array.py  # SystolicArray, the fabric: a grid of PEArrays
 │   ├── memory/
-│   │   ├── __init__.py
-│   │   ├── local_addr.py      # Address encoding/decoding
-│   │   ├── scratchpad.py      # Scratchpad banks
-│   │   └── accumulator.py     # Accumulator with scale/activation
+│   │   ├── scratchpad.py      # L2: scratchpad banks, two read ports
+│   │   ├── accumulator.py     # Result memory (to be replaced by the Combiner, #38)
+│   │   ├── activation.py      # ReLU / ReLU6 on accumulator rows
+│   │   ├── stream_buffer.py   # L1: stream buffers and result buffers
+│   │   ├── local_addr.py      # Local address encoding
+│   │   └── skew_buffer.py     # Legacy skew registers (examples and one test only)
 │   ├── controller/
-│   │   ├── __init__.py
-│   │   ├── load.py            # LoadController
-│   │   ├── execute.py         # ExecuteController
-│   │   └── store.py           # StoreController
-│   ├── dma/
-│   │   ├── __init__.py
-│   │   ├── reader.py          # StreamReader
-│   │   ├── writer.py          # StreamWriter
-│   │   └── tracker.py         # DMACommandTracker
+│   │   ├── load.py            # BlockMover inbound leg, L3 -> L2 or the accumulator (#43)
+│   │   ├── store.py           # BlockMover outbound leg, accumulator -> L3 (#43)
+│   │   ├── execute.py         # The Streamer, L2 -> L1 (#43)
+│   │   ├── sync.py            # Credits and tile-ready tokens (SlotPool, Sync)
+│   │   └── load_transpose.py  # Legacy transposing load
+│   ├── dma/                   # The BlockMover's engines (renamed blockmover/ by #37)
+│   │   ├── reader.py          # StreamReader, AXI read
+│   │   ├── writer.py          # StreamWriter, AXI write
+│   │   ├── axi.py             # AXI protocol constants
+│   │   ├── strided_reader.py  # Legacy strided reader
+│   │   └── descriptor_engine.py # Descriptor chains, not wired into SystolicTop
+│   ├── isa/
+│   │   ├── command.py         # The command port shared by the instructions
+│   │   ├── matmul.py          # Matmul: OS, WS or IS, tiled and double-buffered
+│   │   └── conv2d.py          # Conv2d (OS)
 │   ├── util/
-│   │   ├── __init__.py
-│   │   ├── transposer.py      # Matrix transposer
-│   │   ├── reservation.py     # ReservationStation/ROB
-│   │   └── pipeline.py        # Pipeline utilities
-│   ├── loop/
-│   │   ├── __init__.py
-│   │   ├── matmul.py          # LoopMatmul FSM
-│   │   └── conv.py            # LoopConv FSM
-│   └── top.py                 # Top-level SYSTARS module
-├── tests/
-│   ├── test_pe.py
-│   ├── test_tile.py
-│   ├── test_systolic_array.py
-│   ├── test_scratchpad.py
-│   ├── test_accumulator.py
-│   ├── test_transposer.py
-│   └── integration/
-│       ├── test_matmul.py
-│       └── test_conv.py
-├── examples/
-│   ├── simple_matmul.py
-│   └── generate_verilog.py
-├── scripts/
-│   ├── generate_header.py     # Generate gemmini_params.h
-│   └── compare_with_chisel.py # Validation against reference
-├── pyproject.toml
-├── README.md
-└── docs/
-    ├── architecture.md
-    ├── isa.md
-    └── configuration.md
+│   │   └── commands.py        # Opcodes and descriptors
+│   ├── arithmetic/, loop/     # Empty placeholders
+│   ├── stencil/               # Side package: line-buffer stencil machine
+│   └── simt/, simd/           # Side packages: NVIDIA-style SM and MasPar SIMD models
+├── tests/unit/                # pytest on the Amaranth simulator
+├── verif/cocotb/
+│   ├── tb/                    # axi.py (L3 model), isa.py, gemm.py
+│   └── tests/                 # pe, pe_array, systolic_array, scratchpad, accumulator,
+│                              # systolic_top: on Verilator
+├── examples/                  # gemm/ (01-08), conv/, simt/, simd/, stencil/, common/
+├── scripts/                   # gen_pe.py, gen_pe_array.py, gen_systolic_array.py,
+│                              # gen_wavefronts.py
+├── bin/                       # setup-dev-env.sh, OSS-CAD-SUITE install and upgrade
+├── docs/                      # The documentation, source of the site
+├── docs-site/                 # Astro Starlight site built from docs/
+├── justfile
+└── pyproject.toml
 ```
+
+Planned here but not built, or built differently:
+
+| Plan | Today |
+|---|---|
+| `util/reservation.py` (ReservationStation / ROB) | `controller/sync.py`: credits and tile-ready tokens |
+| `loop/matmul.py`, `loop/conv.py` (LoopMatmul, LoopConv) | `isa/matmul.py`, `isa/conv2d.py`, which tile and push commands; the loop unrollers are still planned |
+| `core/systolic_array_with_delays.py` | None: the L1 stream and result buffers stagger and destagger the streams |
+| `util/transposer.py` | Corner turns in the BlockMover (`DmaOpcode.TRANSPOSE`) |
+| `dma/tracker.py`, `util/pipeline.py`, `arithmetic/*` | None |
+| `scripts/generate_header.py`, `compare_with_chisel.py` | None: the tests check against NumPy references |
+
+The code sketches below keep the plan's paths, relative to the package.
 
 ### 1.2 Configuration System
 
 ```python
-# pygemmini/config.py
+# config.py
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional, Callable
@@ -284,7 +288,7 @@ class SYSTARSConfig:
 ### 1.3 Processing Element (PE)
 
 ```python
-# pygemmini/core/pe.py
+# core/pe.py
 from amaranth import *
 from amaranth.lib.data import StructLayout
 from ..config import SYSTARSConfig, Dataflow
@@ -390,7 +394,7 @@ class PE(Elaboratable):
 ### 1.4 PEArray and SystolicArray
 
 ```python
-# systars/core/pe_array.py
+# core/pe_array.py
 from amaranth import *
 from .pe import PE
 
@@ -456,7 +460,7 @@ class PEArray(Elaboratable):
 ```
 
 ```python
-# systars/core/systolic_array.py
+# core/systolic_array.py
 from amaranth import *
 from .pe_array import PEArray
 
@@ -519,7 +523,7 @@ class SystolicArray(Elaboratable):
 ### 2.1 Local Address Encoding
 
 ```python
-# pygemmini/memory/local_addr.py
+# memory/local_addr.py
 from amaranth import *
 from ..config import SYSTARSConfig
 
@@ -565,7 +569,7 @@ class LocalAddr(StructLayout):
 ### 2.2 Scratchpad Memory
 
 ```python
-# pygemmini/memory/scratchpad.py
+# memory/scratchpad.py
 from amaranth import *
 from amaranth.lib.memory import Memory
 
@@ -646,7 +650,7 @@ class Scratchpad(Elaboratable):
 ### 2.3 Accumulator with Scaling
 
 ```python
-# pygemmini/memory/accumulator.py
+# memory/accumulator.py
 from amaranth import *
 
 class AccumulatorBank(Elaboratable):
@@ -690,7 +694,7 @@ class AccumulatorBank(Elaboratable):
 ### 3.1 Reservation Station (ROB)
 
 ```python
-# pygemmini/util/reservation.py
+# util/reservation.py
 from amaranth import *
 from amaranth.lib.fifo import SyncFIFOBuffered
 
@@ -730,7 +734,7 @@ class ReservationStation(Elaboratable):
 ### 3.2 Execute Controller
 
 ```python
-# pygemmini/controller/execute.py
+# controller/execute.py
 from amaranth import *
 from ..core.systolic_array_with_delays import SystolicArrayWithDelays
 
@@ -784,7 +788,7 @@ class ExecuteController(Elaboratable):
 ### 3.3 Load/Store Controllers
 
 ```python
-# systars/controller/load.py
+# controller/load.py
 class LoadController(Component):
     """
     DMA load orchestration.
@@ -795,7 +799,7 @@ class LoadController(Component):
         # See src/systars/controller/load.py for implementation
         # ...
 
-# systars/controller/store.py
+# controller/store.py
 class StoreController(Component):
     """
     DMA store orchestration.
@@ -807,7 +811,7 @@ class StoreController(Component):
 ### 3.4 DMA Engine
 
 ```python
-# pygemmini/dma/reader.py
+# dma/reader.py
 class StreamReader(Elaboratable):
     """
     DMA reader: Main memory → Local memory
@@ -819,7 +823,7 @@ class StreamReader(Elaboratable):
     """
     pass
 
-# pygemmini/dma/writer.py
+# dma/writer.py
 class StreamWriter(Elaboratable):
     """
     DMA writer: Local memory → Main memory
@@ -848,7 +852,7 @@ class StreamWriter(Elaboratable):
 ### 4.1 Loop Matmul FSM
 
 ```python
-# pygemmini/loop/matmul.py
+# loop/matmul.py
 from amaranth import *
 
 class LoopMatmul(Elaboratable):
@@ -929,7 +933,7 @@ class LoopMatmul(Elaboratable):
 ### 4.2 Loop Conv FSM
 
 ```python
-# pygemmini/loop/conv.py
+# loop/conv.py
 class LoopConv(Elaboratable):
     """
     Hardware loop unroller for convolutions.
@@ -946,7 +950,7 @@ class LoopConv(Elaboratable):
 ### 4.3 Top-Level Integration
 
 ```python
-# pygemmini/top.py
+# top.py
 from amaranth import *
 
 class SYSTARS(Elaboratable):
