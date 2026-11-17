@@ -100,7 +100,8 @@ class SystolicTop(Component):
             {bm_in,bm_out,streamer}_completed[_id]: Per-process completions (lossless).
                 The Streamer's completion means it is done with L2 (its last block
                 is in L1); streamer_result[_id] means its results are in the Combiner
-            {load,store,exec}_started[_id]: A process started a command
+            {bm_in,bm_out,streamer}_started[_id]: A process started a command
+            {bm_in,bm_out,streamer}_queued: A process has a command at its queue's head
             l2_free, l2_ready, combiner_free, combiner_ready: Slot states (OWNED = neither)
             sync_error: Sticky credit/token protocol error
             l1_error: Sticky L1/fabric schedule error
@@ -207,6 +208,11 @@ class SystolicTop(Component):
             "bm_out_started_id": Out(8),
             "streamer_started": Out(1),
             "streamer_started_id": Out(8),
+            # A process has a command at its queue's head (dispatched once its credits
+            # and tokens are there and its process is ready; #52)
+            "bm_in_queued": Out(1),
+            "bm_out_queued": Out(1),
+            "streamer_queued": Out(1),
             # Tile slots (controller/sync.py): FREE / READY bits per slot (OWNED =
             # neither), and a sticky protocol error
             "l2_free": Out(config.l2_slots),
@@ -341,6 +347,7 @@ class SystolicTop(Component):
             m.d.comb += [
                 getattr(self, f"{name}_started").eq(dispatch),
                 getattr(self, f"{name}_started_id").eq(ctrl.cmd_id),
+                getattr(self, f"{name}_queued").eq(queue.r_rdy),
             ]
             return dispatch, Sync.fields(head), Sync.fields(inflight)
 

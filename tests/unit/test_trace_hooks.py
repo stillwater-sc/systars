@@ -68,3 +68,48 @@ def test_the_tiles_submodules_exist_before_elaboration():
     os_only = SystolicTop(SystolicConfig(grid_rows=2, grid_cols=2,
                                          dataflow=Dataflow.OUTPUT_STATIONARY)).streamer  # fmt: skip
     assert os_only.south is None and os_only.w_buf is None and os_only.north is not None
+
+
+def test_queued_holds_while_a_command_waits_at_its_queue_head():
+    """``*_queued`` (#52): a process has a command at its queue's head. An untracked CONFIG
+    passes through at once; a COMPUTE that WAITs for a token no one emits stays queued,
+    and its process never starts it."""
+    from systars.controller.sync import Sync
+    from systars.util.commands import ExecOpcode
+
+    cfg = SystolicConfig(grid_rows=2, grid_cols=2, dataflow=Dataflow.OUTPUT_STATIONARY)
+    top = SystolicTop(cfg)
+    seen = {}
+
+    async def tb(ctx):
+        async def issue(**fields):
+            for name, value in fields.items():
+                ctx.set(getattr(top, f"cmd_{name}"), value)
+            ctx.set(top.cmd_valid, 1)
+            await ctx.tick().until(top.cmd_ready)
+            ctx.set(top.cmd_valid, 0)
+
+        exec_type = SystolicTop.CTRL_EXEC
+        await issue(type=exec_type, opcode=ExecOpcode.CONFIG, rs1=0, id=1, sync=0)
+        started = 0
+        for _ in range(20):
+            started += ctx.get(top.streamer_started)
+            await ctx.tick()
+        seen["config"] = (started, ctx.get(top.streamer_queued))
+        await issue(type=exec_type, opcode=ExecOpcode.COMPUTE, rs1=0, rs2=cfg.l2_group_rows,
+                    rd=0, k_dim=2, id=2, sync=Sync.encode(src=0, wait=True))  # fmt: skip
+        queued = started = 0
+        for _ in range(50):
+            queued += ctx.get(top.streamer_queued)
+            started += ctx.get(top.streamer_started)
+            await ctx.tick()
+        seen["blocked"] = (queued, started)
+        seen["others"] = (ctx.get(top.bm_in_queued), ctx.get(top.bm_out_queued))
+
+    sim = Simulator(top)
+    sim.add_clock(1e-8)
+    sim.add_testbench(tb)
+    sim.run()
+    assert seen["config"] == (1, 0)  # started once, then nothing queued
+    assert seen["blocked"] == (50, 0)  # queued every clock, never started
+    assert seen["others"] == (0, 0)

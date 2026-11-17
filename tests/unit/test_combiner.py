@@ -54,6 +54,7 @@ class Driver:
         self.ctx, self.dut, self.cfg = ctx, dut, cfg
         self.lanes = cfg.combiner_width // cfg.acc_bits
         self.model = {}
+        self.forwards = 0  # clocks with forward_hit (an accumulate fed by forwarding)
 
     async def clock(self, req=None, read=None):
         """One clock: ``req`` = (row, values, accumulate) or None; ``read`` = a row for
@@ -73,6 +74,7 @@ class Driver:
         ctx.set(dut.read_req, read is not None)
         ctx.set(dut.read_addr, addr(self.cfg, read) if read is not None else 0)
         taken = read is not None and ctx.get(dut.read_ready)
+        self.forwards += ctx.get(dut.forward_hit)
         await ctx.tick()
         return taken
 
@@ -170,6 +172,13 @@ class TestMerge:
             await d.drain()
             assert await d.read(7) == d.model[7]
             assert d.model[7] == [110, 190, 320, 405]
+            # forward_hit (#85): an accumulate is fed by forwarding exactly when the row's
+            # last commit is within `latency` clocks. Spaced wider, only the first one,
+            # right behind the overwrite, is
+            if gap < latency:
+                assert d.forwards >= 5
+            else:
+                assert d.forwards == 1
 
         run_sim(dut, tb)
 

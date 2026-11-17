@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The tile's queued and forward-hit status outputs** (#52, 2026-11-17; the systolic part
+  of branes-ai/embodied-ai-soc-generator#85, kpugen PR #93).
+  - **Queued ports.** `SystolicTop` gains `bm_in_queued`, `bm_out_queued` and
+    `streamer_queued`: a process has a command at its queue's head, waiting for its
+    credits and tokens or for its process to be ready. `tests/unit/test_trace_hooks.py`
+    checks that a command waiting on a token stays queued and unstarted.
+  - **`forward_hit`.** The Combiner's new output: an accumulate commit took its row from
+    the pipeline's recent commits, not the bank. `test_combiner.py` checks it, and the file
+    is now identical to kpugen's.
+  - **Not ported.** kpugen's perf summary (`kpu_gen.trace.perf`, the reference runs and the
+    CLI) has no counterpart here.
+  - **Docs fix.** `SystolicTop`'s docstring now names the per-process ports with the #43
+    names.
+
 - **The tile's first error, captured behind the sticky error bits** (#51, 2026-11-17; port
   of branes-ai/embodied-ai-soc-generator#84 part 1, kpugen PR #88).
   - **Error kinds.** The scratchpad, `SlotPool` and the Streamer gain an `error_kind`
