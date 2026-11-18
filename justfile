@@ -224,6 +224,43 @@ test-cocotb-component component:
 test-verilator:
     just test-cocotb
 
+# The differential harness (#18, after kpu-gen's #83): SEEDS random Matmul programs from
+# START, checked against the reference models, then the coverage report. A failure prints
+# the shrunk program and the command that replays it.
+#
+# Each run writes a new directory of its own under KPU_FUZZ_OUT (default build/fuzz):
+# run-<UTC time>-s<START>-n<SEEDS>-<random>/, with manifest.json and one seed-<n>.json per
+# program. The recipe never deletes anything.
+fuzz seeds="1000" start="0":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    root="${KPU_FUZZ_OUT:-{{project_root}}/build/fuzz}"
+    mkdir -p "$root" || exit 1
+    run=$(mktemp -d "$root/run-$(date -u +%Y%m%dT%H%M%SZ)-s{{start}}-n{{seeds}}-XXXXXX") || exit 1
+    chmod u=rwx,go=rx "$run"
+    printf '{"seeds": %d, "start": %d, "commit": "%s", "dirty": %s, "started": "%s"}\n' \
+        {{seeds}} {{start}} "$(git -C {{project_root}} rev-parse HEAD 2>/dev/null)" \
+        "$( [ -n "$(git -C {{project_root}} status --porcelain 2>/dev/null)" ] && echo true || echo false)" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$run/manifest.json"
+    KPU_FUZZ_RUN="$run" KPU_FUZZ_SEEDS={{seeds}} KPU_FUZZ_START={{start}} python3 -m pytest {{tests_dir}}/fuzz -q
+    status=$?
+    python3 -m tests.fuzz.coverage "$run" || true
+    echo "results: $run"
+    exit $status
+
+# One random tile program (the fuzz generator's SEED) with its trace (#18): the commands,
+# the first error and the tile's internal lanes, reported and drawn in build/tile_trace/
+tile-trace seed="0":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    out={{project_root}}/build/tile_trace
+    python3 -m tests.fuzz.run --seed {{seed}} --trace "$out/seed-{{seed}}.json"
+    ran=$?
+    # Report and draw it even when the program failed: that is when the trace is wanted
+    python3 -m systars.trace "$out/seed-{{seed}}.json" --check --svg "$out" --rows 10
+    drawn=$?
+    [ $ran -eq 0 ] && [ $drawn -eq 0 ]
+
 # Run tests with coverage (an HTML report locally; CI writes coverage.xml: `just test-cov xml`)
 test-cov report="html":
     python3 -m pytest {{tests_dir}} -v --cov=systars --cov-report={{report}} --cov-report=term-missing
